@@ -6,34 +6,13 @@
 
 
 #### 软件架构
-软件架构说明
+采用webview前端，和java后端的混合开发模式。
 
 
 #### 安装教程
-
-1.  xxxx
-2.  xxxx
-3.  xxxx
+ 开箱即用，apk文件直接安装即可。
+源码编译需要安卓 sdk 34版本。
 
 #### 使用说明
-
-1.  xxxx
-2.  xxxx
-3.  xxxx
-
-#### 参与贡献
-
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
-
-
-#### 特技
-
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+要开启地理逆编码与天气功能，先获得高德web服务的api密钥。
+要想实现路线路线匹配与桩号自动计算功能，请使用https://gitee.com/zjywchenhui/road_manage这个项目导出geojson文件，并通过app的路线管理导入它。
