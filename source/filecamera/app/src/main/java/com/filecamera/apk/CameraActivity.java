@@ -85,6 +85,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
+import java.lang.ref.WeakReference;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -131,13 +132,14 @@ public class CameraActivity extends AppCompatActivity {
     private OrientationEventListener orientationEventListener;
     private int currentRotation = Surface.ROTATION_0;
 	private static final int ORIENTATION_HYSTERESIS = 20;
+    
     // 定位服务
     private LocationManager locationManager;
     private LocationListener locationListener;
     private double lat = 0, lon = 0, alt = 0;
     private long locationTime = 0;
 
-    // 外部API数据相关成员变量
+    // 外部API数据
     private boolean hasWeatherItem = false;
     private String weatherAdcode = null;
     private boolean hasAddressItem = false;
@@ -145,10 +147,10 @@ public class CameraActivity extends AppCompatActivity {
     private volatile boolean isFetchingAddress = false;
     private volatile boolean hasAddressBeenFetched = false;
 
+    // 道路匹配
     private static final long MATCH_INTERVAL_MS = 5000;
     private volatile boolean isMatchingRoad = false;
     private long lastMatchRequestTime = 0;
-
     private RoadDatabaseHelper roadDatabaseHelper;
     private volatile RoadDatabaseHelper.RoadLocationMatch currentRoadMatch = null;
 	private int currentFlashMode = ImageCapture.FLASH_MODE_OFF; // 闪光灯状态
@@ -161,8 +163,8 @@ public class CameraActivity extends AppCompatActivity {
             if (hasWeatherItem) {
                 GaodeApi.requestWeatherUpdateIfStale(CameraActivity.this, weatherAdcode);
             }
-            updateWatermarkPreview();
-            uiUpdateHandler.postDelayed(this, 5000); // 5秒检查一次
+            refreshWatermarkData(); // [Optimized] 仅刷新数据
+            uiUpdateHandler.postDelayed(this, 1000); // 1秒更新一次 (e.g. 时间)
         }
     };
 
@@ -172,9 +174,13 @@ public class CameraActivity extends AppCompatActivity {
     private QrCodeConfig qrCodeConfig;
     private boolean showWatermark = false;
     private boolean showQrCode = false;
-    private int targetAspectRatio = AspectRatio.RATIO_16_9; // 此变量保留，用于配置ResolutionSelector
+    private int targetAspectRatio = AspectRatio.RATIO_16_9;
 	private TabLayout cameraModeTabLayout;
-    private int currentLensFacing = CameraSelector.LENS_FACING_BACK; // 新增：当前摄像头方向
+    private int currentLensFacing = CameraSelector.LENS_FACING_BACK; // 当前摄像头方向
+    
+    // [Optimization] 用于快速更新动态文本，而不重建视图
+    private final Map<String, WeakReference<TextView>> dynamicTextViews = new HashMap<>();
+
     // 类型处理器
     private final Map<String, TypeHandler> typeHandlers = new HashMap<String, TypeHandler>() {{
         put("string", item -> item.value);
@@ -184,7 +190,7 @@ public class CameraActivity extends AppCompatActivity {
         put("time", item -> getCurrentTimeText());
 		put("weather", item -> getCurrentWeatherText());
         put("address", item -> getCurrentAddressText());
-        put("input", item -> item.value); // input 类型处理器, 返回当前内存中的值
+        put("input", item -> item.value); // input 类型, 返回内存中当前的值
     }};
     // endregion
 
@@ -194,12 +200,11 @@ public class CameraActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_camera);
 
-		getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true /* enabled by default */) {
+		getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
 			@Override
 			public void handleOnBackPressed() {
 				setResult(RESULT_CANCELED);
-				// 调用 finish() 来关闭当前 Activity
-				finish();
+				finish(); // 关闭当前 Activity
 			}
 		});
         String configJson = getIntent().getStringExtra("watermark_config");
@@ -209,7 +214,7 @@ public class CameraActivity extends AppCompatActivity {
 
         initViews();
         initGestureDetectors();
-        initLocationServices(); // 此处只做初始化，不请求更新
+        initLocationServices(); // 仅初始化服务，不请求更新
         initOrientationListener();
         parseConfig(configJson);
         checkForWeatherItem();
@@ -219,7 +224,7 @@ public class CameraActivity extends AppCompatActivity {
         loadInitialCaches();
         if (showWatermark) {
             watermarkContainer.setVisibility(View.VISIBLE);
-            setupWatermarkPreview();
+            setupWatermarkPreview(); // 第一次构建视图
         }
 
 		if (!allPermissionsGranted()) {
@@ -228,13 +233,38 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     @Override
-    protected void onStart() {
-        super.onStart();
-        // 只有在权限被授予后，才在 onStart 中启动相机和定位
+    protected void onPause() {
+        super.onPause();
+        if (orientationEventListener != null) {
+            orientationEventListener.disable();
+        }
+        stopLocationUpdates(); // 停止位置更新
+        uiUpdateHandler.removeCallbacks(uiUpdateRunnable); // 停止UI更新循环
+
+        if (cameraProvider != null) {
+            cameraProvider.unbindAll();
+        }	
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (!isLocationValid()) {
+            // 位置失效，重置地址和道路信息
+            hasAddressBeenFetched = false;
+            currentAddress = "获取地址中..."; 
+            locationTime = 0;
+            currentRoadMatch = null;
+
+            if (showWatermark) {
+                // 重建UI以显示 "获取地址中..."
+                updateWatermarkPreview();
+            }
+        }
         if (allPermissionsGranted()) {
             startCamera();
-            startLocationUpdates(); // 在Activity可见时开始位置更新
-            uiUpdateHandler.post(uiUpdateRunnable); // 在此启动UI更新循环
+            startLocationUpdates(); // 开始位置更新
+            uiUpdateHandler.post(uiUpdateRunnable); // 启动UI更新循环
         }
         if (orientationEventListener != null && orientationEventListener.canDetectOrientation()) {
             orientationEventListener.enable();
@@ -242,38 +272,9 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     @Override
-    protected void onStop() {
-        super.onStop();
-        // Activity不可见时，停止所有更新以节省资源
-        stopLocationUpdates(); // 停止位置更新
-        uiUpdateHandler.removeCallbacks(uiUpdateRunnable); // 停止UI更新循环
-
-        if (cameraProvider != null) {
-            cameraProvider.unbindAll();
-        }
-        // 当Activity不可见时，重置地址获取标志位
-        // 这样用户从息屏或其他应用返回时，就可以重新获取一次地址
-        hasAddressBeenFetched = false;
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        if (orientationEventListener != null) {
-            orientationEventListener.disable();
-        }
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        // onResume中不再需要处理定位和相机，这些已移至onStart
-    }
-
-    @Override
     protected void onDestroy() {
         super.onDestroy();
-        // 清理逻辑已移至 onStop，onDestroy 只做最后的回收
+        // 清理逻辑已移至 onPause
         if (cameraProvider != null) {
             cameraProvider.unbindAll(); // 作为最后保障
         }
@@ -295,53 +296,43 @@ public class CameraActivity extends AppCompatActivity {
 			finish();
 		});
 		setupCameraModeSelector();
-        // 它将处理所有 'input' 类型的字段
+        // 点击水印容器以编辑 'input' 字段
         watermarkContainer.setOnClickListener(v -> handleWatermarkClick());
 	}
     /**
-     * 设置模式选择器
+     * 设置模式选择器 (普通/自拍)
      */
     private void setupCameraModeSelector() {
-        // 添加两个标签
         cameraModeTabLayout.addTab(cameraModeTabLayout.newTab().setText("普通模式"));
         cameraModeTabLayout.addTab(cameraModeTabLayout.newTab().setText("自拍模式"));
         
-        // 设置默认选中后置摄像头（普通模式）
         if (currentLensFacing == CameraSelector.LENS_FACING_BACK) {
             cameraModeTabLayout.selectTab(cameraModeTabLayout.getTabAt(0));
         } else {
             cameraModeTabLayout.selectTab(cameraModeTabLayout.getTabAt(1));
         }
         
-        // 监听选项卡切换
         cameraModeTabLayout.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
             @Override
             public void onTabSelected(TabLayout.Tab tab) {
                 int position = tab.getPosition();
                 if (position == 0) {
-                    // 普通模式 - 后置摄像头
+                    // 普通模式 - 后置
                     if (currentLensFacing != CameraSelector.LENS_FACING_BACK) {
                         switchCamera(CameraSelector.LENS_FACING_BACK);
                     }
                 } else {
-                    // 自拍模式 - 前置摄像头
+                    // 自拍模式 - 前置
                     if (currentLensFacing != CameraSelector.LENS_FACING_FRONT) {
                         switchCamera(CameraSelector.LENS_FACING_FRONT);
                     }
                 }
             }
-
-            @Override
-            public void onTabUnselected(TabLayout.Tab tab) {
-                // 不需要处理
-            }
-
-            @Override
-            public void onTabReselected(TabLayout.Tab tab) {
-                // 不需要处理
-            }
+            @Override public void onTabUnselected(TabLayout.Tab tab) {}
+            @Override public void onTabReselected(TabLayout.Tab tab) {}
         });
     }
+
     private void initGestureDetectors() {
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
@@ -364,8 +355,8 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     /**
-     * 该方法现在只负责初始化LocationManager和LocationListener实例。
-     * 真正的定位请求被移到了 startLocationUpdates() 方法中。
+     * 仅初始化 LocationManager 和 Listener。
+     * 真正的定位请求在 startLocationUpdates() 中。
      */
     private void initLocationServices() {
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
@@ -377,16 +368,19 @@ public class CameraActivity extends AppCompatActivity {
                 lon = location.getLongitude();
                 alt = location.getAltitude();
                 locationTime = location.getTime();
+                
                 findRoadInfoInBackground(lon, lat);
                 fetchAddressOnce();
-                if (showWatermark) updateWatermarkPreview();
+                
+                if (showWatermark) {
+                    refreshWatermarkData(); // [Optimized]
+                }
             }
         };
     }
 
     /**
-     * 开始请求位置更新。
-     * 这个方法应该在 onStart() 和权限被授予后调用。
+     * 开始请求位置更新 (onResume 和权限授予后调用)。
      */
     private void startLocationUpdates() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
@@ -395,7 +389,7 @@ public class CameraActivity extends AppCompatActivity {
             return;
         }
 
-        // 尝试使用最后一次已知位置进行快速初始化
+        // 尝试使用最后一次已知位置
         Location lastKnownGps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
         Location lastKnownNetwork = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
         Location bestLastKnownLocation = null;
@@ -413,7 +407,9 @@ public class CameraActivity extends AppCompatActivity {
             locationTime = bestLastKnownLocation.getTime();
             findRoadInfoInBackground(lon, lat);
             fetchAddressOnce();
-            if (showWatermark) updateWatermarkPreview();
+            if (showWatermark) {
+                refreshWatermarkData(); // [Optimized]
+            }
         } else {
             Log.d(TAG, "No recent last known location found. Waiting for new updates.");
         }
@@ -425,8 +421,7 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     /**
-     * 停止位置更新以节省电量。
-     * 这个方法应该在 onStop() 中调用。
+     * 停止位置更新以节省电量 (onPause调用)。
      */
     private void stopLocationUpdates() {
         if (locationManager != null && locationListener != null) {
@@ -435,15 +430,13 @@ public class CameraActivity extends AppCompatActivity {
         }
     }
 
-
     private void initOrientationListener() {
         orientationEventListener = new OrientationEventListener(this) {
             @Override
             public void onOrientationChanged(int orientation) {
                 if (orientation == ORIENTATION_UNKNOWN) return;
 
-                int rotation; // 这是新计算出的目标旋转
-
+                int rotation;
                 if (currentRotation == Surface.ROTATION_0) {
                     if (orientation > (45 + ORIENTATION_HYSTERESIS) && orientation < (135 - ORIENTATION_HYSTERESIS)) {
                         rotation = Surface.ROTATION_270;
@@ -515,18 +508,16 @@ public class CameraActivity extends AppCompatActivity {
 		}
 		updateFlashMode();
 	}
+
     /**
      * 切换前后摄像头
      */
     private void switchCamera(int targetLensFacing) {
         currentLensFacing = targetLensFacing;
-        
-        // 重置闪光灯状态为关闭
-        currentFlashMode = ImageCapture.FLASH_MODE_OFF;
-        
-        // 重新绑定相机
-        bindCameraUseCases();
+        currentFlashMode = ImageCapture.FLASH_MODE_OFF; // 重置闪光灯
+        bindCameraUseCases(); // 重新绑定
     }
+
 	private void updateFlashMode() {
 		if (imageCapture == null || camera == null) return;
 
@@ -536,10 +527,12 @@ public class CameraActivity extends AppCompatActivity {
 				imageCapture.setFlashMode(ImageCapture.FLASH_MODE_OFF);
 				camera.getCameraControl().enableTorch(false);
 				break;
+			// [已修正]
 			case ImageCapture.FLASH_MODE_ON:
 				flashButton.setImageResource(R.drawable.ic_flash_on);
 				imageCapture.setFlashMode(ImageCapture.FLASH_MODE_ON);
 				break;
+			// [已修正]
 			case ImageCapture.FLASH_MODE_AUTO:
 				flashButton.setImageResource(R.drawable.ic_flash_auto);
 				imageCapture.setFlashMode(ImageCapture.FLASH_MODE_AUTO);
@@ -567,20 +560,18 @@ public class CameraActivity extends AppCompatActivity {
 			return;
 		}
 
-        // 1. 根据 targetAspectRatio (例如 AspectRatio.RATIO_16_9) 创建 ResolutionSelector
-        // AspectRatioStrategy 会确保选择的分辨率符合此宽高比
+        // 1. 创建 ResolutionSelector (基于 targetAspectRatio)
         AspectRatioStrategy aspectRatioStrategy = new AspectRatioStrategy(
                 targetAspectRatio,
-                AspectRatioStrategy.FALLBACK_RULE_AUTO // 自动选择最佳分辨率
+                AspectRatioStrategy.FALLBACK_RULE_AUTO
         );
-
         ResolutionSelector resolutionSelector = new ResolutionSelector.Builder()
                 .setAspectRatioStrategy(aspectRatioStrategy)
                 .build();
 
-        // 2. 将 ResolutionSelector 应用于 Preview
+        // 2. 应用于 Preview
 		Preview preview = new Preview.Builder()
-                .setResolutionSelector(resolutionSelector) // (新 API)
+                .setResolutionSelector(resolutionSelector)
 				.build();
 
 		CameraSelector cameraSelector = new CameraSelector.Builder()
@@ -594,7 +585,7 @@ public class CameraActivity extends AppCompatActivity {
                 Log.e(TAG, "设备上没有可用的" + cameraType + "摄像头");
                 Toast.makeText(this, "未找到" + cameraType + "摄像头", Toast.LENGTH_LONG).show();
                 
-                // 如果当前摄像头不可用，切换回另一个摄像头
+                // 如果当前摄像头不可用，切换回另一个
                 if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) {
                     currentLensFacing = CameraSelector.LENS_FACING_BACK;
                 } else {
@@ -608,9 +599,9 @@ public class CameraActivity extends AppCompatActivity {
             return;
         }
 
-        // 3. 将相同的 ResolutionSelector 应用于 ImageCapture
+        // 3. 应用于 ImageCapture
 		imageCapture = new ImageCapture.Builder()
-                .setResolutionSelector(resolutionSelector) // (新 API)
+                .setResolutionSelector(resolutionSelector)
 				.setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
 				.setTargetRotation(currentRotation)
 				.build();
@@ -621,7 +612,8 @@ public class CameraActivity extends AppCompatActivity {
 			cameraControl = camera.getCameraControl();
 			preview.setSurfaceProvider(previewView.getSurfaceProvider());
 			previewView.setScaleType(PreviewView.ScaleType.FILL_CENTER);
-			if (camera.getCameraInfo().hasFlashUnit()) {
+			
+            if (camera.getCameraInfo().hasFlashUnit()) {
 				flashButton.setVisibility(View.VISIBLE);
 				updateFlashMode();
 			} else {
@@ -687,16 +679,15 @@ public class CameraActivity extends AppCompatActivity {
         }
     }
 
-
     private void processImageOverlays(String imagePath) throws IOException {
         Bitmap originalBitmap = BitmapFactory.decodeFile(imagePath);
         if (originalBitmap == null) throw new IOException("无法解码图片文件");
 
-        // --- 1. 在覆盖文件前, 读取原始的 EXIF 数据 ---
+        // 1. 读取原始 EXIF
         ExifInterface oldExif = new ExifInterface(imagePath);
         int orientation = oldExif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
         
-        // --- (旋转逻辑不变) ---
+        // 2. 根据 EXIF 旋转 Bitmap
         Matrix matrix = new Matrix();
         switch (orientation) {
             case ExifInterface.ORIENTATION_ROTATE_90: matrix.postRotate(90); break;
@@ -713,7 +704,7 @@ public class CameraActivity extends AppCompatActivity {
             rotatedBitmap.recycle();
         }
 
-        // --- (水印和二维码逻辑不变) ---
+        // 3. 绘制水印和二维码
         if (showWatermark && watermarkConfig != null) {
             Bitmap watermarkBitmap = createBitmapFromView(watermarkContainer);
             if (watermarkBitmap != null) {
@@ -733,22 +724,22 @@ public class CameraActivity extends AppCompatActivity {
             }
         }
 
-        // --- 2. 文件在此处被覆盖，原始EXIF丢失 ---
+        // 4. 覆盖保存图片 (EXIF 丢失)
         try (FileOutputStream out = new FileOutputStream(imagePath)) {
             finalBitmap.compress(Bitmap.CompressFormat.JPEG, 90, out);
         }
         finalBitmap.recycle();
 
-        // --- 3. 为新文件创建 EXIF 接口 ---
+        // 5. 为新文件创建 EXIF 接口
         ExifInterface newExif = new ExifInterface(imagePath);
         
-        // 4. 复制所有旧标签到新文件
+        // 6. 复制旧标签
         copyExifTags(oldExif, newExif); 
 
-        // 5. 手动设置我们已知的正确方向
+        // 7. 修正方向
         newExif.setAttribute(ExifInterface.TAG_ORIENTATION, String.valueOf(ExifInterface.ORIENTATION_NORMAL));
 
-        // 6. 确保时间戳一定存在
+        // 8. 确保时间戳
         if (newExif.getAttribute(ExifInterface.TAG_DATETIME) == null) {
             String currentTimestamp = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.getDefault()).format(new Date());
             newExif.setAttribute(ExifInterface.TAG_DATETIME, currentTimestamp);
@@ -756,11 +747,10 @@ public class CameraActivity extends AppCompatActivity {
             newExif.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, currentTimestamp);
         }
         
-        // --- 7. [核心逻辑精简版] GPS 处理 ---
+        // 9. 处理 GPS 信息
         
-        // 7a. 检查我们自己的 LocationManager 缓存是否有效
+        // 9a. 检查 LocationManager 缓存
         if (isLocationValid()) {
-            // 缓存有效，写入最新的 GPS 数据
             Log.d(TAG, "正在写入最新的 (LocationManager) GPS 信息到 EXIF");
             Location location = new Location("");
             location.setLatitude(lat);
@@ -768,17 +758,19 @@ public class CameraActivity extends AppCompatActivity {
             location.setAltitude(alt);
             newExif.setGpsInfo(location); 
         } else {
-            // 7c. 显示提示
+            // 9b. GPS 无效, 打印提示
             Log.w(TAG, "最终未写入 GPS 信息。");
             Toast.makeText(this, "GPS信号弱，未写入位置信息", Toast.LENGTH_LONG).show();
         }
 
-        // --- 8. 一次性保存所有属性 ---
+        // 10. 保存 EXIF
         newExif.saveAttributes();
     }
 
+    /**
+     * 复制常用 EXIF 标签
+     */
 	private void copyExifTags(ExifInterface oldExif, ExifInterface newExif) {
-        // 这个列表可以根据需要增删，但它涵盖了最常见的标签
         String[] tagsToCopy = {
             ExifInterface.TAG_DATETIME,
             ExifInterface.TAG_DATETIME_ORIGINAL,
@@ -786,16 +778,12 @@ public class CameraActivity extends AppCompatActivity {
             ExifInterface.TAG_OFFSET_TIME,
             ExifInterface.TAG_OFFSET_TIME_ORIGINAL,
             ExifInterface.TAG_OFFSET_TIME_DIGITIZED,
-
-            // 相机制造商和型号
             ExifInterface.TAG_MAKE,
             ExifInterface.TAG_MODEL,
             ExifInterface.TAG_SOFTWARE,
-
-            // 相机设置
             ExifInterface.TAG_FOCAL_LENGTH,
             ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
-            ExifInterface.TAG_F_NUMBER, // 光圈
+            ExifInterface.TAG_F_NUMBER,
             ExifInterface.TAG_EXPOSURE_TIME,
             ExifInterface.TAG_ISO_SPEED,
             ExifInterface.TAG_EXPOSURE_BIAS_VALUE,
@@ -804,7 +792,6 @@ public class CameraActivity extends AppCompatActivity {
             ExifInterface.TAG_WHITE_BALANCE,
             ExifInterface.TAG_SCENE_CAPTURE_TYPE,
             ExifInterface.TAG_DIGITAL_ZOOM_RATIO,
-            
         };
 
         for (String tag : tagsToCopy) {
@@ -814,6 +801,7 @@ public class CameraActivity extends AppCompatActivity {
             }
         }
     }
+
     private File createImageFile() throws IOException {
         File picturesDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
         if (picturesDir == null) throw new IOException("无法获取外部私有存储目录。");
@@ -828,7 +816,6 @@ public class CameraActivity extends AppCompatActivity {
         return new File(storageDir, fileName);
     }
 
-
     private void handlePhotoError(String message, Exception e) {
         Log.e(TAG, message, e);
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
@@ -836,10 +823,15 @@ public class CameraActivity extends AppCompatActivity {
         setResult(RESULT_CANCELED);
     }
 
+    /**
+     * 构建/重建整个水印视图。这是一个高成本操作。
+     * 仅在配置加载或 'input' 字段更新时调用。
+     */
     private void setupWatermarkPreview() {
         if (!showWatermark || watermarkConfig == null) return;
+        
         watermarkContainer.removeAllViews();
-        watermarkContainer.setOrientation(LinearLayout.VERTICAL);
+        dynamicTextViews.clear(); // [Optimized] 清除旧的视图引用
 
         List<Section> availableSections = new ArrayList<>();
         
@@ -904,7 +896,6 @@ public class CameraActivity extends AppCompatActivity {
 
         boolean hasContent = false;
         if (section.icon != null || section.title != null) {
-            // createHeaderView 现在会创建您描述的 flex 布局
             View headerView = createHeaderView(section.icon, section.title);
             if (headerView != null) {
                 contentLayout.addView(headerView);
@@ -932,43 +923,38 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private View createHeaderView(WatermarkItem icon, WatermarkItem title) {
-        // 根容器, 对应 <div style="display:flex;">
+        // 1. 根容器 (Flex-box)
         LinearLayout rootHeaderLayout = new LinearLayout(this);
         rootHeaderLayout.setOrientation(LinearLayout.HORIZONTAL);
-        rootHeaderLayout.setGravity(Gravity.CENTER_VERTICAL); // 确保图标和标题容器垂直居中对齐
+        rootHeaderLayout.setGravity(Gravity.CENTER_VERTICAL);
 
         boolean hasTitle = (title != null && !title.value.isEmpty());
         boolean hasIcon = (icon != null && icon.display);
 
-        // [新优化] 根据 icon.width 和 icon.height 调整 hasIcon 状态和布局
+        // 2. 根据 icon width/height 调整布局
         if (hasIcon) {
             int iconWidth = icon.width;
             int iconHeight = icon.height;
 
             if (iconWidth == 0 && iconHeight == 0) {
-                // 1. 宽和高都为0, 则不启用图标
                 hasIcon = false;
             } else if (iconWidth == 0 && iconHeight != 0) {
-                // 2. 宽为0, 高不为0, 设置页眉高度, 且不显示图标
                 rootHeaderLayout.setMinimumHeight(dp(iconHeight));
-                hasIcon = false; // 不创建 iconView
+                hasIcon = false;
             } else if (iconWidth != 0 && iconHeight == 0) {
-                // 3. 宽不为0, 高为0 (逻辑上等同于不显示, 避免 createScaledBitmap 崩溃)
                 hasIcon = false;
             }
-            // 4. (隐式) 宽和高都不为0, hasIcon 保持 true, 正常创建
         }
-
 
         if (!hasTitle && !hasIcon) {
-            return null; // 如果图标被禁用且没有标题, 则返回 null
+            return null; // 图标被禁用且无标题
         }
 
-        // --- 准备视图 ---
+        // 3. 准备视图 (Icon 和 Title)
         View iconView = null;
-        if (hasIcon) { // hasIcon 在此已确保 width 和 height 均不为 0
+        if (hasIcon) {
             iconView = createIconView(icon);
-            if (iconView == null) hasIcon = false; // 创建失败 (例如 loadBitmap 失败)
+            if (iconView == null) hasIcon = false;
         }
 
         View titleContainer = null;
@@ -976,7 +962,6 @@ public class CameraActivity extends AppCompatActivity {
             RelativeLayout innerTitleContainer = new RelativeLayout(this);
 			int[] padding = new int[]{dp(8), dp(8), dp(8), dp(8)};
             innerTitleContainer.setPadding(padding[0], padding[1], padding[2], padding[3]);
-
             TextView titleView = createTextView(title.value, title.color, title.size, Typeface.BOLD);
             RelativeLayout.LayoutParams titleParams = new RelativeLayout.LayoutParams(
                 RelativeLayout.LayoutParams.WRAP_CONTENT,
@@ -987,58 +972,49 @@ public class CameraActivity extends AppCompatActivity {
             titleContainer = innerTitleContainer;
         }
         
-        // --- 组装布局 ---
+        // 4. 组装布局 (Icon + Title)
         String iconPos = (hasIcon && icon.position != null) ? icon.position : "left";
 
         if (hasIcon && hasTitle) {
             if ("right".equals(iconPos)) {
-                // 标题容器在左, 占据剩余空间
                 LinearLayout.LayoutParams titleContainerParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
                 rootHeaderLayout.addView(titleContainer, titleContainerParams);
-                // 图标在右
                 rootHeaderLayout.addView(iconView);
             } else { // 默认 left
-                // 图标在左
                 rootHeaderLayout.addView(iconView);
-                // 标题容器在右, 占据剩余空间
                 LinearLayout.LayoutParams titleContainerParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
                 rootHeaderLayout.addView(titleContainer, titleContainerParams);
             }
         } else if (hasTitle) {
-            // 只有标题, 容器占满全部空间
             LinearLayout.LayoutParams titleContainerParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             );
             rootHeaderLayout.addView(titleContainer, titleContainerParams);
         } else if (hasIcon) {
-            // 只有图标
             if ("right".equals(iconPos)) {
-                // 用一个空的、带权重的View把图标推到右边
                 View spacer = new View(this);
                 LinearLayout.LayoutParams spacerParams = new LinearLayout.LayoutParams(0, 0, 1.0f);
                 rootHeaderLayout.addView(spacer, spacerParams);
             }
-            // 默认就是 left, 所以直接添加即可
             rootHeaderLayout.addView(iconView);
         }
 
         return rootHeaderLayout;
     }
+
     private View createContentItemView(WatermarkItem item) {
         // 1. 获取要显示的值
         String value = getContentValue(item);
         if (value == null) {
-            value = ""; // 确保安全
+            value = "";
         }
 
-        // 2. 创建主布局 (所有类型共用)
+        // 2. 创建主布局
         LinearLayout itemLayout = new LinearLayout(this);
         itemLayout.setOrientation(LinearLayout.HORIZONTAL);
         itemLayout.setPadding(0, dpToPx(1), 0, dpToPx(1));
-        
-        // [已移除] itemLayout.setGravity(Gravity.CENTER_VERTICAL); 
-        // 移除这一行后, 布局将默认顶部对齐, 解决多行文本的问题。
+        // 移除 setGravity(CENTER_VERTICAL) 以允许文本顶部对齐
 
         // 3. 添加名称标签 (如果需要)
         if (item.nameDisplay && !item.name.isEmpty()) {
@@ -1048,9 +1024,13 @@ public class CameraActivity extends AppCompatActivity {
         // 4. 创建 "值" TextView
         TextView valueView = createTextView(value, item.color, item.size, Typeface.NORMAL);
 
-        // 5. (无特殊处理)
+        // [Optimized] 如果此 item 类型是动态的 (非 'string' 或 'input'),
+        // 添加到 map 中以便通过 refreshWatermarkData() 快速更新。
+        if (typeHandlers.containsKey(item.type) && !"string".equals(item.type) && !"input".equals(item.type)) {
+            dynamicTextViews.put(item.type, new WeakReference<>(valueView));
+        }
 
-        // 6. 将 "值" TextView 添加到主布局
+        // 5. 添加 "值" 视图
         itemLayout.addView(valueView);
 
         return itemLayout;
@@ -1083,6 +1063,10 @@ public class CameraActivity extends AppCompatActivity {
         return textView;
     }
 
+    /**
+     * [高成本] 触发水印视图的完整重建。线程安全。
+     * 仅用于 'input' 字段更新或需要重置 "获取中" 状态时。
+     */
     private void updateWatermarkPreview() {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             setupWatermarkPreview();
@@ -1092,26 +1076,56 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     /**
-     * [修改] 显示用于 "input" 类型的编辑对话框
+     * [Optimized] 仅刷新水印中的动态数据 (如时间、GPS、道路)，而不重建整个视图。
+     * 此方法是线程安全的，且成本低廉。
+     */
+    private void refreshWatermarkData() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread(this::refreshWatermarkData);
+            return;
+        }
+    
+        for (Map.Entry<String, TypeHandler> entry : typeHandlers.entrySet()) {
+            String type = entry.getKey();
+            if ("string".equals(type) || "input".equals(type)) {
+                continue; // 跳过静态和用户输入类型
+            }
+    
+            WeakReference<TextView> ref = dynamicTextViews.get(type);
+            if (ref != null) {
+                TextView textView = ref.get();
+                if (textView != null) {
+                    // 动态类型的 TypeHandler 不使用 'item' 参数, 传 null 是安全的
+                    String newValue = entry.getValue().getValue(null); 
+                    if (!textView.getText().equals(newValue)) {
+                        textView.setText(newValue);
+                    }
+                } else {
+                    dynamicTextViews.remove(type); // View 被回收
+                }
+            }
+        }
+        positionWatermarkContainer();
+    }
+
+
+    /**
+     * 显示 "input" 类型的编辑对话框
      * @param item 正在编辑的 WatermarkItem 对象 (用于读写 value)
      */
     private void showInputDialog(WatermarkItem item) {
-        // 检查 Activity 是否即将销毁，防止 crash
         if (isFinishing() || isDestroyed()) {
             return;
         }
 
-        // 1. 创建 AlertDialog 构建器
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle(item.name);
 
-        // 2. 创建 EditText 输入框
         final EditText input = new EditText(this);
         input.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
-        input.setText(item.value); // 设置当前值 (来自JSON的默认值或上次输入的值)
-        input.setSelection(item.value.length()); // 将光标移动到文本末尾
+        input.setText(item.value); // 设置当前值
+        input.setSelection(item.value.length());
 
-        // 3. 为输入框创建一个带边距的容器，使对话框看起来更舒服
         FrameLayout container = new FrameLayout(this);
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 
@@ -1123,63 +1137,59 @@ public class CameraActivity extends AppCompatActivity {
         container.addView(input);
         builder.setView(container);
 
-        // 4. 设置 "确定" 和 "取消" 按钮
         builder.setPositiveButton("确定", (dialog, which) -> {
             String newValue = input.getText().toString();
             
-            // [关键步骤 1] 更新 WatermarkItem 对象在内存中的值
+            // 1. 更新 WatermarkItem 内存中的值
             item.value = newValue; 
             
-            // [关键步骤 2] 触发水印UI刷新以显示新值
+            // 2. 触发水印UI刷新以显示新值
+            //    必须使用高成本的 updateWatermarkPreview 来重建视图
             updateWatermarkPreview();
         });
         builder.setNegativeButton("取消", (dialog, which) -> dialog.cancel());
-
-        // 5. 显示对话框
         builder.show();
     }
 
     /**
-     * [新方法] 处理水印容器的点击事件
+     * 处理水印容器点击事件 (用于 "input" 字段)
      */
     private void handleWatermarkClick() {
-        // 1. 收集所有可用的 "input" 字段
+        // 1. 收集所有 "input" 字段
         List<WatermarkItem> inputItems = collectInputItems();
 
-        // 2. 如果没有 input 字段，则不执行任何操作
+        // 2. 没有 input 字段则不操作
         if (inputItems.isEmpty()) {
             return;
         }
 
-        // 3. [优化] 如果只有一个 input 字段，直接显示该字段的输入对话框
+        // 3. 优化: 只有一个 input 字段，直接显示对话框
         if (inputItems.size() == 1) {
             showInputDialog(inputItems.get(0));
             return;
         }
 
-        // 4. [核心逻辑] 如果有多个 input 字段，显示一个选择列表
+        // 4. 多个 input 字段，显示选择列表
         String[] itemNames = new String[inputItems.size()];
         for (int i = 0; i < inputItems.size(); i++) {
-            itemNames[i] = inputItems.get(i).name; // 使用字段的 'name' 作为列表项
+            itemNames[i] = inputItems.get(i).name;
         }
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("选择要输入的字段");
         builder.setItems(itemNames, (dialog, which) -> {
-            // 5. 用户从列表中选择一项后，获取对应的 WatermarkItem
+            // 5. 获取选择项
             WatermarkItem selectedItem = inputItems.get(which);
             // 6. 显示该项的输入对话框
             showInputDialog(selectedItem);
         });
         
-        // "取消" 按钮，关闭列表，即“重置选择结果”
         builder.setNegativeButton("取消", (dialog, which) -> dialog.cancel());
         builder.show();
     }
 
     /**
-     * [新方法] 从配置中收集所有 "input" 类型的 WatermarkItem
-     * @return 一个包含所有 'input' 字段的列表
+     * 从配置中收集所有 "input" 类型的 WatermarkItem
      */
     private List<WatermarkItem> collectInputItems() {
         List<WatermarkItem> items = new ArrayList<>();
@@ -1187,20 +1197,17 @@ public class CameraActivity extends AppCompatActivity {
             return items;
         }
 
-        // 遍历所有 section (header, body, foot)
         addInputItemsFromSection(items, watermarkConfig.header);
         addInputItemsFromSection(items, watermarkConfig.body);
         addInputItemsFromSection(items, watermarkConfig.foot);
 
-        // 按照 'index' 排序，确保列表顺序与UI显示顺序一致
+        // 按 'index' 排序
         Collections.sort(items, Comparator.comparingInt(o -> o.index));
         return items;
     }
 
     /**
-     * [新方法] 辅助方法，用于从单个 Section 中提取 "input" 字段
-     * @param list 要添加到的目标列表
-     * @param section 要搜索的 Section
+     * 辅助方法: 从 Section 提取 "input" 字段
      */
     private void addInputItemsFromSection(List<WatermarkItem> list, Section section) {
         if (section == null || section.content == null) {
@@ -1464,9 +1471,7 @@ public class CameraActivity extends AppCompatActivity {
         JSONObject sectionObj = config.getJSONObject(sectionName);
         Section section = new Section();
         
-        // [修改 3/6] 解析 'display' 属性
-        // section.display 默认为 true。只有当 'display' 显式为 false 时才覆盖为 false。
-        // null, "true", true, 或不存在 均视为 true。
+        // 'display' 默认为 true
         if (sectionObj.has("display") && Boolean.FALSE.equals(sectionObj.opt("display"))) {
              section.display = false;
         }
@@ -1488,15 +1493,14 @@ public class CameraActivity extends AppCompatActivity {
     private WatermarkItem parseWatermarkItem(JSONObject obj) {
         WatermarkItem item = new WatermarkItem();
         
-        // [修改 4/6] 解析 'display' 属性 (主要用于 icon)
-        // item.display 默认为 true。
+        // 'display' 默认为 true (主要用于 icon)
         if (obj.has("display") && Boolean.FALSE.equals(obj.opt("display"))) {
             item.display = false;
         }
         
         item.name = obj.optString("name", "");
         item.type = obj.optString("type", "string");
-        item.value = obj.optString("value", ""); // 对于 "input" 类型, 这是默认值
+        item.value = obj.optString("value", ""); // "input" 类型的默认值
         item.position = obj.optString("position", "left");
         item.nameDisplay = obj.optBoolean("name_display", false);
         item.index = obj.optInt("index", 0);
@@ -1550,7 +1554,7 @@ public class CameraActivity extends AppCompatActivity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_PERMISSIONS) {
             if (allPermissionsGranted()) {
-                // 权限授予后，需要启动所有服务，就像在 onStart 中一样
+                // 权限授予后，启动所有服务
                 startCamera();
                 startLocationUpdates();
                 uiUpdateHandler.post(uiUpdateRunnable);
@@ -1590,7 +1594,7 @@ public class CameraActivity extends AppCompatActivity {
             isFetchingAddress = true;
 
             currentAddress = "获取地址中...";
-            updateWatermarkPreview(); // 立即显示"获取中..."
+            updateWatermarkPreview(); // 立即显示"获取中..." (高成本)
 
             final double currentLon = lon;
             final double currentLat = lat;
@@ -1599,14 +1603,14 @@ public class CameraActivity extends AppCompatActivity {
                     String address = GaodeApi.getAddressFromGps(CameraActivity.this, currentLon, currentLat);
                     if (address.equals(GaodeApi.ERROR_NO_KEY) ||address.equals(GaodeApi.ERROR_INVALID_KEY) ||address.equals(GaodeApi.ERROR_FETCH_FAILED)){
                         currentAddress = address;
-                    }else if (address == null || address.isEmpty()){
-                        currentAddress = "获取地址失败"; // 通用失败
+                    }else if (address == null || address.isEmpty()||address.equals("[]")){
+                        currentAddress = "获取地址失败";
                     }else {
-                        currentAddress = address; // 成功获取
+                        currentAddress = address; // 成功
                     }
                 } finally {
                     isFetchingAddress = false;
-                    updateWatermarkPreview(); 
+                    refreshWatermarkData(); // [Optimized]
                 }
             }).start();
         }
@@ -1661,7 +1665,7 @@ public class CameraActivity extends AppCompatActivity {
 
 	private String getContentValue(WatermarkItem item) {
 		TypeHandler handler = typeHandlers.get(item.type);
-        // 对于 "input" 类型, handler 会返回 item.value (无论是默认值还是用户输入的新值)
+        // "input" 类型会返回 item.value (用户编辑后)
 		return handler != null ? handler.getValue(item) : item.value;
 	}
 
@@ -1727,7 +1731,7 @@ public class CameraActivity extends AppCompatActivity {
                 } else {
                     currentRoadMatch = null;
                 }
-				updateWatermarkPreview();
+				refreshWatermarkData(); // [Optimized]
 			} finally {
 				isMatchingRoad = false;
 			}
@@ -1773,8 +1777,7 @@ public class CameraActivity extends AppCompatActivity {
 		float[] radii = {rTL, rTL, rTR, rTR, rBR, rBR, rBL, rBL};
 		clipPath.addRoundRect(new RectF(0, 0, view.getWidth(), view.getHeight()), radii, Path.Direction.CW);
 		canvas.clipPath(clipPath);
-        // 关键: view.draw(canvas) 会绘制 view 的当前状态,
-        // 包括已经被用户输入更新过的 TextView (input 类型)
+        // 关键: view.draw(canvas) 会绘制 view 的当前状态 (包括用户输入的 'input' 值)
 		view.draw(canvas);
 		return bitmap;
 	}
@@ -1799,6 +1802,9 @@ public class CameraActivity extends AppCompatActivity {
         return result;
     }
 
+    /**
+     * 计算水印/二维码叠加层相对于照片的缩放比例
+     */
 	private float calculateOverlayScale(float photoWidth, float photoHeight) {
 		int previewWidth = previewView.getWidth();
 		int previewHeight = previewView.getHeight();
@@ -1906,7 +1912,7 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private static class Section {
-        boolean display = true; // [修改 1/6] 默认为 true
+        boolean display = true; // 默认为 true
         int[] background = {0, 0, 0, 0};
         WatermarkItem icon, title;
         Map<String, WatermarkItem> content = new HashMap<>();
@@ -1914,7 +1920,7 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private static class WatermarkItem {
-        boolean display = true; // [修改 2/6] 默认为 true (用于 icon)
+        boolean display = true; // 默认为 true (用于 icon)
         String name = "", type = "string", value = "", position = "left";
         boolean nameDisplay = false;
         int index = 0, color = Color.WHITE, width = 24, height = 24;
@@ -1922,6 +1928,11 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private interface TypeHandler {
+        /**
+         * 获取处理后的值。
+         * 注意：对于 'string' 和 'input'，需要 item.value。
+         * 对于 'time', 'road' 等动态类型, item 参数未被使用, 可为 null。
+         */
         String getValue(WatermarkItem item);
     }
     // endregion
