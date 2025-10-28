@@ -539,7 +539,6 @@ public class CameraActivity extends AppCompatActivity {
 			case ImageCapture.FLASH_MODE_ON:
 				flashButton.setImageResource(R.drawable.ic_flash_on);
 				imageCapture.setFlashMode(ImageCapture.FLASH_MODE_ON);
-				camera.getCameraControl().enableTorch(true);
 				break;
 			case ImageCapture.FLASH_MODE_AUTO:
 				flashButton.setImageResource(R.drawable.ic_flash_auto);
