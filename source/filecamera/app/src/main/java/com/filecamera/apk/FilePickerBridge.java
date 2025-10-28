@@ -597,7 +597,7 @@ public class FilePickerBridge {
                             .put("pile", new JSONObject().put("name", "桩号").put("type", "camera_pile").put("name_display", true).put("index", 2).put("color", "#2C3E50").put("size", 16))
                             .put("coord", new JSONObject().put("name", "坐标").put("type", "camera_coord").put("name_display", true).put("index", 3).put("color", "#2C3E50").put("size", 16))
                             .put("time", new JSONObject().put("name", "时间").put("type", "time").put("name_display", true).put("index", 4).put("color", "#2C3E50").put("size", 16))
-                            //.put("weather", new JSONObject().put("name", "天气").put("type", "weather").put("name_display", true).put("value", "330782").put("index", 5).put("color", "#2C3E50").put("size", 16))
+                            //.put("weather", new JSONObject().put("name", "天气").put("type", "weather").put("name_display", true).put("value", "").put("index", 5).put("color", "#2C3E50").put("size", 16))
                     );
 
             // 页脚

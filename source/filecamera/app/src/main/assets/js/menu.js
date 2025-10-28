@@ -359,6 +359,7 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 			let id_arr = Array.from(id_set)
 			
 			document.getElementById("loadingoverlay").style.display = "flex"
+			window.updata_load_info("文件导出中......")
 			await exportItems(id_arr);
 			document.getElementById("loadingoverlay").style.display = "none";
 			window.updata_load_info("")

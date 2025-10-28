@@ -1776,14 +1776,19 @@
 		let road_div = document.getElementById('road_div')
 		let picturediv = document.getElementById('picturediv')
 		let key_manage_div = document.getElementById('key_manage_div')
+		let menu = document.getElementById('menu')
 		if(key_manage_div.classList.contains('expanded')){
 			close_key_manage_page()
 			return;
-		}		
+		}	
 		if(road_div.classList.contains('expanded')){
 			close_road_page()
 			return;
 		}
+		if(menu.classList.contains('expanded')){
+			close_opening_menu(menu_set);
+			return;
+		}			
 		if(setting_div.classList.contains('expanded')){
 			await close_setting_page()
 			return;

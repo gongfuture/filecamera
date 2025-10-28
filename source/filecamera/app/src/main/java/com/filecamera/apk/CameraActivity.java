@@ -677,7 +677,6 @@ public class CameraActivity extends AppCompatActivity {
     private void processAndizeImage(File photoFile) {
         try {
             processImageOverlays(photoFile.getAbsolutePath());
-            writeLocationToExif(photoFile.getAbsolutePath());
             Toast.makeText(CameraActivity.this, "照片已保存", Toast.LENGTH_SHORT).show();
             Uri savedUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", photoFile);
             Intent resultIntent = new Intent();
@@ -689,63 +688,133 @@ public class CameraActivity extends AppCompatActivity {
         }
     }
 
-	private void processImageOverlays(String imagePath) throws IOException {
-		Bitmap originalBitmap = BitmapFactory.decodeFile(imagePath);
-		if (originalBitmap == null) throw new IOException("无法解码图片文件");
 
-		ExifInterface exif = new ExifInterface(imagePath);
-		int orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-		Matrix matrix = new Matrix();
-		switch (orientation) {
-			case ExifInterface.ORIENTATION_ROTATE_90: matrix.postRotate(90); break;
-			case ExifInterface.ORIENTATION_ROTATE_180: matrix.postRotate(180); break;
-			case ExifInterface.ORIENTATION_ROTATE_270: matrix.postRotate(270); break;
-		}
-		Bitmap rotatedBitmap = Bitmap.createBitmap(originalBitmap, 0, 0, originalBitmap.getWidth(), originalBitmap.getHeight(), matrix, true);
-		if (rotatedBitmap != originalBitmap) {
-			originalBitmap.recycle();
-		}
+    private void processImageOverlays(String imagePath) throws IOException {
+        Bitmap originalBitmap = BitmapFactory.decodeFile(imagePath);
+        if (originalBitmap == null) throw new IOException("无法解码图片文件");
 
-		Bitmap finalBitmap = rotatedBitmap.copy(Bitmap.Config.ARGB_8888, true);
-		if (finalBitmap != rotatedBitmap) {
-			rotatedBitmap.recycle();
-		}
+        // --- 1. 在覆盖文件前, 读取原始的 EXIF 数据 ---
+        ExifInterface oldExif = new ExifInterface(imagePath);
+        int orientation = oldExif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+        
+        // --- (旋转逻辑不变) ---
+        Matrix matrix = new Matrix();
+        switch (orientation) {
+            case ExifInterface.ORIENTATION_ROTATE_90: matrix.postRotate(90); break;
+            case ExifInterface.ORIENTATION_ROTATE_180: matrix.postRotate(180); break;
+            case ExifInterface.ORIENTATION_ROTATE_270: matrix.postRotate(270); break;
+        }
+        Bitmap rotatedBitmap = Bitmap.createBitmap(originalBitmap, 0, 0, originalBitmap.getWidth(), originalBitmap.getHeight(), matrix, true);
+        if (rotatedBitmap != originalBitmap) {
+            originalBitmap.recycle();
+        }
 
-		if (showWatermark && watermarkConfig != null) {
-            // [核心] createBitmapFromView 会绘制水印容器的 *当前* 视觉状态。
-            // 此时 input 字段的 TextView 已经（通过 updateWatermarkPreview）被设置为
-            // 用户输入的新值。
-			Bitmap watermarkBitmap = createBitmapFromView(watermarkContainer);
-			if (watermarkBitmap != null) {
-				finalBitmap = addOverlayToBitmap(finalBitmap, watermarkBitmap, watermarkConfig.position, watermarkConfig.scale);
-				watermarkBitmap.recycle();
-			}
-		}
+        Bitmap finalBitmap = rotatedBitmap.copy(Bitmap.Config.ARGB_8888, true);
+        if (finalBitmap != rotatedBitmap) {
+            rotatedBitmap.recycle();
+        }
 
-		if (showQrCode && qrCodeConfig != null && isLocationValid()) {
-			String qrContent = generateAmapUrl(lat, lon, "拍照位置");
+        // --- (水印和二维码逻辑不变) ---
+        if (showWatermark && watermarkConfig != null) {
+            Bitmap watermarkBitmap = createBitmapFromView(watermarkContainer);
+            if (watermarkBitmap != null) {
+                finalBitmap = addOverlayToBitmap(finalBitmap, watermarkBitmap, watermarkConfig.position, watermarkConfig.scale);
+                watermarkBitmap.recycle();
+            }
+        }
 
-			int baseQrSizeDp = 128;
-			int finalQrSizePx = dpToPx((int)(baseQrSizeDp * qrCodeConfig.scale));
+        if (showQrCode && qrCodeConfig != null && isLocationValid()) {
+            String qrContent = generateAmapUrl(lat, lon, "拍照位置");
+            int baseQrSizeDp = 128;
+            int finalQrSizePx = dpToPx((int)(baseQrSizeDp * qrCodeConfig.scale));
+            Bitmap qrCodeBitmap = generateQrCodeBitmap(qrContent, finalQrSizePx, finalQrSizePx, qrCodeConfig.padding, qrCodeConfig.radius);
+            if (qrCodeBitmap != null) {
+                finalBitmap = addOverlayToBitmap(finalBitmap, qrCodeBitmap, qrCodeConfig.position, 1.0f);
+                qrCodeBitmap.recycle();
+            }
+        }
 
-			Bitmap qrCodeBitmap = generateQrCodeBitmap(qrContent, finalQrSizePx, finalQrSizePx, qrCodeConfig.padding, qrCodeConfig.radius);
+        // --- 2. 文件在此处被覆盖，原始EXIF丢失 ---
+        try (FileOutputStream out = new FileOutputStream(imagePath)) {
+            finalBitmap.compress(Bitmap.CompressFormat.JPEG, 90, out);
+        }
+        finalBitmap.recycle();
 
-			if (qrCodeBitmap != null) {
-				finalBitmap = addOverlayToBitmap(finalBitmap, qrCodeBitmap, qrCodeConfig.position, 1.0f);
-				qrCodeBitmap.recycle();
-			}
-		}
+        // --- 3. 为新文件创建 EXIF 接口 ---
+        ExifInterface newExif = new ExifInterface(imagePath);
+        
+        // 4. 复制所有旧标签到新文件
+        copyExifTags(oldExif, newExif); 
 
-		try (FileOutputStream out = new FileOutputStream(imagePath)) {
-			finalBitmap.compress(Bitmap.CompressFormat.JPEG, 90, out);
-		}
-		finalBitmap.recycle();
+        // 5. 手动设置我们已知的正确方向
+        newExif.setAttribute(ExifInterface.TAG_ORIENTATION, String.valueOf(ExifInterface.ORIENTATION_NORMAL));
 
-		ExifInterface newExif = new ExifInterface(imagePath);
-		newExif.setAttribute(ExifInterface.TAG_ORIENTATION, String.valueOf(ExifInterface.ORIENTATION_NORMAL));
-		newExif.saveAttributes();
-	}
+        // 6. 确保时间戳一定存在
+        if (newExif.getAttribute(ExifInterface.TAG_DATETIME) == null) {
+            String currentTimestamp = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.getDefault()).format(new Date());
+            newExif.setAttribute(ExifInterface.TAG_DATETIME, currentTimestamp);
+            newExif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, currentTimestamp);
+            newExif.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, currentTimestamp);
+        }
+        
+        // --- 7. [核心逻辑精简版] GPS 处理 ---
+        
+        // 7a. 检查我们自己的 LocationManager 缓存是否有效
+        if (isLocationValid()) {
+            // 缓存有效，写入最新的 GPS 数据
+            Log.d(TAG, "正在写入最新的 (LocationManager) GPS 信息到 EXIF");
+            Location location = new Location("");
+            location.setLatitude(lat);
+            location.setLongitude(lon);
+            location.setAltitude(alt);
+            newExif.setGpsInfo(location); 
+        } else {
+            // 7c. 显示提示
+            Log.w(TAG, "最终未写入 GPS 信息。");
+            Toast.makeText(this, "GPS信号弱，未写入位置信息", Toast.LENGTH_LONG).show();
+        }
 
+        // --- 8. 一次性保存所有属性 ---
+        newExif.saveAttributes();
+    }
+
+	private void copyExifTags(ExifInterface oldExif, ExifInterface newExif) {
+        // 这个列表可以根据需要增删，但它涵盖了最常见的标签
+        String[] tagsToCopy = {
+            ExifInterface.TAG_DATETIME,
+            ExifInterface.TAG_DATETIME_ORIGINAL,
+            ExifInterface.TAG_DATETIME_DIGITIZED,
+            ExifInterface.TAG_OFFSET_TIME,
+            ExifInterface.TAG_OFFSET_TIME_ORIGINAL,
+            ExifInterface.TAG_OFFSET_TIME_DIGITIZED,
+
+            // 相机制造商和型号
+            ExifInterface.TAG_MAKE,
+            ExifInterface.TAG_MODEL,
+            ExifInterface.TAG_SOFTWARE,
+
+            // 相机设置
+            ExifInterface.TAG_FOCAL_LENGTH,
+            ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+            ExifInterface.TAG_F_NUMBER, // 光圈
+            ExifInterface.TAG_EXPOSURE_TIME,
+            ExifInterface.TAG_ISO_SPEED,
+            ExifInterface.TAG_EXPOSURE_BIAS_VALUE,
+            ExifInterface.TAG_FLASH,
+            ExifInterface.TAG_METERING_MODE,
+            ExifInterface.TAG_WHITE_BALANCE,
+            ExifInterface.TAG_SCENE_CAPTURE_TYPE,
+            ExifInterface.TAG_DIGITAL_ZOOM_RATIO,
+            
+        };
+
+        for (String tag : tagsToCopy) {
+            String value = oldExif.getAttribute(tag);
+            if (value != null) {
+                newExif.setAttribute(tag, value);
+            }
+        }
+    }
     private File createImageFile() throws IOException {
         File picturesDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
         if (picturesDir == null) throw new IOException("无法获取外部私有存储目录。");
@@ -760,25 +829,6 @@ public class CameraActivity extends AppCompatActivity {
         return new File(storageDir, fileName);
     }
 
-    private void writeLocationToExif(String photoPath) {
-        if (!isLocationValid()) {
-            Log.w(TAG, "位置信息无效或超时，跳过写入EXIF");
-            Toast.makeText(this, "GPS信号弱，未写入位置信息", Toast.LENGTH_LONG).show();
-            return;
-        }
-        try {
-            ExifInterface exif = new ExifInterface(photoPath);
-            Location location = new Location("");
-            location.setLatitude(lat);
-            location.setLongitude(lon);
-            location.setAltitude(alt);
-            exif.setGpsInfo(location);
-            exif.saveAttributes();
-            Log.d(TAG, "GPS信息已成功写入EXIF");
-        } catch (IOException e) {
-            Log.e(TAG, "写入EXIF信息失败", e);
-        }
-    }
 
     private void handlePhotoError(String message, Exception e) {
         Log.e(TAG, message, e);
