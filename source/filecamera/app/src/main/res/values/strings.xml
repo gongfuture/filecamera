@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">巡查相机</string>
+    <style name="CameraModeTabText" parent="TextAppearance.Design.Tab">
+        <item name="android:textSize">16sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>	
 </resources>

@@ -98,6 +98,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import android.os.Environment;
+import com.google.android.material.tabs.TabLayout;
 
 public class CameraActivity extends AppCompatActivity {
 
@@ -172,7 +173,8 @@ public class CameraActivity extends AppCompatActivity {
     private boolean showWatermark = false;
     private boolean showQrCode = false;
     private int targetAspectRatio = AspectRatio.RATIO_16_9; // 此变量保留，用于配置ResolutionSelector
-
+	private TabLayout cameraModeTabLayout;
+    private int currentLensFacing = CameraSelector.LENS_FACING_BACK; // 新增：当前摄像头方向
     // 类型处理器
     private final Map<String, TypeHandler> typeHandlers = new HashMap<String, TypeHandler>() {{
         put("string", item -> item.value);
@@ -283,6 +285,7 @@ public class CameraActivity extends AppCompatActivity {
 		previewView = findViewById(R.id.previewView);
 		captureButton = findViewById(R.id.captureButton);
 		flashButton = findViewById(R.id.flashButton);
+		cameraModeTabLayout = findViewById(R.id.cameraModeTabLayout);
 		watermarkContainer = findViewById(R.id.watermarkContainer);
 		exitButton = findViewById(R.id.exitButton);
 		captureButton.setOnClickListener(v -> takePhoto());
@@ -291,12 +294,54 @@ public class CameraActivity extends AppCompatActivity {
 			setResult(RESULT_CANCELED);
 			finish();
 		});
-
-        // [核心修改] 为整个水印容器设置一个点击监听器
+		setupCameraModeSelector();
         // 它将处理所有 'input' 类型的字段
         watermarkContainer.setOnClickListener(v -> handleWatermarkClick());
 	}
+    /**
+     * 设置模式选择器
+     */
+    private void setupCameraModeSelector() {
+        // 添加两个标签
+        cameraModeTabLayout.addTab(cameraModeTabLayout.newTab().setText("普通模式"));
+        cameraModeTabLayout.addTab(cameraModeTabLayout.newTab().setText("自拍模式"));
+        
+        // 设置默认选中后置摄像头（普通模式）
+        if (currentLensFacing == CameraSelector.LENS_FACING_BACK) {
+            cameraModeTabLayout.selectTab(cameraModeTabLayout.getTabAt(0));
+        } else {
+            cameraModeTabLayout.selectTab(cameraModeTabLayout.getTabAt(1));
+        }
+        
+        // 监听选项卡切换
+        cameraModeTabLayout.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
+            @Override
+            public void onTabSelected(TabLayout.Tab tab) {
+                int position = tab.getPosition();
+                if (position == 0) {
+                    // 普通模式 - 后置摄像头
+                    if (currentLensFacing != CameraSelector.LENS_FACING_BACK) {
+                        switchCamera(CameraSelector.LENS_FACING_BACK);
+                    }
+                } else {
+                    // 自拍模式 - 前置摄像头
+                    if (currentLensFacing != CameraSelector.LENS_FACING_FRONT) {
+                        switchCamera(CameraSelector.LENS_FACING_FRONT);
+                    }
+                }
+            }
 
+            @Override
+            public void onTabUnselected(TabLayout.Tab tab) {
+                // 不需要处理
+            }
+
+            @Override
+            public void onTabReselected(TabLayout.Tab tab) {
+                // 不需要处理
+            }
+        });
+    }
     private void initGestureDetectors() {
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
@@ -470,6 +515,18 @@ public class CameraActivity extends AppCompatActivity {
 		}
 		updateFlashMode();
 	}
+    /**
+     * 切换前后摄像头
+     */
+    private void switchCamera(int targetLensFacing) {
+        currentLensFacing = targetLensFacing;
+        
+        // 重置闪光灯状态为关闭
+        currentFlashMode = ImageCapture.FLASH_MODE_OFF;
+        
+        // 重新绑定相机
+        bindCameraUseCases();
+    }
 	private void updateFlashMode() {
 		if (imageCapture == null || camera == null) return;
 
@@ -528,20 +585,29 @@ public class CameraActivity extends AppCompatActivity {
 				.build();
 
 		CameraSelector cameraSelector = new CameraSelector.Builder()
-				.requireLensFacing(CameraSelector.LENS_FACING_BACK)
+				.requireLensFacing(currentLensFacing) 
 				.build();
 
-		try {
-			if (!cameraProvider.hasCamera(cameraSelector)) {
-				Log.e(TAG, "设备上没有可用的后置摄像头");
-				Toast.makeText(this, "未找到后置摄像头", Toast.LENGTH_LONG).show();
-				return;
-			}
-		} catch (androidx.camera.core.CameraInfoUnavailableException e) {
-			Log.e(TAG, "无法检查相机可用性", e);
-			Toast.makeText(this, "无法获取相机信息", Toast.LENGTH_SHORT).show();
-			return;
-		}
+        try {
+            // 检查摄像头是否可用
+            if (!cameraProvider.hasCamera(cameraSelector)) {
+                String cameraType = currentLensFacing == CameraSelector.LENS_FACING_FRONT ? "前置" : "后置";
+                Log.e(TAG, "设备上没有可用的" + cameraType + "摄像头");
+                Toast.makeText(this, "未找到" + cameraType + "摄像头", Toast.LENGTH_LONG).show();
+                
+                // 如果当前摄像头不可用，切换回另一个摄像头
+                if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) {
+                    currentLensFacing = CameraSelector.LENS_FACING_BACK;
+                } else {
+                    currentLensFacing = CameraSelector.LENS_FACING_FRONT;
+                }
+                return;
+            }
+        } catch (androidx.camera.core.CameraInfoUnavailableException e) {
+            Log.e(TAG, "无法检查相机可用性", e);
+            Toast.makeText(this, "无法获取相机信息", Toast.LENGTH_SHORT).show();
+            return;
+        }
 
         // 3. 将相同的 ResolutionSelector 应用于 ImageCapture
 		imageCapture = new ImageCapture.Builder()

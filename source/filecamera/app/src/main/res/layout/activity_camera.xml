@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-	xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical">
@@ -28,6 +28,28 @@
 
     </RelativeLayout>
 
+    <!-- 模式选择区域 (新增) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#DD000000"
+        android:orientation="vertical">
+        
+        <com.google.android.material.tabs.TabLayout
+            android:id="@+id/cameraModeTabLayout"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            app:tabMode="fixed"
+            app:tabGravity="fill"
+            app:tabIndicatorColor="@color/icon_gold"
+            app:tabIndicatorHeight="2dp"
+            app:tabSelectedTextColor="@color/icon_gold"
+            app:tabTextColor="@color/white"
+            app:tabTextAppearance="@style/CameraModeTabText" />
+            
+    </LinearLayout>
+
     <!-- 控制区域 -->
     <RelativeLayout
         android:id="@+id/controlArea"
@@ -36,7 +58,7 @@
         android:background="#DD000000"
         android:paddingHorizontal="24dp">
 
-        <!-- 闪光灯按钮 (请确保这一段存在！) -->
+        <!-- 闪光灯按钮 -->
         <ImageButton
             android:id="@+id/flashButton"
             android:layout_width="48dp"
@@ -48,8 +70,7 @@
             android:scaleType="center"
             android:src="@drawable/ic_flash_off"
             android:visibility="gone"
-			app:tint="@color/icon_gold"
-			/>
+            app:tint="@color/icon_gold" />
 
         <!-- 拍照按钮 -->
         <ImageButton
@@ -59,17 +80,19 @@
             android:layout_centerInParent="true"
             android:background="@drawable/capture_button"
             android:contentDescription="拍照" />
-		<ImageButton
-			android:id="@+id/exitButton"
-			android:layout_width="48dp"
-			android:layout_height="48dp"
-			android:layout_alignParentEnd="true"
-			android:layout_centerVertical="true"
-			android:background="?attr/selectableItemBackgroundBorderless"
-			android:contentDescription="退出"
-			android:scaleType="center"
-			android:src="@drawable/ic_close"
-			app:tint="@color/white" />			
+
+        <!-- 退出按钮 -->
+        <ImageButton
+            android:id="@+id/exitButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="退出"
+            android:scaleType="center"
+            android:src="@drawable/ic_close"
+            app:tint="@color/white" />
 
     </RelativeLayout>
 
