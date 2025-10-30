@@ -1962,6 +1962,8 @@ public class CameraActivity extends AppCompatActivity {
                 return BitmapFactory.decodeStream(getAssets().open(path.substring(22)));
             } else if (path.startsWith("content://")) {
                 return BitmapFactory.decodeStream(getContentResolver().openInputStream(Uri.parse(path)));
+            } else if (path.startsWith("file://")) {
+                return BitmapFactory.decodeFile(Uri.parse(path).getPath());
             } else {
                 return BitmapFactory.decodeFile(path);
             }

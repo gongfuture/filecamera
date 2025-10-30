@@ -48,6 +48,7 @@ let DEFAULT_CONFIG = {
 
 let config = null;
 let isConfigDirty = false;
+let pendingIconChange = null; 
 const TYPE_OPTIONS = {
     string: '字符串',
     input: '实时输入',
@@ -64,16 +65,27 @@ async function open_setting_page(){
 	document.getElementById('setting_div').classList.add('expanded');
 }
 async function close_setting_page(){
-	if(isConfigDirty){
-		if(await confirm_fix('是否保存设置')){
-			await saveConfig()
-		}
-	}
-	isConfigDirty = false;
-	config = null;
-	document.getElementById('settings-form').innerHTML ="";
-	document.getElementById('setting_div').classList.remove('expanded');
+    if(isConfigDirty){
+        if(await confirm_fix('是否保存设置')){
+            await saveConfig();
+        } else {
+            // 用户选择不保存，清理临时文件
+            if (pendingIconChange) {
+                await callAndroidMethod(
+                    window.backServer, 
+                    'cleanupTempIcon', 
+                    { tempUri: pendingIconChange.tempUri }
+                );
+                pendingIconChange = null;
+            }
+        }
+    }
+    isConfigDirty = false;
+    config = null;
+    document.getElementById('settings-form').innerHTML ="";
+    document.getElementById('setting_div').classList.remove('expanded');
 }
+
 
 // --- 工具函数 ---
 function createElement(tag, options = {}) {
@@ -720,15 +732,23 @@ function render() {
 // --- 数据操作 & 事件处理 ---
 async function saveConfig() {
     try {
+        // 1. 如果有待定的图标变更，先提交它
+        if (pendingIconChange) {
+            const commitResult = await callAndroidMethod(window.backServer, 'commitIconChange', pendingIconChange);
+            pendingIconChange = null; // 清除待定状态
+        }
+        
+        // 2. 保存配置
         let result = await nativeWriteConfig(config);
         if (result) {
             isConfigDirty = false;
             await alert_fix('配置保存成功');
         }
     } catch (err) {
-        await alert_fix('保存失败');
+        await alert_fix('保存失败: ' + err.message);
     }
 }
+
 
 function updateConfig(path, value) {
     if (!config) return;
@@ -816,9 +836,61 @@ async function renameContentKey(path, oldKey, newKey) {
 }
 
 function createIconPickerControl(path) {
-    const currentUri = getValueByPath(config, path) || '未选择';
-    const uriDisplay = createElement('p', { className: 'uri-display', textContent: currentUri });
+    // Java 使用的默认路径 (存储在配置中)
+    const defaultIconPathForJava = DEFAULT_CONFIG.watermark.header.icon.value; // "file:///android_asset/icon.png"
+    // JavaScript 使用的默认路径 (用于显示)
+    const defaultIconPathForJS = 'icon.png';
+    
+    const currentUri = getValueByPath(config, path) || defaultIconPathForJava;
 
+    // --- 1. 创建核心 UI 元素 ---
+
+    // 图片预览
+    const iconPreview = createElement('img', {
+        className: 'icon-preview',
+        properties: {
+            src: '', // 初始 src 将在下面设置
+            onerror: function() {
+                // 如果图片加载失败，显示一个占位符或默认图标
+                this.src = defaultIconPathForJS;
+            }
+        }
+    });
+    
+    // --- 2. 核心逻辑：更新预览图和文本 ---
+	let currentObjectUrl = null;
+	async function updatePreview(uri) {
+		if (currentObjectUrl) {
+			URL.revokeObjectURL(currentObjectUrl);
+			currentObjectUrl = null;
+		}
+
+		if (uri === defaultIconPathForJava) {
+			iconPreview.src = defaultIconPathForJS;
+		} else {
+			try {
+				let fetchUrl = "https://appassets.androidplatform.net/watermark_icons/cache_icon.png";
+				if (pendingIconChange && pendingIconChange.targetUri === uri) {
+					// 使用临时文件的访问路径
+					fetchUrl = "https://appassets.androidplatform.net/watermark_icons/temp_icon.png";
+				}
+				
+				const response = await fetch(fetchUrl);
+				if (!response.ok) {
+					throw new Error(`HTTP error! status: ${response.status}`);
+				}
+				const blob = await response.blob();
+				currentObjectUrl = URL.createObjectURL(blob);
+				iconPreview.src = currentObjectUrl;
+			} catch (error) {
+				console.error("加载图标失败:", error);
+				iconPreview.src = defaultIconPathForJS;
+			}
+		}
+	}
+    // --- 3. 创建按钮及其事件 ---
+
+    // "选择图标"按钮
     const pickerButton = createElement('button', {
         className: 'btn',
         textContent: '选择图标',
@@ -835,8 +907,17 @@ function createIconPickerControl(path) {
                         return;
                     }
                     const newUri = uri_arr[0].uri;
-                    updateConfig(path, newUri);
-                    uriDisplay.textContent = newUri;
+                    if (!newUri) {
+                        return;
+                    }
+                    // 上传图标并获取 Java 使用的路径
+                    let icon_uri = await upload_watermark_icon(newUri);
+                    if (icon_uri) {
+                        // 保存 Java 路径到配置
+                        updateConfig(path, icon_uri);
+                        // 使用 JS 路径更新预览
+                        updatePreview(icon_uri);
+                    }
                 } catch (error) {
                     console.error("调用 nativeOpenFilePicker 失败:", error);
                     await alert_fix(`选择文件失败: ${error.message}`);
@@ -845,7 +926,37 @@ function createIconPickerControl(path) {
         }
     });
 
-    return createElement('div', { className: 'icon-picker-control', children: [uriDisplay, pickerButton] });
+    // "恢复默认"按钮
+    const restoreButton = createElement('button', {
+        className: 'btn btn-secondary',
+        textContent: '恢复默认',
+        events: {
+            click: (e) => {
+                e.preventDefault();
+                // 恢复 Java 路径到配置
+                updateConfig(path, defaultIconPathForJava);
+                // 使用 JS 路径更新预览
+                updatePreview(defaultIconPathForJava);
+            }
+        }
+    });
+
+    // --- 4. 初始化和组装 ---
+    
+    // 初始化时设置一次预览
+    updatePreview(currentUri);
+
+    // 将按钮放入一个组中，以便更好地布局
+    const buttonGroup = createElement('div', {
+        className: 'icon-button-group',
+        children: [pickerButton, restoreButton]
+    });
+
+    // 返回组装好的完整控件
+    return createElement('div', {
+        className: 'icon-picker-control',
+        children: [iconPreview, buttonGroup]
+    });
 }
 
 // --- 初始化和事件委托 ---
@@ -914,3 +1025,33 @@ settings_form.addEventListener('click', async (e) => {
             break;
     }
 });
+async function upload_watermark_icon(sourceUri) {
+    if (!sourceUri) {
+        throw new Error("sourceUri 不能为空");
+    }
+
+    console.log(`[JS] 正在请求原生保存图标: ${sourceUri}`);
+    
+    const data = {
+        sourceUri: sourceUri,
+        temporary: true // 标记为临时保存
+    };
+    
+    try {
+        const result = await callAndroidMethod(window.backServer, 'saveIconToCache', data);
+        if (result && result.uri && result.tempUri) {
+            // 记录这次待定的变更
+            pendingIconChange = {
+                tempUri: result.tempUri,
+                targetUri: result.uri
+            };
+            
+            return result.uri; // 返回目标路径（但实际文件还在临时位置）
+        } else {
+            throw new Error("原生接口未按预期返回 uri 对象");
+        }
+        
+    } catch (error) {
+        throw new Error(error.message || "保存图标失败");
+    }
+}

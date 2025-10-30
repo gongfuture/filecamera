@@ -152,7 +152,6 @@ public class MainActivity extends AppCompatActivity {
         webSettings.setAllowFileAccess(true);
         webSettings.setAllowContentAccess(true);
 
-
         jsBridge = new Android_js_bridge(this, webView);
         filePickerBridge = new FilePickerBridge(this, webView);
 
@@ -227,6 +226,7 @@ public class MainActivity extends AppCompatActivity {
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
                 .addPathHandler("/icons/", new WebViewAssetLoader.InternalStoragePathHandler(this, new File(getFilesDir(), "icons")))
                 .addPathHandler("/app_data/", new WebViewAssetLoader.InternalStoragePathHandler(this, new File(getFilesDir(), "app_data")))
+				.addPathHandler("/watermark_icons/", new WebViewAssetLoader.InternalStoragePathHandler(this, new File(getFilesDir(), "watermark/icon")))
                 .build();
         webView.setWebViewClient(new WebViewClient() {
             @Nullable

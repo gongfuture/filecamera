@@ -1959,4 +1959,135 @@ public class BackServer {
             return 0L;
         }
     }
+	
+	@JavascriptInterface
+	public void saveIconToCache(String task_id, String json_data) {
+		new Thread(() -> {
+			File privateDir = null;
+			try {
+				privateDir = context.getFilesDir();
+				if (privateDir == null) {
+					throw new IOException("context.getFilesDir() 返回 null");
+				}
+
+				File targetSubDir = new File(privateDir, "watermark/icon");
+				if (!targetSubDir.exists()) {
+					if (!targetSubDir.mkdirs()) {
+						throw new IOException("无法创建目标目录: " + targetSubDir.getAbsolutePath());
+					}
+				}
+
+				JSONObject params = new JSONObject(json_data);
+				String sourceUriString = params.optString("sourceUri", null);
+				boolean isTemporary = params.optBoolean("temporary", false); // 是否临时保存
+
+				if (sourceUriString == null || sourceUriString.isEmpty()) {
+					call_js_callback(task_id, false, null, "sourceUri 不能为空");
+					return;
+				}
+
+				Uri sourceUri = Uri.parse(sourceUriString);
+				Bitmap bitmap = null;
+
+				// 根据 temporary 标志决定文件名
+				String fileName = isTemporary ? "temp_icon.png" : "cache_icon.png";
+				File targetFile = new File(targetSubDir, fileName);
+
+				try (InputStream inputStream = context.getContentResolver().openInputStream(sourceUri);
+					 FileOutputStream outputStream = new FileOutputStream(targetFile)) {
+
+					if (inputStream == null) {
+						throw new IOException("无法打开源URI的输入流: " + sourceUriString);
+					}
+
+					bitmap = BitmapFactory.decodeStream(inputStream);
+					if (bitmap == null) {
+						throw new IOException("无法将输入流解码为图片");
+					}
+
+					bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream);
+					outputStream.flush();
+
+				} finally {
+					if (bitmap != null && !bitmap.isRecycled()) {
+						bitmap.recycle();
+					}
+				}
+
+				// 返回结果
+				Uri targetUri = Uri.fromFile(new File(targetSubDir, "cache_icon.png")); // 最终目标路径
+				Uri tempUri = isTemporary ? Uri.fromFile(targetFile) : null;
+				
+				JSONObject resultData = new JSONObject();
+				resultData.put("uri", targetUri.toString());
+				if (isTemporary) {
+					resultData.put("tempUri", tempUri.toString());
+				}
+				call_js_callback(task_id, true, resultData, null);
+
+			} catch (Exception e) {
+				android.util.Log.e("SaveIconError", "保存图标失败: " + e.toString(), e);
+				call_js_callback(task_id, false, null, "保存图标失败: " + e.getMessage());
+			}
+		}).start();
+	}
+
+	// 新增：提交图标变更（将临时文件移动到正式位置）
+	@JavascriptInterface
+	public void commitIconChange(String task_id, String json_data) {
+		new Thread(() -> {
+			try {
+				JSONObject params = new JSONObject(json_data);
+				String tempUriString = params.optString("tempUri", null);
+				
+				if (tempUriString != null) {
+					File tempFile = new File(Uri.parse(tempUriString).getPath());
+					File targetFile = new File(context.getFilesDir(), "watermark/icon/cache_icon.png");
+					
+					if (tempFile.exists()) {
+						// 删除旧的正式文件（如果存在）
+						if (targetFile.exists()) {
+							targetFile.delete();
+						}
+						// 重命名临时文件为正式文件
+						if (!tempFile.renameTo(targetFile)) {
+							throw new IOException("无法移动临时文件到正式位置");
+						}
+					}
+				}
+				call_js_callback(task_id, true, null, null);
+				
+			} catch (Exception e) {
+				android.util.Log.e("CommitIconError", "提交图标失败: " + e.toString(), e);
+				call_js_callback(task_id, false, null, "提交图标失败: " + e.getMessage());
+			}
+		}).start();
+	}
+
+	// 新增：清理临时图标文件
+	@JavascriptInterface
+	public void cleanupTempIcon(String task_id, String json_data) {
+		new Thread(() -> {
+			try {
+				JSONObject params = new JSONObject(json_data);
+				String tempUriString = params.optString("tempUri", null);
+				
+				if (tempUriString != null) {
+					File tempFile = new File(Uri.parse(tempUriString).getPath());
+					if (tempFile.exists()) {
+						tempFile.delete();
+					}
+				}
+				
+				call_js_callback(task_id, true, null, null);
+				
+			} catch (Exception e) {
+				android.util.Log.e("CleanupIconError", "清理临时文件失败: " + e.toString(), e);
+				call_js_callback(task_id, false, null, "清理失败: " + e.getMessage());
+			}
+		}).start();
+	}
+
+
+
 }
