@@ -592,7 +592,7 @@ function createWatermarkContent() {
                 // [兼容性修改] 只有 'false' 才是 'off'.
                 className: `icon-controls-group ${getValueByPath(config, iconDisplayPath) === false ? 'disabled' : ''}`, // 初始状态
                 children: [
-                    createFormGroup('图标路径', createIconPickerControl('watermark.header.icon.value')),
+                    createFormGroup('图标预览', createIconPickerControl('watermark.header.icon.value')),
                     createElement('div', {
                         className: 'grid-3',
                         children: [
