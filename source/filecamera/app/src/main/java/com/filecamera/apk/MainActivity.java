@@ -49,6 +49,9 @@ import java.util.List;
 import java.util.Map;
 import android.webkit.MimeTypeMap; // 确保在文件顶部导入了这个类
 import java.util.HashSet;       // 确保导入
+
+import android.provider.Settings;
+import androidx.appcompat.app.AlertDialog;
 public class MainActivity extends AppCompatActivity {
 
     private String indexurl = "https://appassets.androidplatform.net/assets/index.html";
@@ -78,20 +81,70 @@ public class MainActivity extends AppCompatActivity {
     // --- 现代化的 ActivityResult Launcher ---
 
     // 用于在应用启动时请求多个权限的 Launcher。
-    private final ActivityResultLauncher<String[]> requestPermissionsLauncher =
-            registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), permissions -> {
-                // 检查是否所有请求的权限都已被授予。
-                boolean allGranted = true;
-                for (Boolean isGranted : permissions.values()) {
-                    if (!isGranted) {
-                        allGranted = false;
-                        break;
-                    }
-                }
-                if (!allGranted) {
-                    Toast.makeText(this, "需要所有权限以保证应用正常运行", Toast.LENGTH_SHORT).show();
-                }
-            });
+	private final ActivityResultLauncher<String[]> requestPermissionsLauncher =
+			registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), permissions -> {
+				// 收集未授予的权限
+				List<String> deniedPermissions = new ArrayList<>();
+				
+				for (Map.Entry<String, Boolean> entry : permissions.entrySet()) {
+					if (!entry.getValue()) {
+						deniedPermissions.add(entry.getKey());
+					}
+				}
+				
+				if (!deniedPermissions.isEmpty()) {
+					// 将权限名称转换为更友好的描述
+					StringBuilder message = new StringBuilder("需要以下权限以保证应用正常运行：\n\n");
+					
+					for (String permission : deniedPermissions) {
+						String friendlyName = getPermissionFriendlyName(permission);
+						message.append("• ").append(friendlyName).append("\n");
+					}
+					
+					message.append("\n请在设置中授予这些权限。");
+					
+					// 显示详细的权限提示对话框
+					new AlertDialog.Builder(this)
+							.setTitle("权限请求")
+							.setMessage(message.toString())
+							.setPositiveButton("去设置", (dialog, which) -> {
+								// 打开应用设置页面
+								Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+								Uri uri = Uri.fromParts("package", getPackageName(), null);
+								intent.setData(uri);
+								startActivity(intent);
+							})
+							.setNegativeButton("取消", null)
+							.show();
+				}
+			});
+
+	/**
+	 * 将系统权限名称转换为用户友好的描述
+	 */
+	private String getPermissionFriendlyName(String permission) {
+		switch (permission) {
+			case Manifest.permission.CAMERA:
+				return "相机权限 - 用于拍照和录像";
+			case Manifest.permission.WRITE_EXTERNAL_STORAGE:
+				return "存储权限 - 用于保存照片和文件";
+			case Manifest.permission.READ_EXTERNAL_STORAGE:
+				return "读取存储权限 - 用于访问照片和文件";
+			case Manifest.permission.ACCESS_FINE_LOCATION:
+				return "精确位置权限 - 用于地理标记";
+			case Manifest.permission.ACCESS_COARSE_LOCATION:
+				return "大致位置权限 - 用于地理标记";
+			case Manifest.permission.RECORD_AUDIO:
+				return "麦克风权限 - 用于录制音频";
+			case Manifest.permission.READ_PHONE_STATE:
+				return "电话状态权限 - 用于设备识别";
+			// 添加其他您的应用需要的权限
+			default:
+				// 如果没有匹配的，返回权限的最后一部分
+				String[] parts = permission.split("\\.");
+				return parts[parts.length - 1].replace("_", " ");
+		}
+	}
 
     // 用于处理 WebView 文件/相机选择器结果的 Launcher。
     private final ActivityResultLauncher<Intent> webViewFileChooserLauncher =
