@@ -14,9 +14,6 @@
     
     <!-- 新增：外部存储应用专用缓存目录 /Android/data/包名/cache/ -->
     <external-cache-path name="external_cache" path="/" />
-    
     <!-- 新增：外部存储根目录 /storage/emulated/0/ (需要存储权限) -->
     <external-path name="external_storage" path="/" />
-	
-	<files-path name="watermark_icons" path="watermark/icon/" />
 </paths>

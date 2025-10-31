@@ -1289,6 +1289,7 @@ public class CameraActivity extends AppCompatActivity {
         textView.setTextSize(size * watermarkConfig.scale);
         textView.setTypeface(Typeface.DEFAULT, typefaceStyle);
         textView.setMaxWidth(dpToPx((int)(MAX_WATERMARK_LINE_WIDTH_DP * watermarkConfig.scale)));
+		textView.setFontFeatureSettings("tnum");
         return textView;
     }
 

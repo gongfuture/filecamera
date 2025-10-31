@@ -279,7 +279,7 @@ public class MainActivity extends AppCompatActivity {
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
                 .addPathHandler("/icons/", new WebViewAssetLoader.InternalStoragePathHandler(this, new File(getFilesDir(), "icons")))
                 .addPathHandler("/app_data/", new WebViewAssetLoader.InternalStoragePathHandler(this, new File(getFilesDir(), "app_data")))
-				.addPathHandler("/watermark_icons/", new WebViewAssetLoader.InternalStoragePathHandler(this, new File(getFilesDir(), "watermark/icon")))
+				.addPathHandler("/watermark_icon/", new WebViewAssetLoader.InternalStoragePathHandler(this, new File(getFilesDir(), "watermark/icon")))
                 .build();
         webView.setWebViewClient(new WebViewClient() {
             @Nullable

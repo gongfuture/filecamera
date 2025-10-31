@@ -869,10 +869,10 @@ function createIconPickerControl(path) {
 			iconPreview.src = defaultIconPathForJS;
 		} else {
 			try {
-				let fetchUrl = "https://appassets.androidplatform.net/watermark_icons/cache_icon.png";
+				let fetchUrl = "https://appassets.androidplatform.net/watermark_icon/cache_icon.png";
 				if (pendingIconChange && pendingIconChange.targetUri === uri) {
 					// 使用临时文件的访问路径
-					fetchUrl = "https://appassets.androidplatform.net/watermark_icons/temp_icon.png";
+					fetchUrl = "https://appassets.androidplatform.net/watermark_icon/temp_icon.png";
 				}
 				
 				const response = await fetch(fetchUrl);
