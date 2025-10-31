@@ -55,7 +55,7 @@ import androidx.appcompat.app.AlertDialog;
 public class MainActivity extends AppCompatActivity {
 
     private String indexurl = "https://appassets.androidplatform.net/assets/index.html";
-    private String open_in_app_url_head = "file:///";
+    private String open_in_app_url_head = "https://appassets.androidplatform.net";
 
     // WebView 和相关组件
     private WebView webView;
