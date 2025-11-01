@@ -360,7 +360,9 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 			
 			document.getElementById("loadingoverlay").style.display = "flex"
 			window.updata_load_info("文件导出中......")
+			window.Android.startwakelock()				
 			await exportItems(id_arr);
+			window.Android.endwakelock()
 			document.getElementById("loadingoverlay").style.display = "none";
 			window.updata_load_info("")
 		}
