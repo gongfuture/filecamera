@@ -35,9 +35,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-// [移除] 移除不再需要的 import
-// import java.nio.file.Files;
-// import java.nio.file.StandardCopyOption;
+import java.io.FileOutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -173,18 +171,17 @@ public class Android_js_bridge {
     }
 
     // [重构] 采用 "混合存储" 逻辑
-    private void downloadBlob(String base64String, String fileName, String parentpath ,String datatype){
+    private void downloadBlob(String base64String, String fileName, String parentpath, String datatype,String showContent, String id){
         new Thread(() -> {
             try {
-                // [修改] 将 Base64 解码移到顶部，确保两个分支都能访问 decodedBytes
-                byte[] decodedBytes = decodeBase64(base64String); 
-
+				// --- 1. "file" 类型: 写入公共 "Downloads" 目录 ---
+				byte[] decodedBytes = decodeBase64(base64String); // 使用辅助函数				
                 if ("file".equals(datatype)) {
-                    // --- 1. "file" 类型: 直接写入公共 "Downloads" 目录 ---
-                    // 注意: MainActivity.this.getContentResolver() 或 activity.getContentResolver()
-                    ContentResolver resolver = getContentResolver(); // 或者 activity.getContentResolver();
+                    ContentResolver resolver = activity.getContentResolver();
                     ContentValues values = new ContentValues();
-                    String customFolder = "road_manage"; // 你指定的公共下载子文件夹
+                    
+                    // 目标路径: Downloads/file_camera/...
+                    String customFolder = "file_camera";
                     String relativePath = Environment.DIRECTORY_DOWNLOADS + "/" + customFolder + (parentpath == null ? "" : parentpath);
 
                     values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
@@ -200,7 +197,7 @@ public class Android_js_bridge {
                     }
                     values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
                     values.put(MediaStore.Downloads.RELATIVE_PATH, relativePath);
-                    // 标记为下载完成
+                    // [新增] 标记为下载完成
                     values.put(MediaStore.Downloads.IS_PENDING, 0);
 
                     // 检查并删除已存在的文件，确保覆盖
@@ -210,13 +207,12 @@ public class Android_js_bridge {
                     
                     try (Cursor cursor = resolver.query(existingUri, new String[]{MediaStore.Downloads._ID}, selection, selectionArgs, null)) {
                         if (cursor != null && cursor.moveToFirst()) {
-                            long id = cursor.getLong(0);
-                            Uri deleteUri = ContentUris.withAppendedId(existingUri, id);
+                            long fileId = cursor.getLong(0);
+                            Uri deleteUri = ContentUris.withAppendedId(existingUri, fileId);
                             try {
                                 resolver.delete(deleteUri, null, null);
                             } catch (Exception e) {
-                                // 即使删除失败（例如文件被锁定），也尝试继续写入，可能会覆盖
-                                Log.w("DownloadBlob", "Failed to delete existing file, attempting overwrite.", e);
+                                // Log it, but continue
                             }
                         }
                     }
@@ -234,12 +230,9 @@ public class Android_js_bridge {
 						}
                         os.write(decodedBytes);
                     }
-                    // 注意: MainActivity.this.runOnUiThread()
-                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "文件已保存到 " + relativePath, Toast.LENGTH_SHORT).show());
 
                 } else if ("dir".equals(datatype)) {
-                    File storageDir = new File(getExternalFilesDir(null), "road_manage/cache" + (parentpath == null ? "" : parentpath));
-                    
+                    File storageDir = new File(activity.getExternalFilesDir(null), "file_camera/cache" + (parentpath == null ? "" : parentpath));
                     if (!storageDir.exists()) {
                         if (!storageDir.mkdirs()) {
                             throw new IOException("无法创建私有缓存目录: " + storageDir.getAbsolutePath());
@@ -254,25 +247,22 @@ public class Android_js_bridge {
                     }
 
                 } else {
-                    // 如果 datatype 既不是 "file" 也不是 "dir"，则抛出错误
                     throw new IllegalArgumentException("不支持的 datatype: " + (datatype == null ? "null" : datatype));
                 }
 
-                // 通知 JS 成功 (仅在所有操作成功后触发一次)
-                // 注意: MainActivity.this.runOnUiThread() 和 webView
-                runOnUiThread(() -> webView.evaluateJavascript("window.onDownloadComplete()", null));
+                // --- 3. 成功回调 ---
+                call_js_callback(id, true, "下载完成", null);
+                if (showContent != null && !showContent.isEmpty()) {
+                    activity.runOnUiThread(() -> Toast.makeText(activity, showContent, Toast.LENGTH_SHORT).show());
+                }
 
             } catch (Exception e) {
-                // 注意: MainActivity.this.runOnUiThread() 和 webView
-                Log.e("DownloadBlobError", "downloadBlob 出错", e);
-                runOnUiThread(() -> {
-                    Toast.makeText(MainActivity.this, "保存失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-                    String errorMessage = (e.getMessage() != null ? e.getMessage().replace("'", "\\'") : "Unknown error");
-                    webView.evaluateJavascript("window.onDownloadError('" + errorMessage + "')", null);
-                });
+                call_js_callback(id, false, null, "下载出现错误: " + e.getMessage());
+                activity.runOnUiThread(() -> Toast.makeText(activity, "下载失败: " + e.getMessage(), Toast.LENGTH_SHORT).show());
             }
-		}).start();
-	}
+        }).start();
+    }
+
     // [重构] 从 "私有" 压缩到 "公共"
     private void outWithZip(String id) {
         new Thread(() -> {
