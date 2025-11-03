@@ -16,7 +16,10 @@ import android.util.Base64;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.widget.Toast;
-import android.view.WindowManager; 
+import android.view.WindowManager;
+// [新增] 导入 MimeTypeMap
+import android.webkit.MimeTypeMap;
+
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AlertDialog;
@@ -32,14 +35,16 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
+// [移除] 移除不再需要的 import
+// import java.nio.file.Files;
+// import java.nio.file.StandardCopyOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import java.nio.charset.StandardCharsets; // [新增] 导入 Charset
 
 public class Android_js_bridge {
 
@@ -83,12 +88,14 @@ public class Android_js_bridge {
     // JavaScript接口方法
     @JavascriptInterface
     public void downloadFile(String url, String fileName, String parentpath, String datatype,String showContent, String id) {
+        // [修改] 调用重构后的 downloadBlob
         downloadBlob(url, fileName, parentpath, datatype, showContent, id);
     }
 
     @JavascriptInterface
     public void startOutWithZip(String id) {
         try {
+            // [修改] 调用重构后的 outWithZip
             outWithZip(id);
         } catch (Exception e) {
             call_js_callback(id, false, null, "压缩操作失败: " + e.getMessage());
@@ -109,6 +116,7 @@ public class Android_js_bridge {
 
     @JavascriptInterface
     public void clearCacheDirectory(String id) {
+        // [修改] 调用重构后的 clearzip
         clearzip(id);
     }
 
@@ -165,54 +173,80 @@ public class Android_js_bridge {
         });
     }
 
+    // [重构] 采用 "混合存储" 逻辑
     private void downloadBlob(String base64String, String fileName, String parentpath, String datatype,String showContent, String id){
         new Thread(() -> {
             try {
-                byte[] decodedBytes;
                 if ("file".equals(datatype)) {
-                    decodedBytes = Base64.decode(base64String, Base64.DEFAULT);
-                } else {
-                    decodedBytes = new byte[0];
-                }
+                    // --- 1. "file" 类型: 写入公共 "Downloads" 目录 ---
+                    byte[] decodedBytes = decodeBase64(base64String); // 使用辅助函数
 
-                ContentValues values = new ContentValues();
-                String customFolder = "file_camera/cache";
-                String relativePath = Environment.DIRECTORY_DOWNLOADS + "/" + customFolder + parentpath;
-                ContentResolver resolver = activity.getContentResolver();
+                    ContentResolver resolver = activity.getContentResolver();
+                    ContentValues values = new ContentValues();
+                    
+                    // 目标路径: Downloads/file_camera/...
+                    String customFolder = "file_camera";
+                    String relativePath = Environment.DIRECTORY_DOWNLOADS + "/" + customFolder + (parentpath == null ? "" : parentpath);
 
-                if("file".equals(datatype)){
                     values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
-                    values.put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream");
+                    
+                    // 自动检测 MimeType
+                    String mimeType = "application/octet-stream";
+                    String extension = MimeTypeMap.getFileExtensionFromUrl(fileName);
+                    if (extension != null) {
+                        String mimeFromExtension = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.toLowerCase());
+                        if (mimeFromExtension != null) {
+                            mimeType = mimeFromExtension;
+                        }
+                    }
+                    values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
                     values.put(MediaStore.Downloads.RELATIVE_PATH, relativePath);
+                    // [新增] 标记为下载完成
+                    values.put(MediaStore.Downloads.IS_PENDING, 0);
 
-                    String selection = MediaStore.Downloads.DISPLAY_NAME + " = ? AND " + MediaStore.Downloads.RELATIVE_PATH + " = ?";
-                    String[] selectionArgs = new String[] { fileName, relativePath + "/" }; // 精确匹配
-
-                    // 先删除可能的旧记录
-                    resolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, selection, selectionArgs);
-
-                    // 插入新的文件记录
-                    Uri fileUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                    if (fileUri != null) {
-                        try (OutputStream outputStream = resolver.openOutputStream(fileUri)) {
-                            if (outputStream != null) {
-                                outputStream.write(decodedBytes);
-                                outputStream.flush();
-                            } else {
-                                throw new IOException("无法打开输出流");
+                    // 检查并删除已存在的文件，确保覆盖
+                    Uri existingUri = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                    String selection = MediaStore.Downloads.RELATIVE_PATH + " = ? AND " + MediaStore.Downloads.DISPLAY_NAME + " = ?";
+                    String[] selectionArgs = new String[]{relativePath + "/", fileName}; // MediaStore 路径需要以 / 结尾
+                    
+                    try (Cursor cursor = resolver.query(existingUri, new String[]{MediaStore.Downloads._ID}, selection, selectionArgs, null)) {
+                        if (cursor != null && cursor.moveToFirst()) {
+                            long fileId = cursor.getLong(0);
+                            Uri deleteUri = ContentUris.withAppendedId(existingUri, fileId);
+                            try {
+                                resolver.delete(deleteUri, null, null);
+                            } catch (Exception e) {
+                                // Log it, but continue
                             }
                         }
-                    } else {
-                        throw new IOException("创建文件失败 (MediaStore aPI 返回 null Uri)");
                     }
+
+                    // 插入新文件
+                    Uri fileUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (fileUri == null) {
+						throw new IOException("MediaStore 无法创建文件");
+					}
+
+                    // 写入数据
+                    try (OutputStream os = resolver.openOutputStream(fileUri)) {
+                        if (os == null) {
+							throw new IOException("无法打开输出流");
+						}
+                        os.write(decodedBytes);
+                    }
+
                 } else if ("dir".equals(datatype)) {
-                    // 创建文件夹通常是通过创建 .nomedia 文件来暗示
-                    values.put(MediaStore.Downloads.DISPLAY_NAME, ".nomedia");
-                    values.put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream");
-                    values.put(MediaStore.Downloads.RELATIVE_PATH, relativePath);
-                    resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    // --- 2. "dir" 类型: 写入应用的 "私有缓存" 目录 ---
+                    // 路径: /Android/data/com.filecamera.apk/files/file_camera/cache/...
+                    File storageDir = new File(activity.getExternalFilesDir(null), "file_camera/cache" + (parentpath == null ? "" : parentpath));
+                    if (!storageDir.exists()) {
+                        if (!storageDir.mkdirs()) {
+                            throw new IOException("无法创建私有缓存目录: " + storageDir.getAbsolutePath());
+                        }
+                    }
                 }
 
+                // --- 3. 成功回调 ---
                 call_js_callback(id, true, "下载完成", null);
                 if (showContent != null && !showContent.isEmpty()) {
                     activity.runOnUiThread(() -> Toast.makeText(activity, showContent, Toast.LENGTH_SHORT).show());
@@ -225,34 +259,42 @@ public class Android_js_bridge {
         }).start();
     }
 
+    // [重构] 从 "私有" 压缩到 "公共"
     private void outWithZip(String id) {
         new Thread(() -> {
             try {
-                String cacheDirPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) + "/file_camera/cache/";
-                String targetDirPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) + "/file_camera/";
-                File cacheDir = new File(cacheDirPath);
+                // [修改] 源路径: 私有缓存
+                File cacheDir = new File(activity.getExternalFilesDir(null), "file_camera/cache");
+                // [修改] 目标路径 (公共)
+                String targetPublicRelativePath = Environment.DIRECTORY_DOWNLOADS + "/file_camera";
 
                 if (!cacheDir.exists() || !cacheDir.isDirectory()) {
-                    call_js_callback(id, false, null, "源文件夹不存在");
+                    call_js_callback(id, false, null, "源文件夹 (App 缓存) 不存在");
                     activity.runOnUiThread(() -> Toast.makeText(activity, "源文件夹不存在", Toast.LENGTH_SHORT).show());
                     return;
                 }
 
-                moveFiles(cacheDir, new File(targetDirPath));
+                // [移除] moveFiles(...) - 不再需要
 
                 File[] cacheFiles = cacheDir.listFiles();
-                if (cacheFiles != null) {
-                    for (File folder : cacheFiles) {
-                        if (folder.isDirectory()) {
-                            String zipFileName = folder.getName() + ".zip";
-                            createZipWithMediaStore(folder, zipFileName);
-                        }
+                if (cacheFiles == null || cacheFiles.length == 0) {
+                     call_js_callback(id, true, "缓存目录为空，无需导出", null);
+                     activity.runOnUiThread(() -> Toast.makeText(activity, "缓存目录为空", Toast.LENGTH_SHORT).show());
+                     return;
+                }
+
+                for (File folder : cacheFiles) {
+                    if (folder.isDirectory()) {
+                        String zipFileName = folder.getName() + ".zip";
+                        // [修改] 传入公共目标路径
+                        createZipWithMediaStore(folder, zipFileName, targetPublicRelativePath);
                     }
                 }
 
-                deleteDirectories(cacheDir);
-                call_js_callback(id, true, "已导出到 " + targetDirPath, null);
-
+                deleteDirectories(cacheDir); // 清理私有缓存
+                
+                // [修改] 更新 Toast 消息
+                call_js_callback(id, true, "已导出到 " + targetPublicRelativePath, null);
                 activity.runOnUiThread(() -> Toast.makeText(activity, "文件导出完成！", Toast.LENGTH_SHORT).show());
 
             } catch (Exception e) {
@@ -262,82 +304,115 @@ public class Android_js_bridge {
         }).start();
     }
 
-    private void createZipWithMediaStore(File folder, String zipFileName) throws IOException {
+    // [修改] 签名增加了 targetPublicRelativePath
+    private void createZipWithMediaStore(File folder, String zipFileName, String targetPublicRelativePath) throws IOException {
         ContentValues values = new ContentValues();
         values.put(MediaStore.Downloads.DISPLAY_NAME, zipFileName);
         values.put(MediaStore.Downloads.MIME_TYPE, "application/zip");
-        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/file_camera/");
+        // [修改] 使用传入的参数
+        values.put(MediaStore.Downloads.RELATIVE_PATH, targetPublicRelativePath);
+        values.put(MediaStore.Downloads.IS_PENDING, 1); // 标记为正在写入
 
         ContentResolver resolver = activity.getContentResolver();
         String selection = MediaStore.Downloads.DISPLAY_NAME + " = ? AND " + MediaStore.Downloads.RELATIVE_PATH + " = ?";
-        String[] selectionArgs = new String[] { zipFileName, Environment.DIRECTORY_DOWNLOADS + "/file_camera/" };
+        // [修改] 使用传入的参数 (并确保路径以 / 结尾)
+        String[] selectionArgs = new String[] { zipFileName, targetPublicRelativePath + "/" };
 
-        resolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, selection, selectionArgs);
+        // [修改] 改进的删除逻辑
+        try (Cursor cursor = resolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, new String[]{MediaStore.Downloads._ID}, selection, selectionArgs, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                long fileId = cursor.getLong(0);
+                Uri deleteUri = ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, fileId);
+                resolver.delete(deleteUri, null, null);
+            }
+        }
 
         Uri zipUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
 
         if (zipUri != null) {
             try (OutputStream outputStream = resolver.openOutputStream(zipUri);
                  ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(outputStream))) {
+                
+                // [修改] 确保调用的是 *新* 替换的 addFolderToZip
                 addFolderToZip(zos, folder);
             }
+
+            // [新增] 写入完成后，更新 IS_PENDING 状态
+            values.clear();
+            values.put(MediaStore.Downloads.IS_PENDING, 0);
+            resolver.update(zipUri, values, null, null);
+
         } else {
-            throw new IOException("创建ZIP文件失败 (MediaStore aPI 返回 null Uri)");
+            throw new IOException("创建ZIP文件失败 (MediaStore API 返回 null Uri)");
         }
     }
 
+    // [移除] moveFiles 方法不再需要
+    /*
     private void moveFiles(File sourceDir, File targetDir) {
-        if (!targetDir.exists()) {
-            targetDir.mkdirs();
-        }
-        File[] sourceFiles = sourceDir.listFiles();
-        if (sourceFiles != null) {
-            for (File file : sourceFiles) {
-                if (file.isFile()) {
-                    try {
-                        Files.move(file.toPath(), new File(targetDir, file.getName()).toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                }
-            }
-        }
+        ...
     }
+    */
 
+    // [替换] 使用上一个项目中更健壮的 addFolderToZip 版本
     private void addFolderToZip(ZipOutputStream zos, File rootFolder) throws IOException {
-        Deque<File> folderStack = new ArrayDeque<>();
-        folderStack.push(rootFolder);
-        while (!folderStack.isEmpty()) {
-            File currentFolder = folderStack.pop();
-            String currentPathInZip = rootFolder.equals(currentFolder) ? "" : currentFolder.getAbsolutePath().substring(rootFolder.getAbsolutePath().length() + 1).replace(File.separator, "/");
-            File[] files = currentFolder.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    String zipEntryName = currentPathInZip.isEmpty() ? file.getName() : currentPathInZip + "/" + file.getName();
-                    if (file.isDirectory()) {
-                        folderStack.push(file);
-                    } else {
-                        try (FileInputStream fis = new FileInputStream(file)) {
-                            ZipEntry zipEntry = new ZipEntry(zipEntryName);
-                            zos.putNextEntry(zipEntry);
-                            byte[] buffer = new byte[4096];
-                            int bytesRead;
-                            while ((bytesRead = fis.read(buffer)) > 0) {
-                                zos.write(buffer, 0, bytesRead);
-                            }
-                            zos.closeEntry();
-                        }
-                        file.delete();
-                    }
-                }
-                if (files.length == 0 && !currentPathInZip.isEmpty()) {
-                    ZipEntry zipEntry = new ZipEntry(currentPathInZip + "/");
-                    zos.putNextEntry(zipEntry);
-                    zos.closeEntry();
-                }
+		Deque<File> folderStack = new ArrayDeque<>();
+		folderStack.push(rootFolder);
+        // [修改] 基础路径应为 rootFolder 本身，以便 Zip 包内的路径是相对的
+		String rootPath = rootFolder.getPath();
+
+		while (!folderStack.isEmpty()) {
+			File currentFolder = folderStack.pop();
+			File[] files = currentFolder.listFiles();
+			if (files == null) continue;
+
+            // [修改] 计算相对路径
+            String relativePath = currentFolder.getPath().substring(rootPath.length()).replace(File.separator, "/");
+            // 移除开头的 "/"
+            if (relativePath.startsWith("/")) {
+                relativePath = relativePath.substring(1);
             }
-        }
-    }
+
+            // [修改] 确保在文件列表之前添加目录条目 (处理空文件夹)
+            if (!relativePath.isEmpty() && files.length == 0) {
+                zos.putNextEntry(new ZipEntry(relativePath + "/"));
+                zos.closeEntry();
+            }
+
+			for (File file : files) {
+                // [修改] 计算条目路径
+                String entryPath = file.getPath().substring(rootPath.length()).replace(File.separator, "/");
+                if (entryPath.startsWith("/")) {
+                    entryPath = entryPath.substring(1);
+                }
+
+				if (file.isDirectory()) {
+                    // [修改] 显式添加目录条目
+                    zos.putNextEntry(new ZipEntry(entryPath + "/"));
+                    zos.closeEntry();
+					folderStack.push(file);
+				} else {
+					boolean isfiledeleted = false;
+					try (FileInputStream fis = new FileInputStream(file)) {
+						ZipEntry zipEntry = new ZipEntry(entryPath);
+						zos.putNextEntry(zipEntry);
+						byte[] buffer = new byte[8192]; // [修改] 增加缓冲区
+						int bytesRead;
+						while ((bytesRead = fis.read(buffer)) != -1) { // [修改] 修正循环
+							zos.write(buffer, 0, bytesRead);
+						}
+						zos.closeEntry();
+						isfiledeleted = true;
+					}
+					if (isfiledeleted) {
+						if (!file.delete()) {
+							// Log.e("DeleteFileError", "Failed to delete file: " + file.getAbsolutePath());
+						}
+					}
+				}
+			}
+		}
+	}
 
     private boolean deleteDirectories(File directory) {
         if (directory == null || !directory.exists()) return true;
@@ -351,10 +426,16 @@ public class Android_js_bridge {
         return directory.delete();
     }
 
+    // [重构] clearzip 指向私有缓存
     private void clearzip(String id){
         new Thread(() -> {
             try {
-                File cacheDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "/file_camera/cache/");
+                // [修改] 指向私有缓存
+                File cacheDir = new File(activity.getExternalFilesDir(null), "file_camera/cache");
+                if (!cacheDir.exists() || !cacheDir.isDirectory()) {
+                    call_js_callback(id, true, "缓存目录已是空的", null);
+                    return;
+                }
                 if (deleteDirectories(cacheDir)) {
                     call_js_callback(id, true, "缓存目录已清空", null);
                 } else {
@@ -387,6 +468,10 @@ public class Android_js_bridge {
             return;
         }
         try {
+            // [新增] 持久化权限
+            final int takeFlags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+            activity.getContentResolver().takePersistableUriPermission(folderUri, takeFlags);
+            
             DocumentFile pickedFolder = DocumentFile.fromTreeUri(activity, folderUri);
             if (pickedFolder == null) {
                 throw new Exception("无法访问所选文件夹。");
@@ -399,16 +484,20 @@ public class Android_js_bridge {
 
             for (Uri fileUri : all_uri) {
                 String fileDocumentId = DocumentsContract.getDocumentId(fileUri);
-                // 确保我们只处理根目录下的路径
-                if (fileDocumentId.startsWith(rootDocumentId + ":")) {
-                    String relativePath = fileDocumentId.substring((rootDocumentId + ":").length());
+                // [修改] 修复相对路径逻辑 (原版逻辑是对的，但要确保健壮)
+                if (fileDocumentId != null && fileDocumentId.startsWith(rootDocumentId)) {
+                    String relativePath = fileDocumentId.substring(rootDocumentId.length());
+                    if (relativePath.startsWith(":")) {
+                        relativePath = relativePath.substring(1);
+                    }
                     relativePaths.add(dir_name + "/" + relativePath);
                 }
             }
 
             JSONArray jsonArray = new JSONArray(relativePaths);
             String jsonString = jsonArray.toString();
-            byte[] jsonString_data = jsonString.getBytes("UTF-8");
+            // [修改] 明确使用 UTF-8
+            byte[] jsonString_data = jsonString.getBytes(StandardCharsets.UTF_8);
             String base64String = Base64.encodeToString(jsonString_data, Base64.NO_WRAP);
 
             call_js_callback(pickerId, true, base64String, null);
@@ -431,12 +520,16 @@ public class Android_js_bridge {
     private Uri[] traverseFolder(DocumentFile rootFolder) {
         List<Uri> uriList = new ArrayList<>();
         Deque<DocumentFile> stack = new ArrayDeque<>();
-        stack.push(rootFolder);
+        if (rootFolder != null) {
+            stack.push(rootFolder);
+        }
         while (!stack.isEmpty()) {
             DocumentFile currentFolder = stack.pop();
+            if (currentFolder == null) continue;
             DocumentFile[] folderFiles = currentFolder.listFiles();
             if (folderFiles != null) {
                 for (DocumentFile file : folderFiles) {
+                    if (file == null) continue;
                     if (file.isFile()) {
                         uriList.add(file.getUri());
                     } else if (file.isDirectory()) {
@@ -456,5 +549,17 @@ public class Android_js_bridge {
 
     public void onRestoreInstanceState(Bundle savedInstanceState) {
         currentFolderPickerId = savedInstanceState.getString("currentFolderPickerId_js_bridge");
+    }
+    private byte[] decodeBase64(String base64Data) {
+        if (base64Data == null) {
+            return new byte[0];
+        }
+        String base64String;
+        if (base64Data.contains(",")) {
+            base64String = base64Data.substring(base64Data.indexOf(',') + 1);
+        } else {
+            base64String = base64Data;
+        }
+        return Base64.decode(base64String, Base64.DEFAULT);
     }
 }

@@ -1410,8 +1410,6 @@ public class BackServer {
 				if (!ensureDirectoryExists(exportDir)) {
 					throw new IOException("无法创建导出目录: " + targetDirPath);
 				}
-
-				clearCacheDirectory();
 				checkAndCreateDirectoryStructure(exportDir);
 				showToast("正在导出中......");
                 for (int i = 0; i < totalItems; i++) {
@@ -1485,50 +1483,38 @@ public class BackServer {
 			return directory.exists() ? directory.isDirectory() : directory.mkdirs();
 		}
 	}
-	private void clearCacheDirectory() {
+	private void deleteDirectoryContents(File directory) {
+		if (directory == null || !directory.exists() || !directory.isDirectory()) return;
 		try {
-			String cacheDirPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) + "/filecamera/cache/";
-			File cacheDir = new File(cacheDirPath);
-			if (ensureDirectoryExists(cacheDir)) {
-				deleteDirectoryContents(cacheDir);
-			}
-		} catch (Exception e) {
-			android.util.Log.w("Export", "清空缓存目录失败: " + e.getMessage());
-		}
-	}
-
-		private void deleteDirectoryContents(File directory) {
-			if (directory == null || !directory.exists() || !directory.isDirectory()) return;
-			try {
-				Deque<File> traversalDeque = new ArrayDeque<>();
-				Deque<File> dirsToDelete = new ArrayDeque<>();
-				traversalDeque.push(directory);
-				while (!traversalDeque.isEmpty()) {
-					File current = traversalDeque.pop();
-					File[] files = current.listFiles();
-					if (files != null) {
-						for (File file : files) {
-							if (file.isDirectory()) {
-								traversalDeque.push(file);
-								dirsToDelete.push(file);
-							} else {
-								if (!file.delete()) {
-									android.util.Log.w("Export", "无法删除文件: " + file.getAbsolutePath());
-								}
+			Deque<File> traversalDeque = new ArrayDeque<>();
+			Deque<File> dirsToDelete = new ArrayDeque<>();
+			traversalDeque.push(directory);
+			while (!traversalDeque.isEmpty()) {
+				File current = traversalDeque.pop();
+				File[] files = current.listFiles();
+				if (files != null) {
+					for (File file : files) {
+						if (file.isDirectory()) {
+							traversalDeque.push(file);
+							dirsToDelete.push(file);
+						} else {
+							if (!file.delete()) {
+								android.util.Log.w("Export", "无法删除文件: " + file.getAbsolutePath());
 							}
 						}
 					}
 				}
-				while (!dirsToDelete.isEmpty()) {
-					File dirToDelete = dirsToDelete.pop();
-					if (!dirToDelete.delete()) {
-						android.util.Log.w("Export", "无法删除目录: " + dirToDelete.getAbsolutePath());
-					}
-				}
-			} catch (Exception e) {
-				android.util.Log.e("Export", "删除目录内容时发生异常: " + directory.getAbsolutePath(), e);
 			}
+			while (!dirsToDelete.isEmpty()) {
+				File dirToDelete = dirsToDelete.pop();
+				if (!dirToDelete.delete()) {
+					android.util.Log.w("Export", "无法删除目录: " + dirToDelete.getAbsolutePath());
+				}
+			}
+		} catch (Exception e) {
+			android.util.Log.e("Export", "删除目录内容时发生异常: " + directory.getAbsolutePath(), e);
 		}
+	}
 
 	private void checkAndCreateDirectoryStructure(File exportDir) {
 		try {

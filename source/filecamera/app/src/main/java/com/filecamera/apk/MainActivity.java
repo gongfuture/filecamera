@@ -126,10 +126,10 @@ public class MainActivity extends AppCompatActivity {
 		switch (permission) {
 			case Manifest.permission.CAMERA:
 				return "相机权限 - 用于拍照和录像";
-			case Manifest.permission.WRITE_EXTERNAL_STORAGE:
-				return "存储权限 - 用于保存照片和文件";
-			case Manifest.permission.READ_EXTERNAL_STORAGE:
-				return "读取存储权限 - 用于访问照片和文件";
+			// [移除] case Manifest.permission.WRITE_EXTERNAL_STORAGE:
+			// 	return "存储权限 - 用于保存照片和文件";
+			// [移除] case Manifest.permission.READ_EXTERNAL_STORAGE:
+			// 	return "读取存储权限 - 用于访问照片和文件";
 			case Manifest.permission.ACCESS_FINE_LOCATION:
 				return "精确位置权限 - 用于地理标记";
 			case Manifest.permission.ACCESS_COARSE_LOCATION:
@@ -163,6 +163,7 @@ public class MainActivity extends AppCompatActivity {
 
         // App 初始化序列
         checkAndRequestPermissions();
+        clearCacheOnStartup(); // [新增] 启动时清理私有缓存
         initLocationServices();
         initWebView();
         initDatabaseAndBackend();
@@ -388,7 +389,7 @@ public class MainActivity extends AppCompatActivity {
      */
     private void checkAndRequestPermissions() {
         String[] REQUIRED_PERMISSIONS = {
-                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                // [移除] Manifest.permission.WRITE_EXTERNAL_STORAGE,
                 Manifest.permission.CAMERA,
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION
@@ -476,7 +477,7 @@ public class MainActivity extends AppCompatActivity {
         }
         
         // 打印日志用于调试，确认最终传递给Intent的MIME类型是什么
-        Log.d("FileChooser", "Final MIME Types: " + java.util.Arrays.toString(finalMimeTypes));
+        Log.d("FileChooser", " MIME Types: " + java.util.Arrays.toString(finalMimeTypes));
         if(finalMimeTypes.length > 1){
             Log.d("FileChooser", "Using EXTRA_MIME_TYPES method.");
         } else if (finalMimeTypes.length == 1) {
@@ -711,4 +712,48 @@ public class MainActivity extends AppCompatActivity {
     // 公共的 getter 方法，以便其他类可以访问这些助手对象
     public DatabaseHelper getDatabaseHelper() { return dbHelper; }
     public BackServer getBackServer() { return backServer; }
+    
+    // --- [新增] 清理缓存相关方法 ---
+
+    /**
+     * [新增] 应用启动时在后台静默清理缓存目录。
+     * 此方法不显示 Toast，也不回调 JS，只记录日志。
+     */
+    private void clearCacheOnStartup() {
+        new Thread(() -> {
+            try {
+                File cacheDir = new File(getExternalFilesDir(null), "file_camera/cache");
+                if (!cacheDir.exists() || !cacheDir.isDirectory()) {
+                    Log.i("CacheClear", "Cache directory does not exist, no need to clear.");
+                    return;
+                }
+                
+                if (deleteDirectoriesRecursive(cacheDir)) {
+                    Log.i("CacheClear", "Cache directory successfully cleared on startup.");
+                } else {
+                    Log.e("CacheClear", "Failed to clear cache directory on startup.");
+                }
+            } catch (Exception e) {
+                Log.e("CacheClear", "Exception while clearing cache on startup.", e);
+            }
+        }).start();
+    }
+
+    /**
+     * [新增] 递归删除目录的辅助方法。
+     */
+    private boolean deleteDirectoriesRecursive(File directory) {
+        if (directory == null || !directory.exists()) {
+            return true;
+        }
+        if (directory.isDirectory()) {
+            File[] children = directory.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteDirectoriesRecursive(child);
+                }
+            }
+        }
+        return directory.delete();
+    }
 }
