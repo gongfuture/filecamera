@@ -1483,38 +1483,7 @@ public class BackServer {
 			return directory.exists() ? directory.isDirectory() : directory.mkdirs();
 		}
 	}
-	private void deleteDirectoryContents(File directory) {
-		if (directory == null || !directory.exists() || !directory.isDirectory()) return;
-		try {
-			Deque<File> traversalDeque = new ArrayDeque<>();
-			Deque<File> dirsToDelete = new ArrayDeque<>();
-			traversalDeque.push(directory);
-			while (!traversalDeque.isEmpty()) {
-				File current = traversalDeque.pop();
-				File[] files = current.listFiles();
-				if (files != null) {
-					for (File file : files) {
-						if (file.isDirectory()) {
-							traversalDeque.push(file);
-							dirsToDelete.push(file);
-						} else {
-							if (!file.delete()) {
-								android.util.Log.w("Export", "无法删除文件: " + file.getAbsolutePath());
-							}
-						}
-					}
-				}
-			}
-			while (!dirsToDelete.isEmpty()) {
-				File dirToDelete = dirsToDelete.pop();
-				if (!dirToDelete.delete()) {
-					android.util.Log.w("Export", "无法删除目录: " + dirToDelete.getAbsolutePath());
-				}
-			}
-		} catch (Exception e) {
-			android.util.Log.e("Export", "删除目录内容时发生异常: " + directory.getAbsolutePath(), e);
-		}
-	}
+
 
 	private void checkAndCreateDirectoryStructure(File exportDir) {
 		try {
