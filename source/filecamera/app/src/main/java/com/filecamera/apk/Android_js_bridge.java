@@ -176,62 +176,48 @@ public class Android_js_bridge {
             try {
 				// --- 1. "file" 类型: 写入公共 "Downloads" 目录 ---
 				byte[] decodedBytes = decodeBase64(base64String); // 使用辅助函数				
-                if ("file".equals(datatype)) {
-                    ContentResolver resolver = activity.getContentResolver();
-                    ContentValues values = new ContentValues();
-                    
-                    // 目标路径: Downloads/file_camera/...
-                    String customFolder = "file_camera";
-                    String relativePath = Environment.DIRECTORY_DOWNLOADS + "/" + customFolder + (parentpath == null ? "" : parentpath);
+            if ("file".equals(datatype)) {
+                // --- 1. "file" 类型: 写入公共 "Downloads" 目录 (自动重命名) ---
+                ContentResolver resolver = activity.getContentResolver();
+                ContentValues values = new ContentValues();
+                
+                // 目标路径: Downloads/file_camera/...
+                String customFolder = "file_camera";
+                String relativePath = Environment.DIRECTORY_DOWNLOADS + "/" + customFolder + (parentpath == null ? "" : parentpath);
 
-                    values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
-                    
-                    // 自动检测 MimeType
-                    String mimeType = "application/octet-stream";
-                    String extension = MimeTypeMap.getFileExtensionFromUrl(fileName);
-                    if (extension != null) {
-                        String mimeFromExtension = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.toLowerCase());
-                        if (mimeFromExtension != null) {
-                            mimeType = mimeFromExtension;
-                        }
+                // 自动检测 MimeType
+                String mimeType = "application/octet-stream";
+                String extension = MimeTypeMap.getFileExtensionFromUrl(fileName);
+                if (extension != null) {
+                    String mimeFromExtension = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.toLowerCase());
+                    if (mimeFromExtension != null) {
+                        mimeType = mimeFromExtension;
                     }
-                    values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
-                    values.put(MediaStore.Downloads.RELATIVE_PATH, relativePath);
-                    // [新增] 标记为下载完成
-                    values.put(MediaStore.Downloads.IS_PENDING, 0);
+                }
 
-                    // 检查并删除已存在的文件，确保覆盖
-                    Uri existingUri = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-                    String selection = MediaStore.Downloads.RELATIVE_PATH + " = ? AND " + MediaStore.Downloads.DISPLAY_NAME + " = ?";
-                    String[] selectionArgs = new String[]{relativePath + "/", fileName}; // MediaStore 路径需要以 / 结尾
-                    
-                    try (Cursor cursor = resolver.query(existingUri, new String[]{MediaStore.Downloads._ID}, selection, selectionArgs, null)) {
-                        if (cursor != null && cursor.moveToFirst()) {
-                            long fileId = cursor.getLong(0);
-                            Uri deleteUri = ContentUris.withAppendedId(existingUri, fileId);
-                            try {
-                                resolver.delete(deleteUri, null, null);
-                            } catch (Exception e) {
-                                // Log it, but continue
-                            }
-                        }
+                // 生成唯一文件名（如果存在同名文件则添加序号）
+                String finalFileName = generateUniqueFileName(resolver, relativePath, fileName);
+
+                values.put(MediaStore.Downloads.DISPLAY_NAME, finalFileName);
+                values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+                values.put(MediaStore.Downloads.RELATIVE_PATH, relativePath);
+                values.put(MediaStore.Downloads.IS_PENDING, 0);
+
+                // 插入新文件
+                Uri fileUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (fileUri == null) {
+                    throw new IOException("MediaStore 无法创建文件");
+                }
+
+                // 写入数据
+                try (OutputStream os = resolver.openOutputStream(fileUri)) {
+                    if (os == null) {
+                        throw new IOException("无法打开输出流");
                     }
+                    os.write(decodedBytes);
+                }
 
-                    // 插入新文件
-                    Uri fileUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                    if (fileUri == null) {
-						throw new IOException("MediaStore 无法创建文件");
-					}
-
-                    // 写入数据
-                    try (OutputStream os = resolver.openOutputStream(fileUri)) {
-                        if (os == null) {
-							throw new IOException("无法打开输出流");
-						}
-                        os.write(decodedBytes);
-                    }
-
-                } else if ("dir".equals(datatype)) {
+            } else if ("dir".equals(datatype)) {
                     File storageDir = new File(activity.getExternalFilesDir(null), "file_camera/cache" + (parentpath == null ? "" : parentpath));
                     if (!storageDir.exists()) {
                         if (!storageDir.mkdirs()) {
@@ -262,7 +248,58 @@ public class Android_js_bridge {
             }
         }).start();
     }
+	private String generateUniqueFileName(ContentResolver resolver, String relativePath, String originalFileName) {
+		// 分离文件名和扩展名
+		String baseName;
+		String extension = "";
+		
+		int dotIndex = originalFileName.lastIndexOf(".");
+		if (dotIndex > 0 && dotIndex < originalFileName.length() - 1) {
+			// 有扩展名
+			baseName = originalFileName.substring(0, dotIndex);
+			extension = originalFileName.substring(dotIndex); // 包含点号，如 ".pdf"
+		} else {
+			// 没有扩展名
+			baseName = originalFileName;
+		}
 
+		// 检查文件是否存在
+		String candidateFileName = originalFileName;
+		int counter = 1;
+		
+		while (fileExistsInMediaStore(resolver, relativePath, candidateFileName)) {
+			// 文件存在，生成新名字：baseName(counter).extension
+			candidateFileName = baseName + "(" + counter + ")" + extension;
+			counter++;
+			
+			// 防止无限循环
+			if (counter > 9999) {
+				throw new RuntimeException("无法生成唯一文件名：已尝试 9999 次");
+			}
+		}
+		
+		return candidateFileName;
+	}
+	private boolean fileExistsInMediaStore(ContentResolver resolver, String relativePath, String fileName) {
+		Uri queryUri = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+		
+		// 确保路径末尾有斜杠（MediaStore 查询需要）
+		String normalizedPath = relativePath.endsWith("/") ? relativePath : relativePath + "/";
+		
+		String selection = MediaStore.Downloads.RELATIVE_PATH + " = ? AND " 
+						 + MediaStore.Downloads.DISPLAY_NAME + " = ?";
+		String[] selectionArgs = new String[]{normalizedPath, fileName};
+		
+		try (Cursor cursor = resolver.query(queryUri, 
+											new String[]{MediaStore.Downloads._ID}, 
+											selection, 
+											selectionArgs, 
+											null)) {
+			return cursor != null && cursor.getCount() > 0;
+		} catch (Exception e) {
+			return false; // 出错时假设文件不存在，允许尝试写入
+		}
+	}
     // [重构] 从 "私有" 压缩到 "公共"
     private void outWithZip(String id) {
         new Thread(() -> {
