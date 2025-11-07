@@ -4,6 +4,7 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
+import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.location.Location;
@@ -53,7 +54,8 @@ import java.util.HashSet;       // 确保导入
 import android.provider.Settings;
 import androidx.appcompat.app.AlertDialog;
 public class MainActivity extends AppCompatActivity {
-
+	
+	private static final String TAG = "MainActivity";
     private String indexurl = "https://appassets.androidplatform.net/assets/index.html";
     private String open_in_app_url_head = "https://appassets.androidplatform.net";
 
@@ -160,7 +162,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
+        // 应用启动时，异步清理上一次可能失败的媒体库幽灵记录
+        cleanupPendingMediaStoreRecords();
         // App 初始化序列
         checkAndRequestPermissions();
         clearCacheOnStartup(); // [新增] 启动时清理私有缓存
@@ -756,4 +759,28 @@ public class MainActivity extends AppCompatActivity {
         }
         return directory.delete();
     }
+    private void cleanupPendingMediaStoreRecords() {
+        // 必须在后台线程执行 I/O 操作
+        new Thread(() -> {
+            ContentResolver resolver = getContentResolver();
+            Uri collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            String where = MediaStore.Images.Media.IS_PENDING + " = 1 AND " +
+                           MediaStore.Images.Media.OWNER_PACKAGE_NAME + " = ?";
+            
+            String[] selectionArgs = new String[] { getPackageName() };
+            // --------------------
+
+            try {
+                int deletedRows = resolver.delete(collection, where, selectionArgs);
+                
+                if (deletedRows > 0) {
+                    Log.d(TAG, "MediaStore Cleanup: Successfully deleted " + deletedRows + " of *our own* pending ghost records.");
+                } else {
+                    Log.d(TAG, "MediaStore Cleanup: No pending records found for this app.");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to cleanup pending media records", e);
+            }
+        }).start();
+    }	
 }

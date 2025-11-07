@@ -1,7 +1,8 @@
 // --- 数据模型 (默认值) ---
 let DEFAULT_CONFIG = {
     camera:{
-		proportion:"16:9"
+		proportion:"16:9",
+		sync_album:false
 	},
     watermark: {
         enable: true,
@@ -410,18 +411,32 @@ function createCard(title, children, enablePath = null) {
  */
 function createSwitch(path, targetSelector = null) {
     const value = getValueByPath(config, path);
-    // [兼容性修改] 只有 'false' 才是 'off'. null/undefined/true 都按 'on' (checked) 处理.
-    const isChecked = !(value === false); 
-    
-    const switchInput = createElement('input', { 
-        properties: { type: 'checkbox', checked: isChecked } 
+
+    // --- [修改] 在这里添加特殊判断 ---
+    let isChecked;
+    if (path === 'camera.sync_album') {
+		if(value){
+			isChecked = true;
+		}else{
+			isChecked = false;
+		}
+    } else {
+        // 2. 原始逻辑 (Default-On): 
+        // 所有其他路径 (如 'header.display') 保持原有逻辑。
+        // 只有 'false' 才是 'off'. null/undefined/true 都按 'on' (checked) 处理.
+        isChecked = !(value === false);
+    }
+    // --- 修改结束 ---
+
+    const switchInput = createElement('input', {
+        properties: { type: 'checkbox', checked: isChecked }
     });
-    
+
     const switchLabel = createElement('label', {
         className: 'switch',
-        dataset: { 
+        dataset: {
             action: 'toggle-content-enable', // 新增的 action
-            path: path 
+            path: path
         },
         children: [switchInput, createElement('span', { className: 'slider' })]
     });
@@ -703,8 +718,13 @@ function createCameraSettingsContent() {
         )
     });
 
+    const syncAlbumSwitch = createSwitch('camera.sync_album');
+    // --- 新增代码结束 ---
+
     return [
-        createFormGroup('相机比例', proportionSelect)
+        createFormGroup('相机比例', proportionSelect),
+        createFormGroup('同步到相册', syncAlbumSwitch)
+        // --- 新增代码结束 ---
     ];
 }
 
@@ -933,9 +953,7 @@ function createIconPickerControl(path) {
         events: {
             click: (e) => {
                 e.preventDefault();
-                // 恢复 Java 路径到配置
                 updateConfig(path, defaultIconPathForJava);
-                // 使用 JS 路径更新预览
                 updatePreview(defaultIconPathForJava);
             }
         }

@@ -43,6 +43,9 @@ import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.content.ContentValues;
+import android.content.ContentResolver;
+import android.provider.MediaStore;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
@@ -724,7 +727,20 @@ public class CameraActivity extends AppCompatActivity {
     private void processAndizeImage(File photoFile) {
         try {
             processImageOverlays(photoFile.getAbsolutePath());
-            Toast.makeText(CameraActivity.this, "照片已保存", Toast.LENGTH_SHORT).show();
+            if (cameraConfig != null && cameraConfig.sync_album) {
+                // 在后台线程中执行IO操作，避免阻塞UI
+                new Thread(() -> {
+                    try {
+                        copyToDcim(photoFile);
+                    } catch (IOException e) {
+                        Log.e(TAG, "同步到相册失败", e);
+                        // 可以在这里 post 一个 Toast 提示失败
+                        runOnUiThread(() -> Toast.makeText(CameraActivity.this, "同步相册失败", Toast.LENGTH_SHORT).show());
+                    }
+                }).start();
+            }else{
+				Toast.makeText(CameraActivity.this, "照片已保存", Toast.LENGTH_SHORT).show();
+			}
             Uri savedUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", photoFile);
             Intent resultIntent = new Intent();
             resultIntent.setData(savedUri);
@@ -734,7 +750,55 @@ public class CameraActivity extends AppCompatActivity {
             handlePhotoError("处理照片失败", e);
         }
     }
+	private void copyToDcim(File sourceFile) throws IOException {
+		// 1. 准备元数据
+		ContentValues values = new ContentValues();
+		String fileName = sourceFile.getName();
+		values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+		values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+		values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + File.separator + "Camera");
+		values.put(MediaStore.Images.Media.IS_PENDING, 1); // 标记为“处理中”
 
+		ContentResolver resolver = getContentResolver();
+		Uri collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+		
+		Uri itemUri = null;
+		try {
+			// 2. 插入媒体库记录并获取 Uri
+			itemUri = resolver.insert(collection, values);
+			if (itemUri == null) {
+				throw new IOException("无法创建 MediaStore 记录");
+			}
+
+			// 3. 打开输出流，执行复制
+			try (java.io.OutputStream out = resolver.openOutputStream(itemUri);
+				 java.io.InputStream in = new java.io.FileInputStream(sourceFile)) {
+				
+				if (out == null) {
+					throw new IOException("无法打开 MediaStore Uri 的输出流");
+				}
+
+				byte[] buf = new byte[1024];
+				int len;
+				while ((len = in.read(buf)) > 0) {
+					out.write(buf, 0, len);
+				}
+			}
+
+			// 4. 更新记录，标记为“完成”
+			values.clear();
+			values.put(MediaStore.Images.Media.IS_PENDING, 0);
+			resolver.update(itemUri, values, null, null);
+			Log.d(TAG, "照片已成功同步到相册: " + itemUri);
+			runOnUiThread(() -> Toast.makeText(CameraActivity.this, "照片已保存并同步到相册", Toast.LENGTH_SHORT).show());
+		} catch (Exception e) {
+			Log.e(TAG, "同步到相册失败", e);
+			if (itemUri != null) {
+				resolver.delete(itemUri, null, null);
+			}
+			throw new IOException("同步到相册失败: " + e.getMessage(), e);
+		}
+	}
     private void processImageOverlays(String imagePath) throws IOException {
         Bitmap originalBitmap = BitmapFactory.decodeFile(imagePath);
         if (originalBitmap == null) throw new IOException("无法解码图片文件");
@@ -1596,7 +1660,7 @@ public class CameraActivity extends AppCompatActivity {
         try {
             cameraConfig = new CameraConfig();
             cameraConfig.proportion = json.optString("proportion", "16:9");
-
+			cameraConfig.sync_album = json.optBoolean("sync_album", false);
             if ("4:3".equals(cameraConfig.proportion)) {
                 targetAspectRatio = AspectRatio.RATIO_4_3;
             } else {
@@ -2113,6 +2177,7 @@ public class CameraActivity extends AppCompatActivity {
 
     private static class CameraConfig {
         String proportion = "16:9";
+		boolean sync_album = false; 
     }
 
     private static class WatermarkConfig {

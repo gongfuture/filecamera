@@ -562,7 +562,8 @@ public class FilePickerBridge {
 
             // --- 相机配置 (新增) ---
             JSONObject camera = new JSONObject()
-                    .put("proportion", "16:9");
+                    .put("proportion", "16:9")
+					.put("sync_album", false);
             rootConfig.put("camera", camera);
 
             // --- 水印配置 ---
