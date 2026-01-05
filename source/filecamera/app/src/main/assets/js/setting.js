@@ -24,6 +24,7 @@ let DEFAULT_CONFIG = {
                 pile: { name: "桩号", type: "camera_pile", name_display: true, index: 2, color: "#2C3E50", size: 16 },
                 coord: { name: "坐标", type: "camera_coord", name_display: true, index: 3, color: "#2C3E50", size: 16 },
                 time: { name: "时间", type: "time", name_display: true, index: 4, color: "#2C3E50", size: 16 },
+				//workshop:{ name: "车间", type: "input_auto_save", name_display: true, index: 5, color: "#2C3E50", size: 16 },
 				//problem:{ name: "问题", type: "input", name_display: true, index: 5, color: "#2C3E50", size: 16 },
 				//weather:{ name: "天气", type: "weather", name_display: true, value: "",index: 6, color: "#2C3E50", size: 16 },
 				//address:{ name: "地址", type: "address", name_display: true, index: 7, color: "#2C3E50", size: 16 },
@@ -53,6 +54,7 @@ let pendingIconChange = null;
 const TYPE_OPTIONS = {
     string: '字符串',
     input: '实时输入',
+	input_auto_save: '输入(自动更新)',
     road: '路线名称 (动态)',
     camera_coord: '坐标 (动态)',
     camera_pile: '桩号 (动态)',
@@ -496,12 +498,11 @@ function createContentItem(itemKey, itemData, contentPath) {
     } else if (itemData.type === 'string') {
         valueInput.disabled = false; // 明确 string 类型是可输入的
         valueLabel.textContent = '值 (类型为字符串时)';
-    } else if (itemData.type === 'input') {
-        // 明确 'input' 类型也是可输入的 (用于设置默认值)
+    } else if (itemData.type === 'input' || itemData.type === 'input_auto_save') {
         valueInput.disabled = false; 
         valueInput.placeholder = "请输入默认值";
         valueLabel.textContent = '默认值';
-    } else {
+    }  else {
         // 其他所有动态类型 (road, time, address 等) 才被禁用
         valueInput.disabled = true; 
         valueInput.placeholder = "此类型为动态值";
@@ -541,11 +542,11 @@ function createContentItem(itemKey, itemData, contentPath) {
                     valueInput.disabled = false;
                     valueInput.placeholder = "请输入城市adcode";
                     valueLabel.textContent = '城市 Adcode';
-                } else if (newType === 'input') {
-                    valueInput.disabled = false; // 允许输入默认值
+                }else if (newType === 'input' || newType === 'input_auto_save') {
+                    valueInput.disabled = false;
                     valueInput.placeholder = "请输入默认值";
                     valueLabel.textContent = '默认值';
-                } else { // 其他动态类型（包括 'address'）
+                }else { // 其他动态类型（包括 'address'）
                     valueInput.disabled = true;
                     valueInput.placeholder = "此类型为动态值";
                     valueLabel.textContent = '值';
@@ -760,6 +761,7 @@ async function saveConfig() {
         
         // 2. 保存配置
         let result = await nativeWriteConfig(config);
+		console.log(config)
         if (result) {
             isConfigDirty = false;
             await alert_fix('配置保存成功');

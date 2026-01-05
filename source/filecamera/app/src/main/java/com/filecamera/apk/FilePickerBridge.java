@@ -26,7 +26,6 @@ import android.webkit.WebView;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResult;
-import androidx.activity.result.ActivityResultCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
@@ -50,15 +49,15 @@ public class FilePickerBridge {
     // region --- 常量和成员变量 ---
     private static final String TAG = "FilePickerBridge";
     private static final String PREFERENCES_NAME = "watermark_settings";
-    private static final String WATERMARK_CONFIG_KEY = "watermark_config_json";
+    
+    // [MODIFIED] 去掉了 WATERMARK_CONFIG_KEY 和 cachedWatermarkConfig，由 Manager 管理
 
-    private final AppCompatActivity activity; // [MODIFIED] 需要 AppCompatActivity 来注册 Launcher
+    private final AppCompatActivity activity;
     private final WebView webView;
     private final SharedPreferences sharedPreferences;
-    private String cachedWatermarkConfig = null;
+    
     private String cameraPhotoPath;
-    private Uri cameraPhotoUri; // [ADDED] 用于相机 Launcher 回调
-
+    private Uri cameraPhotoUri;
     private String pendingTaskId;
 
     private LocationManager locationManager;
@@ -66,7 +65,6 @@ public class FilePickerBridge {
     private double lat, lon, alt;
     private long locationTime;
 
-    // [ADDED] ActivityResultLaunchers
     private final ActivityResultLauncher<Intent> filePickerLauncher;
     private final ActivityResultLauncher<Uri> folderPickerLauncher;
     private final ActivityResultLauncher<Uri> cameraLauncher;
@@ -74,13 +72,14 @@ public class FilePickerBridge {
     // endregion
 
     // region --- 构造与生命周期 ---
-    public FilePickerBridge(AppCompatActivity activity, WebView webView) { // [MODIFIED] 构造函数参数
+    public FilePickerBridge(AppCompatActivity activity, WebView webView) {
         this.activity = activity;
         this.webView = webView;
+        // 这里保留 sharedPreferences 仅仅是为了兼容 readConfig/writeConfig 通用键值对方法
+        // 水印相关的全部走 WatermarkConfigManager
         this.sharedPreferences = activity.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
         initLocationServices();
 
-        // [ADDED] 在构造函数中注册所有的 Launchers
         this.filePickerLauncher = activity.registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> handleActivityResult(result, "file")
@@ -117,7 +116,7 @@ public class FilePickerBridge {
     }
     // endregion
     
-    // region --- [标准改造] 统一回调函数 ---
+    // region --- 回调函数 ---
     private void call_js_callback(String task_id, boolean success, Object data, String error_message) {
         new Handler(Looper.getMainLooper()).post(() -> {
             try {
@@ -143,7 +142,7 @@ public class FilePickerBridge {
     }
     // endregion
 
-    // region --- [标准改造] 公共 API (JavaScript 接口) ---
+    // region --- JS 接口 ---
     @JavascriptInterface
     public void open(String task_id, String json_data) {
         new Thread(() -> {
@@ -182,7 +181,7 @@ public class FilePickerBridge {
             }
         }).start();
     }
-    // ... (其他 JavascriptInterface 方法保持不变)
+
     @JavascriptInterface
     public void shareFile(String task_id, String json_data) {
         new Thread(() -> {
@@ -232,6 +231,7 @@ public class FilePickerBridge {
         }).start();
     }
 
+    // [MODIFIED] 使用 Manager 保存配置
     @JavascriptInterface
     public void writeWatermarkConfig(String task_id, String json_data) {
         new Thread(() -> {
@@ -240,12 +240,9 @@ public class FilePickerBridge {
                 JSONObject configObject = params.getJSONObject("config");
                 String configData = configObject.toString();
 
-                SharedPreferences.Editor editor = sharedPreferences.edit();
-                editor.putString(WATERMARK_CONFIG_KEY, configData);
-                boolean success = editor.commit();
+                boolean success = WatermarkConfigManager.getInstance(activity).saveConfig(configData);
 
                 if (success) {
-                    this.cachedWatermarkConfig = configData;
                     call_js_callback(task_id, true, new JSONObject(), null);
                 } else {
                     call_js_callback(task_id, false, null, "保存配置失败");
@@ -257,11 +254,12 @@ public class FilePickerBridge {
         }).start();
     }
 
+    // [MODIFIED] 使用 Manager 读取配置
     @JavascriptInterface
     public void readWatermarkConfig(String task_id, String json_data) {
         new Thread(() -> {
             try {
-                String configDataString = createWatermarkConfig();
+                String configDataString = WatermarkConfigManager.getInstance(activity).getConfig();
                 JSONObject configObject = new JSONObject(configDataString);
                 call_js_callback(task_id, true, configObject, null);
             } catch (Exception e) {
@@ -270,6 +268,7 @@ public class FilePickerBridge {
             }
         }).start();
     }
+
     @JavascriptInterface
     public void writeConfig(String task_id, String json_data) {
         new Thread(() -> {
@@ -279,7 +278,6 @@ public class FilePickerBridge {
 
                 SharedPreferences.Editor editor = sharedPreferences.edit();
 
-                // 遍历数组，将所有键值对放入 editor
                 for (int i = 0; i < obj_arr.length(); i++) {
                     JSONObject item = obj_arr.getJSONObject(i);
                     String key = item.getString("key");
@@ -287,7 +285,6 @@ public class FilePickerBridge {
                     editor.putString(key, value);
                 }
 
-                // 一次性提交所有更改
                 boolean success = editor.commit();
 
                 if (success) {
@@ -301,6 +298,7 @@ public class FilePickerBridge {
             }
         }).start();
     }
+
     @JavascriptInterface
     public void readConfig(String task_id, String json_data) {
         new Thread(() -> {
@@ -310,7 +308,6 @@ public class FilePickerBridge {
 
                 JSONObject result = new JSONObject();
 
-                // 遍历数组，从 SharedPreferences 中读取每一个键的值
                 for (int i = 0; i < key_arr.length(); i++) {
                     String key = key_arr.getString(i);
                     String value = sharedPreferences.getString(key, null);
@@ -326,15 +323,11 @@ public class FilePickerBridge {
     }
     // endregion
 
-    // region --- [REMOVED] 核心回调 (onActivityResult) ---
-    // public boolean onActivityResult(...) { ... } // 这个方法已完全删除
-    // endregion
-
-    // region --- [ADDED] 新的结果处理器 ---
+    // region --- 结果处理器 ---
     private void handleActivityResult(ActivityResult result, String type) {
         stopLocationUpdates();
         String current_task_id = this.pendingTaskId;
-        this.pendingTaskId = null; // 清理
+        this.pendingTaskId = null;
 
         if (current_task_id == null) return;
 
@@ -379,7 +372,6 @@ public class FilePickerBridge {
 
             JSONArray results = new JSONArray();
             if ("folder".equals(type)) {
-                // 构建一个与旧 handleFolderResult 兼容的 Intent
                 Intent data = new Intent();
                 data.setData(uri);
                 results = handleFolderResult(data);
@@ -399,7 +391,7 @@ public class FilePickerBridge {
     private void handleCameraResult(boolean success) {
         stopLocationUpdates();
         String current_task_id = this.pendingTaskId;
-        this.pendingTaskId = null; // 清理
+        this.pendingTaskId = null;
 
         if (current_task_id == null) return;
         
@@ -412,8 +404,7 @@ public class FilePickerBridge {
             JSONArray results = new JSONArray();
             if (cameraPhotoPath != null) {
                 writeLocationToExif(cameraPhotoPath);
-                File photoFile = new File(cameraPhotoPath);
-                // 使用 cameraPhotoUri, 它是由 FileProvider 生成的 content:// uri
+                // 使用 cameraPhotoUri
                 results.put(createFileObject(cameraPhotoUri));
             }
 
@@ -432,7 +423,7 @@ public class FilePickerBridge {
     }
     // endregion
 
-    // region --- Activity 启动器 (已改造) ---
+    // region --- Activity 启动器 ---
     private void startFilePicker(boolean multiple, JSONArray acceptTypes) {
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -452,14 +443,13 @@ public class FilePickerBridge {
     }
 
     private void startFolderPicker() {
-        // ACTION_OPEN_DOCUMENT_TREE 不需要 chooser
         folderPickerLauncher.launch(null);
     }
 
     private void startCamera() {
         if (activity.getPackageManager().resolveActivity(new Intent(MediaStore.ACTION_IMAGE_CAPTURE), PackageManager.MATCH_DEFAULT_ONLY) == null) {
             call_js_callback(pendingTaskId, false, null, "相机不可用");
-            pendingTaskId = null; // 清理
+            pendingTaskId = null;
             return;
         }
         startLocationUpdates();
@@ -470,19 +460,18 @@ public class FilePickerBridge {
             cameraLauncher.launch(cameraPhotoUri);
         } catch (IOException e) {
             call_js_callback(pendingTaskId, false, null, "创建图片文件失败: " + e.getMessage());
-            pendingTaskId = null; // 清理
+            pendingTaskId = null;
         }
     }
 
     private void startCustomCamera() {
-        String watermarkConfigString = createWatermarkConfig();
+        // 启动相机
         Intent intent = new Intent(activity, CameraActivity.class);
-        intent.putExtra("watermark_config", watermarkConfigString);
         customCameraLauncher.launch(intent);
     }
     // endregion
 
-    // region --- 结果解析器 (无变动) ---
+    // region --- 结果解析器 ---
     private JSONArray handleFileResult(Intent data) throws JSONException {
         JSONArray results = new JSONArray();
         if (data != null) {
@@ -519,11 +508,6 @@ public class FilePickerBridge {
         return results;
     }
 
-    // [REMOVED] handleCameraResult 已被新的基于 boolean 的方法取代
-    /*
-    private JSONArray handleCameraResult() throws JSONException { ... }
-    */
-
     private JSONArray handleCustomCameraResult(Intent data) throws JSONException {
         JSONArray results = new JSONArray();
         if (data != null && data.getData() != null) {
@@ -532,107 +516,6 @@ public class FilePickerBridge {
         return results;
     }
     // endregion
-    
-    // ... 此处省略了 水印配置、GPS定位、文件处理与分享辅助等所有未改动的代码 ...
-    // ... 您可以将原始文件中的这些部分直接复制到这里 ...
-    // region --- 水印配置模块 ---
-    private String createWatermarkConfig() {
-        if (this.cachedWatermarkConfig != null && !this.cachedWatermarkConfig.isEmpty()) {
-            return this.cachedWatermarkConfig;
-        }
-        String savedConfig = sharedPreferences.getString(WATERMARK_CONFIG_KEY, null);
-        String finalConfig;
-        if (savedConfig != null && !savedConfig.isEmpty()) {
-            try {
-                new JSONObject(savedConfig);
-                finalConfig = savedConfig;
-            } catch (JSONException e) {
-                Log.w(TAG, "保存的水印配置格式无效，使用默认配置");
-                finalConfig = getDefaultWatermarkConfig();
-            }
-        } else {
-            finalConfig = getDefaultWatermarkConfig();
-        }
-        this.cachedWatermarkConfig = finalConfig;
-        return finalConfig;
-    }
-    private String getDefaultWatermarkConfig() {
-        try {
-            JSONObject rootConfig = new JSONObject();
-
-            // --- 相机配置 (新增) ---
-            JSONObject camera = new JSONObject()
-                    .put("proportion", "16:9")
-					.put("sync_album", false);
-            rootConfig.put("camera", camera);
-
-            // --- 水印配置 ---
-            JSONObject watermark = new JSONObject()
-                    .put("enable", true)
-                    .put("scale", 0.75)
-                    .put("padding", new JSONArray("[16, 16, 16, 16]"))
-                    .put("radius", new JSONArray("[8, 8, 8, 8]"))
-                    .put("position", new JSONObject().put("left", 10).put("bottom", 10));
-
-            // 页眉
-            JSONObject header = new JSONObject()
-                    .put("display", true) // <-- 修改：新增
-                    .put("background", new JSONArray("[27, 68, 147, 255]"))
-                    .put("icon", new JSONObject()
-                            .put("display", true) // <-- 修改：新增
-                            .put("value", "file:///android_asset/icon.png")
-                            .put("width", 48)
-                            .put("height", 48)
-                            .put("position", "left"))
-                    .put("title", new JSONObject()
-                            .put("value", "巡查记录")
-                            .put("color", "#FFFFFF")
-                            .put("size", 20));
-
-            // 主体
-            JSONObject body = new JSONObject()
-                    .put("display", true) // <-- 修改：新增
-                    .put("background", new JSONArray("[248, 250, 252, 170]"))
-                    .put("content", new JSONObject()
-                            .put("road_name", new JSONObject().put("name", "路线名称").put("type", "road").put("name_display", true).put("index", 1).put("color", "#2C3E50").put("size", 16))
-                            .put("pile", new JSONObject().put("name", "桩号").put("type", "camera_pile").put("name_display", true).put("index", 2).put("color", "#2C3E50").put("size", 16))
-                            .put("coord", new JSONObject().put("name", "坐标").put("type", "camera_coord").put("name_display", true).put("index", 3).put("color", "#2C3E50").put("size", 16))
-                            .put("time", new JSONObject().put("name", "时间").put("type", "time").put("name_display", true).put("index", 4).put("color", "#2C3E50").put("size", 16))
-                            //.put("weather", new JSONObject().put("name", "天气").put("type", "weather").put("name_display", true).put("value", "").put("index", 5).put("color", "#2C3E50").put("size", 16))
-                    );
-
-            // 页脚
-            JSONObject foot = new JSONObject()
-                    .put("display", true) // <-- 修改：新增
-                    .put("background", new JSONArray("[27, 68, 147, 255]"))
-                    .put("content", new JSONObject()
-                            .put("unit", new JSONObject().put("name", "责任单位").put("type", "string").put("name_display", true).put("value", "").put("index", 1).put("color", "#FFFFFF").put("size", 12))
-                    );
-
-            watermark.put("header", header)
-                    .put("body", body)
-                    .put("foot", foot);
-
-            rootConfig.put("watermark", watermark);
-
-            // --- 二维码配置 ---
-            JSONObject qrcode = new JSONObject()
-                    .put("enable", true)
-                    .put("scale", 0.75)
-                    .put("padding", new JSONArray("[4, 4, 4, 4]"))
-                    .put("radius", new JSONArray("[8, 8, 8, 8]"))
-                    .put("position", new JSONObject().put("right", 10).put("top", 10));
-
-            rootConfig.put("qrcode", qrcode);
-
-            return rootConfig.toString();
-        } catch (JSONException e) {
-            e.printStackTrace();
-            return "{}"; // 发生错误时返回空JSON对象
-        }
-    }
-	
-	// endregion
 
     // region --- GPS 定位模块 ---
     private void initLocationServices() {
@@ -877,5 +760,4 @@ public class FilePickerBridge {
             this.isDirectory = isDirectory;
         }
     }
-    
 }
