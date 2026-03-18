@@ -137,109 +137,125 @@ public class BackServer {
         });
     }
     @JavascriptInterface
-	public void upload_file(String task_id, String json_data) {
-		new Thread(() -> {
-			try {
-				JSONObject data = new JSONObject(json_data);
-				String content_uri = data.getString("contentUri");
-				String dir_id = data.getString("dirId");
-				String file_name = data.getString("fileName");
+    public void upload_file(String task_id, String json_data) {
+        new Thread(() -> {
+            try {
+                JSONObject data = new JSONObject(json_data);
+                String content_uri = data.getString("contentUri");
+                String dir_id = data.getString("dirId");
+                String file_name = data.getString("fileName");
 
-				String file_id = IdGenerator.getIdByTime();
+                // 检查目录是否存在
+                JSONArray check_arr = new JSONArray().put(dir_id);
+                JSONObject dir = db_helper.db_get("SELECT id FROM dir WHERE id = ?", check_arr);
 
-				// 从content URI复制文件数据
-				byte[] file_data = copy_file_from_uri(content_uri);
+                if (dir == null) {
+                    call_js_callback(task_id, false, null, "文件夹不存在");
+                    return;
+                }
 
-				// 检查目录是否存在
-				JSONArray check_arr = new JSONArray().put(dir_id);
-				JSONObject dir = db_helper.db_get("SELECT id FROM dir WHERE id = ?", check_arr);
+                // 解析文件名获取扩展名
+                String[] extension_arr = file_name.split("\\.");
+                String extension = extension_arr.length > 1 ? extension_arr[extension_arr.length - 1] : "";
+                String name_part = (extension_arr.length > 1) ? file_name.substring(0, file_name.lastIndexOf('.')) : file_name;
 
-				if (dir == null) {
-					call_js_callback(task_id, false, null, "文件夹不存在");
-					return;
-				}
+                // ==================== 修复Bug：检查同名文件并自动重命名 ====================
+                int counter = 1;
+                String original_name_part = name_part;
+                while (true) {
+                    JSONArray check_file_arr = new JSONArray().put(dir_id).put(file_name);
+                    JSONObject existing_file = db_helper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", check_file_arr);
+                    if (existing_file == null) {
+                        break; // 没有同名文件，跳出循环，使用当前的 file_name
+                    }
+                    // 存在同名文件，生成新的文件名，例如：文件(1).jpg
+                    name_part = original_name_part + "(" + counter + ")";
+                    file_name = name_part + (extension.isEmpty() ? "" : "." + extension);
+                    counter++;
+                }
+                // ===========================================================================
 
-				// 解析文件名获取扩展名和序号
-				String[] extension_arr = file_name.split("\\.");
-				String extension = extension_arr.length > 1 ? extension_arr[extension_arr.length - 1] : "";
+                String file_id = IdGenerator.getIdByTime();
 
-				String name_part = (extension_arr.length > 1) ? file_name.substring(0, file_name.lastIndexOf('.')) : file_name;
-				long seq_number = getSeqNumberFromString(name_part);
-				long create_time = System.currentTimeMillis();
+                // 从content URI复制文件数据
+                byte[] file_data = copy_file_from_uri(content_uri);
+                
+                long seq_number = getSeqNumberFromString(name_part);
+                long create_time = System.currentTimeMillis();
                 long file_size = file_data.length;
 
-				// 创建存储目录
-				File data_dir = createDataDirectory();
-				File icon_dir = createIconDirectory();
+                // 创建存储目录
+                File data_dir = createDataDirectory();
+                File icon_dir = createIconDirectory();
 
-				if (data_dir == null || icon_dir == null) {
-					call_js_callback(task_id, false, null, "无法创建数据或图标存储目录");
-					return;
-				}
+                if (data_dir == null || icon_dir == null) {
+                    call_js_callback(task_id, false, null, "无法创建数据或图标存储目录");
+                    return;
+                }
 
-				// 生成文件名
-				String real_file_name = file_id + (extension.isEmpty() ? "" : "." + extension);
-				String real_icon_name = file_id + "_icon.png";
+                // 生成文件名
+                String real_file_name = file_id + (extension.isEmpty() ? "" : "." + extension);
+                String real_icon_name = file_id + "_icon.png";
 
-				// 保存原文件到data目录
-				File target_file = new File(data_dir, real_file_name);
-				if (!saveFile(file_data, target_file)) {
-					call_js_callback(task_id, false, null, "文件保存失败");
-					return;
-				}
-				// 如果是图片文件，生成并保存图标
-				if (is_image_file(file_name)) {
-					byte[] icon_data = icon_make(file_data, file_name);
-					if (icon_data != null) {
-						File icon_file = new File(icon_dir, real_icon_name);
+                // 保存原文件到data目录
+                File target_file = new File(data_dir, real_file_name);
+                if (!saveFile(file_data, target_file)) {
+                    call_js_callback(task_id, false, null, "文件保存失败");
+                    return;
+                }
+                
+                // 如果是图片文件，生成并保存图标
+                if (is_image_file(file_name)) {
+                    byte[] icon_data = icon_make(file_data, file_name);
+                    if (icon_data != null) {
+                        File icon_file = new File(icon_dir, real_icon_name);
 
-						if (!saveFile(icon_data, icon_file)) {
-							real_icon_name = null;
-						}
-					}
-				}else{
-					real_icon_name = null;
-				}
-				// 在数据库中保存文件信息
-				JSONArray file_arr = new JSONArray();
-				file_arr.put(file_id);
-				file_arr.put(file_name);
-				file_arr.put(dir_id);
-				file_arr.put("file");
-				file_arr.put(real_file_name); // real_file_name字段保存实际文件名
+                        if (!saveFile(icon_data, icon_file)) {
+                            real_icon_name = null;
+                        }
+                    }
+                } else {
+                    real_icon_name = null;
+                }
+                
+                // 在数据库中保存文件信息
+                JSONArray file_arr = new JSONArray();
+                file_arr.put(file_id);
+                file_arr.put(file_name); // 此处的 file_name 已经是经过查重重命名后的安全名称
+                file_arr.put(dir_id);
+                file_arr.put("file");
+                file_arr.put(real_file_name); 
                 file_arr.put(create_time);
                 file_arr.put(seq_number);
                 file_arr.put(file_size);
                 file_arr.put(extension);
-				file_arr.put(real_icon_name);
-				db_helper.db_run(
-					"INSERT INTO file (id, name, parent_dir_id, type, real_file_name, createtime, seqnumber, size, extension, real_icon_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					file_arr
-				);
+                file_arr.put(real_icon_name);
+                db_helper.db_run(
+                    "INSERT INTO file (id, name, parent_dir_id, type, real_file_name, createtime, seqnumber, size, extension, real_icon_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    file_arr
+                );
 
-
-
-				// 创建要返回给前端的文件信息对象
-				JSONObject result_data = new JSONObject();
-				result_data.put("type", "file");
-				result_data.put("id", file_id);
-				result_data.put("name", file_name);
-				result_data.put("size", file_size);
-				result_data.put("createtime", create_time);
-				result_data.put("extension", extension);
-				result_data.put("real_file_name", real_file_name);
-				result_data.put("real_icon_name", real_icon_name);
-				result_data.put("seqnumber", seq_number);
+                // 创建要返回给前端的文件信息对象
+                JSONObject result_data = new JSONObject();
+                result_data.put("type", "file");
+                result_data.put("id", file_id);
+                result_data.put("name", file_name); // 返回重命名后的文件名给前端
+                result_data.put("size", file_size);
+                result_data.put("createtime", create_time);
+                result_data.put("extension", extension);
+                result_data.put("real_file_name", real_file_name);
+                result_data.put("real_icon_name", real_icon_name);
+                result_data.put("seqnumber", seq_number);
                 result_data.put("parent_dir_id", dir_id);
 
-				call_js_callback(task_id, true, result_data, null);
+                call_js_callback(task_id, true, result_data, null);
 
-			} catch (Exception e) {
-				showToast("上传文件时发生错误: " + e.getMessage());
-				call_js_callback(task_id, false, null, e.getMessage());
-			}
-		}).start();
-	}
+            } catch (Exception e) {
+                showToast("上传文件时发生错误: " + e.getMessage());
+                call_js_callback(task_id, false, null, e.getMessage());
+            }
+        }).start();
+    }	
 	@JavascriptInterface
 	public void getFileData(String task_id, String json_data) {
 		new Thread(() -> {
