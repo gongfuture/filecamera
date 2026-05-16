@@ -960,6 +960,10 @@ public class CameraActivity extends AppCompatActivity {
         String pileText = "暂无桩号";
         String addressText = "获取地址中...";
         
+        // 同步重置内存中的数据，避免下次 onResume 时恢复旧值
+        currentAddress = addressText;
+        currentRoadMatch = null;
+        
         if (watermarkConfig == null) return;
 
         for (Section s : new Section[]{watermarkConfig.header, watermarkConfig.body, watermarkConfig.foot}) {
@@ -986,6 +990,9 @@ public class CameraActivity extends AppCompatActivity {
                 break;
             case "camera_pile":
                 updateWatermarkItem(item.id, pile);
+                break;
+            case "address":
+                updateWatermarkItem(item.id, address);
                 break;
         }
     }
