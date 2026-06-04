@@ -126,7 +126,7 @@ jobs:
             printf '%s\n\n%s\n' "$PREFIX" "$ORIGINAL" > README.md
 
             git add README.md
-            git commit -m "chore: 从 readme-config 分支注入 README 前缀"
+            git commit -m "chore: 注入README前缀, 恢复Workflow"
 
             echo "::notice::README 前缀注入成功"
           else
