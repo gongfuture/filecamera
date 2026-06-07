@@ -24,8 +24,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Fetch from Gitee remote
+        env:
+          GITEE_PAT: ${{ secrets.GITEE_PAT }}
         run: |
-          git remote add gitee https://gitee.com/zjywchenhui/filecamera.git
+          git remote add gitee "https://x-access-token:${GITEE_PAT}@gitee.com/zjywchenhui/filecamera.git"
           git fetch gitee master
 
       - name: Detect changes and decide sync
