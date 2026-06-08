@@ -1923,7 +1923,8 @@ public class CameraActivity extends AppCompatActivity {
         new Thread(() -> {
             try {
                 if (roadDatabaseHelper == null) return;
-                RoadDatabaseHelper.RoadLocationMatch match = roadDatabaseHelper.findNearestRoadLocation(lng, lat);
+                String lastRoadPartId = currentRoadMatch != null ? currentRoadMatch.roadPartId : null;
+                RoadDatabaseHelper.RoadLocationMatch match = roadDatabaseHelper.findNearestRoadLocation(lng, lat, lastRoadPartId);
                 
                 currentRoadMatch = match; 
 

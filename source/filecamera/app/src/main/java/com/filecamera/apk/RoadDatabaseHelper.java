@@ -325,11 +325,19 @@ public class RoadDatabaseHelper extends SQLiteOpenHelper {
         db.insert(TABLE_ROAD_INFO, null, infoValues);
     }
 
-    public RoadLocationMatch findNearestRoadLocation(double currentLng, double currentLat) {
+    public RoadLocationMatch findNearestRoadLocation(double currentLng, double currentLat, String lastRoadPartId) {
         SQLiteDatabase db = this.getReadableDatabase();
 
         List<String> candidateRoadIds = getCandidateRoadsByBbox(db, currentLng, currentLat);
         if (candidateRoadIds.isEmpty()) return RoadLocationMatch.noMatch(-1);
+
+        // 优先检查上次匹配到的路线，若仍在 100 米内则直接返回，避免全量遍历
+        if (lastRoadPartId != null && !"暂无".equals(lastRoadPartId) && candidateRoadIds.contains(lastRoadPartId)) {
+            RoadLocationMatch fastMatch = findBestMatchOnRoad(db, lastRoadPartId, currentLng, currentLat);
+            if (fastMatch != null) {
+                return fastMatch;
+            }
+        }
 
         BestMatchCandidate bestCandidate = null;
 
@@ -368,6 +376,46 @@ public class RoadDatabaseHelper extends SQLiteOpenHelper {
 
         if (preciseDistance > MATCH_DISTANCE_THRESHOLD_METERS) {
             return RoadLocationMatch.noMatch(preciseDistance);
+        }
+
+        return calculateFinalPile(db, bestCandidate, preciseDistance);
+    }
+
+    private RoadLocationMatch findBestMatchOnRoad(SQLiteDatabase db, String roadPartId, double currentLng, double currentLat) {
+        BestMatchCandidate bestCandidate = null;
+        String segmentQuery = "SELECT " + COL_START_LNG + "," + COL_START_LAT + "," +
+                COL_END_LNG + "," + COL_END_LAT + "," + COL_DIST_FROM_START + "," +
+                COL_LEN_SQ_APPROX +
+                " FROM " + TABLE_ROAD_COORD + " WHERE " + COL_ROAD_PART_ID + " = ?";
+
+        try (Cursor segmentCursor = db.rawQuery(segmentQuery, new String[]{roadPartId})) {
+            while (segmentCursor.moveToNext()) {
+                Coord start = new Coord(segmentCursor.getDouble(0), segmentCursor.getDouble(1));
+                Coord end = new Coord(segmentCursor.getDouble(2), segmentCursor.getDouble(3));
+                double lenSqApprox = segmentCursor.getDouble(5);
+
+                ProjectionResult planarProjection = getPlanarProjectionOnSegment(
+                        new Coord(currentLng, currentLat), start, end, lenSqApprox
+                );
+
+                if (bestCandidate == null || planarProjection.distanceSq < bestCandidate.distanceSq) {
+                    bestCandidate = new BestMatchCandidate(
+                            roadPartId,
+                            start,
+                            segmentCursor.getDouble(4),
+                            planarProjection.distanceSq,
+                            planarProjection.projectedPoint
+                    );
+                }
+            }
+        }
+
+        if (bestCandidate == null) return null;
+
+        double preciseDistance = haversineDistance(new Coord(currentLng, currentLat), bestCandidate.projectedPointOnSegment);
+
+        if (preciseDistance > MATCH_DISTANCE_THRESHOLD_METERS) {
+            return null;
         }
 
         return calculateFinalPile(db, bestCandidate, preciseDistance);

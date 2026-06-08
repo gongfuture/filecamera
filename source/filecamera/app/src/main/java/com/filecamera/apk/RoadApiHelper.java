@@ -83,7 +83,7 @@ public class RoadApiHelper {
                 double lat = data.getDouble("lat");
 
                 // 将工作委托给 dbHelper
-                RoadDatabaseHelper.RoadLocationMatch match = dbHelper.findNearestRoadLocation(lng, lat);
+                RoadDatabaseHelper.RoadLocationMatch match = dbHelper.findNearestRoadLocation(lng, lat, null);
 
                 JSONObject resultJson = new JSONObject();
                 resultJson.put("roadPartId", match.roadPartId);
