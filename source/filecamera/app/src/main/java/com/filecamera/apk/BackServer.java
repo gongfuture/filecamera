@@ -52,6 +52,12 @@ public class BackServer {
     private Context context;
     private DatabaseHelper db_helper;
 
+    // GPS 缓存（由 MainActivity 定期更新）
+    private volatile double gpsLat = 0;
+    private volatile double gpsLng = 0;
+    private volatile long gpsTime = 0;
+    private static final long GPS_TIMEOUT_MS = 20000;
+
     public BackServer(WebView webView, Context context) {
         this.webView = webView;
         this.context = context;
@@ -59,6 +65,15 @@ public class BackServer {
 
         // 初始化时创建必要的目录
         initDirectories();
+    }
+
+    /**
+     * 由 MainActivity 在每次 GPS 更新时调用，缓存最新位置供 fetchAdcodeByGps 使用。
+     */
+    public void updateGpsLocation(double lat, double lng) {
+        this.gpsLat = lat;
+        this.gpsLng = lng;
+        this.gpsTime = System.currentTimeMillis();
     }
 	private File createDataDirectory() {
 		try {
@@ -2061,4 +2076,27 @@ public class BackServer {
 
 
 
+	@JavascriptInterface
+	public void fetchAdcodeByGps(String task_id, String json_data) {
+		new Thread(() -> {
+			try {
+				if (gpsTime == 0 || (System.currentTimeMillis() - gpsTime) > GPS_TIMEOUT_MS) {
+					call_js_callback(task_id, false, null, "GPS未就绪，请稍后重试");
+					return;
+				}
+				String result = GaodeApi.resolveAdcodeFromGps(context, gpsLng, gpsLat);
+				if (result == null || result.equals(GaodeApi.ERROR_FETCH_FAILED)
+					|| result.equals(GaodeApi.ERROR_NO_KEY)
+					|| result.equals(GaodeApi.ERROR_INVALID_KEY)) {
+					call_js_callback(task_id, false, null, result != null ? result : "获取失败");
+				} else {
+					JSONObject resultData = new JSONObject();
+					resultData.put("adcode", result);
+					call_js_callback(task_id, true, resultData, null);
+				}
+			} catch (Exception e) {
+				call_js_callback(task_id, false, null, e.getMessage());
+			}
+		}).start();
+	}
 }

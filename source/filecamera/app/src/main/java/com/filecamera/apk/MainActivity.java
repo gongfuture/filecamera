@@ -191,6 +191,9 @@ public class MainActivity extends AppCompatActivity {
                 lon = location.getLongitude();
                 alt = location.getAltitude();
                 locationTime = location.getTime();
+                if (backServer != null) {
+                    backServer.updateGpsLocation(lat, lon);
+                }
             }
         };
     }
@@ -208,6 +211,8 @@ public class MainActivity extends AppCompatActivity {
         webSettings.setDomStorageEnabled(true);
         webSettings.setAllowFileAccess(true);
         webSettings.setAllowContentAccess(true);
+        // 固定 WebView 字体缩放为 100%，避免老年模式（系统字体放大）打乱 H5 界面布局
+        webSettings.setTextZoom(100);
 
         jsBridge = new Android_js_bridge(this, webView);
         filePickerBridge = new FilePickerBridge(this, webView);
@@ -704,12 +709,43 @@ public class MainActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         CookieManager.getInstance().flush();
+        if (locationManager != null && locationListener != null) {
+            locationManager.removeUpdates(locationListener);
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         CookieManager.getInstance().flush();
+        startLocationUpdates();
+    }
+
+    private void startLocationUpdates() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        if (locationManager == null) return;
+        Location lastKnownGps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+        Location lastKnownNetwork = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+        Location bestLastKnown = null;
+        if (lastKnownGps != null && lastKnownNetwork != null) {
+            bestLastKnown = lastKnownGps.getTime() > lastKnownNetwork.getTime() ? lastKnownGps : lastKnownNetwork;
+        } else {
+            bestLastKnown = (lastKnownGps != null) ? lastKnownGps : lastKnownNetwork;
+        }
+        if (bestLastKnown != null) {
+            lat = bestLastKnown.getLatitude();
+            lon = bestLastKnown.getLongitude();
+            alt = bestLastKnown.getAltitude();
+            locationTime = bestLastKnown.getTime();
+            if (backServer != null) {
+                backServer.updateGpsLocation(lat, lon);
+            }
+        }
+        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0.0f, locationListener);
+        locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000, 0.0f, locationListener);
     }
 
     // 公共的 getter 方法，以便其他类可以访问这些助手对象

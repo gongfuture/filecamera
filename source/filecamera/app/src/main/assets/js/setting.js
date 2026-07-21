@@ -59,7 +59,7 @@ const TYPE_OPTIONS = {
     camera_coord: '坐标 (动态)',
     camera_pile: '桩号 (动态)',
     time: '时间 (动态)',
-	weather: '天气 (动态，需秘钥)',
+	weather: '天气 (动态，需配置adcode和秘钥)',
 	address: '地址 (动态，需秘钥)'
 };
 async function open_setting_page(){
@@ -236,6 +236,56 @@ function createColorInput(path) {
     return createElement('div', {
         className: 'color-input-wrapper',
         children: [colorPreview, textInput]
+    });
+}
+
+/**
+ * 创建一个 adcode 输入组件：城市 adcode 输入框 + “获取”按钮（通过 GPS 解析）。
+ * 结构类似颜色输入组件，由两个 DOM 放入一个容器中。
+ * @param {string} path - 绑定到 config 对象的路径（值为城市 adcode）
+ * @returns {HTMLElement}
+ */
+function createAdcodeInput(path) {
+    const initialValue = getValueByPath(config, path);
+
+    const textInput = createElement('input', {
+        properties: {
+            type: 'text',
+            value: (initialValue !== null && initialValue !== undefined) ? initialValue : '',
+            placeholder: '点击右侧按钮获取'
+        },
+        events: { input: (e) => updateConfig(path, e.target.value) }
+    });
+
+    const fetchBtn = createElement('button', {
+        className: 'btn-adcode-fetch',
+        textContent: '获取',
+        events: {
+            click: async (e) => {
+                e.preventDefault();
+                const btn = e.target;
+                btn.disabled = true;
+                btn.textContent = '...';
+                try {
+                    const result = await callAndroidMethod(window.backServer, 'fetchAdcodeByGps', {});
+                    if (result && result.adcode) {
+                        textInput.value = result.adcode;
+                        updateConfig(path, result.adcode);
+                    }
+                } catch (err) {
+                    const errMsg = (typeof err === 'string') ? err : (err && (err.message || err.errorMessage)) || '未知错误';
+                    await alert_fix('获取adcode失败: ' + errMsg);
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = '获取';
+                }
+            }
+        }
+    });
+
+    return createElement('div', {
+        className: 'adcode-input-wrapper',
+        children: [textInput, fetchBtn]
     });
 }
 
@@ -481,33 +531,60 @@ function createContentItem(itemKey, itemData, contentPath) {
             createElement('button', { className: 'btn-remove', textContent: '✖', dataset: { action: 'remove-item', path: contentPath, key: itemKey } })
         ]
     });
-    const keyInput = createInput({ path: `${contentPath}.${itemKey}._key_`, type: 'text' });
-    keyInput.value = itemKey;
-    keyInput.addEventListener('change', async (e) => await renameContentKey(contentPath, itemKey, e.target.value));
+    // 属性名(Key)作为内部标识保留在数据中（新增项由 get_id_by_time() 自动生成），不向用户开放编辑
 
-    const valueFormGroup = createFormGroup('值', createInput({ path: `${contentPath}.${itemKey}.value` }));
-    const valueInput = valueFormGroup.querySelector('input');
+    // --- 值输入区域 ---
+    // weather 类型的值是城市 adcode，使用专用的 adcode 输入组件（输入框 + 获取按钮，
+    // 结构类似颜色输入组件）；其余类型使用普通输入框，按类型切换挂载。
+    const valuePath = `${contentPath}.${itemKey}.value`;
+    const valueInput = createElement('input', {
+        properties: {
+            type: 'text',
+            value: (itemData.value !== null && itemData.value !== undefined) ? itemData.value : ''
+        },
+        events: { input: (e) => updateConfig(valuePath, e.target.value) }
+    });
+    const adcodeInput = createAdcodeInput(valuePath);
+
+    const valueFormGroup = createFormGroup('值', valueInput);
     const valueLabel = valueFormGroup.querySelector('label');
+    let mountedValueControl = valueInput;
+
+    // 根据类型挂载对应的值输入控件，并同步标签、占位符与禁用状态
+    function mountValueControl(type) {
+        let control;
+        if (type === 'weather') {
+            control = adcodeInput;
+            valueLabel.textContent = '城市 Adcode';
+        } else {
+            control = valueInput;
+            if (type === 'string') {
+                valueInput.disabled = false; // 明确 string 类型是可输入的
+                valueInput.placeholder = "";
+                valueLabel.textContent = '值 (类型为字符串时)';
+            } else if (type === 'input' || type === 'input_auto_save') {
+                valueInput.disabled = false;
+                valueInput.placeholder = "请输入默认值";
+                valueLabel.textContent = '默认值';
+            } else {
+                // 其他所有动态类型 (road, time, address 等) 才被禁用
+                valueInput.disabled = true;
+                valueInput.placeholder = "此类型为动态值";
+                valueLabel.textContent = '值';
+            }
+        }
+        // 两个控件各自持有 DOM 状态，挂载前从数据模型同步最新值
+        const v = getValueByPath(config, valuePath);
+        const inputEl = (control === valueInput) ? valueInput : control.querySelector('input');
+        inputEl.value = (v !== null && v !== undefined) ? v : '';
+        if (control !== mountedValueControl) {
+            valueFormGroup.replaceChild(control, mountedValueControl);
+            mountedValueControl = control;
+        }
+    }
 
     // --- 初始化逻辑 ---
-    // 根据初始类型设置值输入框的状态
-    if (itemData.type === 'weather') {
-        valueInput.disabled = false;
-        valueInput.placeholder = "请输入城市adcode";
-        valueLabel.textContent = '城市 Adcode';
-    } else if (itemData.type === 'string') {
-        valueInput.disabled = false; // 明确 string 类型是可输入的
-        valueLabel.textContent = '值 (类型为字符串时)';
-    } else if (itemData.type === 'input' || itemData.type === 'input_auto_save') {
-        valueInput.disabled = false; 
-        valueInput.placeholder = "请输入默认值";
-        valueLabel.textContent = '默认值';
-    }  else {
-        // 其他所有动态类型 (road, time, address 等) 才被禁用
-        valueInput.disabled = true; 
-        valueInput.placeholder = "此类型为动态值";
-        valueLabel.textContent = '值';
-    }
+    mountValueControl(itemData.type);
     
     // 为类型选择器添加对 'weather' 和 'address' 的唯一性检查逻辑
     const typeSelect = createElement('select', {
@@ -533,26 +610,12 @@ function createContentItem(itemKey, itemData, contentPath) {
                 updateConfig(`${currentItemPath}.type`, newType);
                 
                 // --- 切换类型逻辑 ---
-                // 根据选择的类型动态调整值输入框
-                if (newType === 'string') {
-                    valueInput.disabled = false;
-                    valueInput.placeholder = "";
-                    valueLabel.textContent = '值 (类型为字符串时)';
-                } else if (newType === 'weather') {
-                    valueInput.disabled = false;
-                    valueInput.placeholder = "请输入城市adcode";
-                    valueLabel.textContent = '城市 Adcode';
-                }else if (newType === 'input' || newType === 'input_auto_save') {
-                    valueInput.disabled = false;
-                    valueInput.placeholder = "请输入默认值";
-                    valueLabel.textContent = '默认值';
-                }else { // 其他动态类型（包括 'address'）
-                    valueInput.disabled = true;
-                    valueInput.placeholder = "此类型为动态值";
-                    valueLabel.textContent = '值';
-                    valueInput.value = ""; // 清空值
+                // 无手动值的动态类型（road、time、address 等）需清空原手动输入的值
+                const MANUAL_VALUE_TYPES = ['string', 'input', 'input_auto_save', 'weather'];
+                if (MANUAL_VALUE_TYPES.indexOf(newType) === -1) {
                     updateConfig(`${currentItemPath}.value`, ""); // 同步数据模型
                 }
+                mountValueControl(newType);
             }
         },
         children: Object.entries(TYPE_OPTIONS).map(([value, text]) => createElement('option', { properties: { value, selected: itemData.type === value }, textContent: text }))
@@ -565,7 +628,6 @@ function createContentItem(itemKey, itemData, contentPath) {
         className: 'content-item',
         children: [
             createElement('div', { className: 'content-item-header', children: [nameInput, controls] }),
-            createFormGroup('属性名 (Key)', keyInput),
             createElement('div', { className: 'grid-2', children: [createFormGroup('类型', typeSelect), valueFormGroup] }),
             createElement('div', { className: 'grid-2', children: [createFormGroup('颜色', createColorInput(`${contentPath}.${itemKey}.color`)), createFormGroup('字号', createInput({ path: `${contentPath}.${itemKey}.size`, type: 'number' }))] }),
             checkboxGroup
@@ -739,15 +801,22 @@ function render() {
     form.appendChild(createCard('水印设置', createWatermarkContent(), 'watermark.enable'));
     form.appendChild(createCard('二维码设置', createQrCodeContent(), 'qrcode.enable'));
 
-    const buttonContainer = createElement('div', {
-        className: 'setting_button_div',
+    // [修改] 底部按钮区：主按钮(保存)全宽，导出/导入一行两个次按钮，恢复默认红色描边警示
+    const buttonArea = createElement('div', {
+        className: 'settings-action-area',
         children: [
-            createElement('button', { className: 'btn btn-secondary', textContent: '恢复默认', dataset: { action: 'reset-config' } }),
-            createElement('button', { className: 'btn btn-primary', textContent: '保存设置', dataset: { action: 'save-config' } })
+            createElement('button', { className: 'btn btn-primary btn-block', textContent: '保存设置', dataset: { action: 'save-config' } }),
+            createElement('div', {
+                className: 'btn-row',
+                children: [
+                    createElement('button', { className: 'btn btn-secondary', textContent: '导出设置包', dataset: { action: 'export-package' } }),
+                    createElement('button', { className: 'btn btn-secondary', textContent: '导入设置包', dataset: { action: 'import-package' } })
+                ]
+            }),
+            createElement('button', { className: 'btn btn-danger-outline btn-block', textContent: '恢复默认', dataset: { action: 'reset-config' } })
         ]
     });
-    buttonContainer.style.marginTop = '20px';
-    form.appendChild(buttonContainer);
+    form.appendChild(buttonArea);
 }
 
 // --- 数据操作 & 事件处理 ---
@@ -1043,8 +1112,53 @@ settings_form.addEventListener('click', async (e) => {
         case 'reset-config':
             await resetToDefault();
             break;
+        case 'export-package':
+            await exportSettingsPackage();
+            break;
+        case 'import-package':
+            await importSettingsPackage();
+            break;
     }
 });
+/**
+ * [新增] 导出设置包：将当前设置（含自定义图标）打包为 zip，由用户选择保存位置。
+ * 图标有未保存修改时，打包暂存的图标文件（tempUri），保证包内图标与页面所见一致。
+ */
+async function exportSettingsPackage() {
+    try {
+        const result = await callAndroidMethod(window.FilePicker, 'exportSettingsZip', {
+            config: config,
+            iconTempUri: pendingIconChange ? pendingIconChange.tempUri : null
+        });
+        if (result === null) return; // 用户取消保存位置选择
+        await alert_fix('设置包已导出');
+    } catch (err) {
+        await alert_fix('导出失败: ' + (err && err.message ? err.message : err));
+    }
+}
+
+/**
+ * [新增] 导入设置包：选择 zip 文件并应用其中的设置（含图标），然后刷新设置页。
+ */
+async function importSettingsPackage() {
+    try {
+        const picked = await nativeOpenFilePicker(false, 'file', 'application/zip');
+        if (!picked || picked.length === 0) return; // 用户取消
+        const appliedConfig = await callAndroidMethod(window.FilePicker, 'importSettingsZip', { uri: picked[0].uri });
+        // 导入已覆盖图标与配置：先前未保存的图标修改随之失效，清理暂存，避免后续保存时错把它提交
+        if (pendingIconChange) {
+            await callAndroidMethod(window.backServer, 'cleanupTempIcon', { tempUri: pendingIconChange.tempUri });
+            pendingIconChange = null;
+        }
+        config = appliedConfig; // 桥返回的已应用配置
+        isConfigDirty = false;
+        render();
+        await alert_fix('导入成功，设置已应用');
+    } catch (err) {
+        await alert_fix('导入失败: ' + (err && err.message ? err.message : err));
+    }
+}
+
 async function upload_watermark_icon(sourceUri) {
     if (!sourceUri) {
         throw new Error("sourceUri 不能为空");

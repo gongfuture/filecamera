@@ -37,12 +37,24 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 public class FilePickerBridge {
 
@@ -69,6 +81,10 @@ public class FilePickerBridge {
     private final ActivityResultLauncher<Uri> folderPickerLauncher;
     private final ActivityResultLauncher<Uri> cameraLauncher;
     private final ActivityResultLauncher<Intent> customCameraLauncher;
+    private final ActivityResultLauncher<Intent> createDocumentLauncher;
+    // 设置包导出：暂存待写入的zip数据与回调任务id
+    private byte[] pendingZipBytes = null;
+    private String pendingZipTaskId = null;
     // endregion
 
     // region --- 构造与生命周期 ---
@@ -95,6 +111,10 @@ public class FilePickerBridge {
         this.customCameraLauncher = activity.registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> handleActivityResult(result, "custom_camera")
+        );
+        this.createDocumentLauncher = activity.registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                this::handleCreateDocumentResult
         );
     }
 
@@ -278,16 +298,24 @@ public class FilePickerBridge {
 
                 SharedPreferences.Editor editor = sharedPreferences.edit();
 
+                boolean gaodeKeyChanged = false;
                 for (int i = 0; i < obj_arr.length(); i++) {
                     JSONObject item = obj_arr.getJSONObject(i);
                     String key = item.getString("key");
                     String value = item.getString("value");
                     editor.putString(key, value);
+                    if (GaodeApi.KEY_GAODE_WEB_API.equals(key)) {
+                        gaodeKeyChanged = true;
+                    }
                 }
 
                 boolean success = editor.commit();
 
                 if (success) {
+                    // [新增] 高德密钥保存后立即生效：解除天气会话失败锁并使缓存失效，无需重启应用
+                    if (gaodeKeyChanged) {
+                        GaodeApi.onGaodeApiKeyChanged();
+                    }
                     call_js_callback(task_id, true, new JSONObject(), null);
                 } else {
                     call_js_callback(task_id, false, null, "写入配置失败");
@@ -321,6 +349,184 @@ public class FilePickerBridge {
             }
         }).start();
     }
+    // endregion
+
+    // region --- 设置包导出/导入 (zip: settings.json + icon.png) ---
+
+    private static final String SETTINGS_ZIP_JSON_ENTRY = "settings.json";
+    private static final String SETTINGS_ZIP_ICON_ENTRY = "icon.png";
+    private static final String WATERMARK_ICON_RELATIVE_PATH = "watermark/icon/cache_icon.png";
+
+    /**
+     * [新增] 导出设置包：将当前水印配置与自定义图标打包为zip，通过系统"保存到"界面交给用户。
+     * 参数: { config: JSONObject, iconTempUri: String|null } - config为设置页当前的完整配置
+     * （与 writeWatermarkConfig 相同结构）；iconTempUri为未保存的暂存图标路径，存在时优先打包。
+     */
+    @JavascriptInterface
+    public void exportSettingsZip(String task_id, String json_data) {
+        new Thread(() -> {
+            try {
+                // [FIX] 在途保护：上一次导出尚未完成（等待用户选择保存位置）时拒绝重复发起
+                if (pendingZipTaskId != null) {
+                    call_js_callback(task_id, false, null, "上一个导出操作正在进行中");
+                    return;
+                }
+                JSONObject params = new JSONObject(json_data);
+                String configData = params.getJSONObject("config").toString();
+
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                try (ZipOutputStream zos = new ZipOutputStream(baos)) {
+                    zos.putNextEntry(new ZipEntry(SETTINGS_ZIP_JSON_ENTRY));
+                    zos.write(configData.getBytes(StandardCharsets.UTF_8));
+                    zos.closeEntry();
+
+                    // 图标选择：优先未保存的暂存图标(iconTempUri)，其次已提交的自定义图标，
+                    // 保证包内图标与设置页当前所见一致；都没有则zip中只有settings.json
+                    String iconTempUri = params.optString("iconTempUri", null);
+                    File iconFile = null;
+                    if (iconTempUri != null && !iconTempUri.isEmpty()) {
+                        File tempFile = new File(Uri.parse(iconTempUri).getPath());
+                        if (tempFile.exists()) {
+                            iconFile = tempFile;
+                        }
+                    }
+                    if (iconFile == null) {
+                        File committedFile = new File(activity.getFilesDir(), WATERMARK_ICON_RELATIVE_PATH);
+                        if (committedFile.exists()) {
+                            iconFile = committedFile;
+                        }
+                    }
+                    if (iconFile != null) {
+                        zos.putNextEntry(new ZipEntry(SETTINGS_ZIP_ICON_ENTRY));
+                        try (InputStream fis = new FileInputStream(iconFile)) {
+                            zos.write(readAllBytes(fis));
+                        }
+                        zos.closeEntry();
+                    }
+                }
+
+                pendingZipBytes = baos.toByteArray();
+                pendingZipTaskId = task_id;
+
+                String fileName = "watermark_settings_"
+                        + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".zip";
+                activity.runOnUiThread(() -> {
+                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("application/zip");
+                    intent.putExtra(Intent.EXTRA_TITLE, fileName);
+                    createDocumentLauncher.launch(intent);
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "Error in exportSettingsZip()", e);
+                pendingZipBytes = null;
+                pendingZipTaskId = null;
+                call_js_callback(task_id, false, null, "导出失败: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    /**
+     * [新增] 导入设置包：读取zip中的settings.json并应用；若包含icon.png则同时替换自定义图标。
+     * 参数: { uri: String } - 用户选择的zip文件Uri。
+     * 成功时回调返回已应用的配置JSONObject，供设置页直接刷新。
+     */
+    @JavascriptInterface
+    public void importSettingsZip(String task_id, String json_data) {
+        new Thread(() -> {
+            try {
+                JSONObject params = new JSONObject(json_data);
+                Uri uri = Uri.parse(params.getString("uri"));
+
+                String settingsJson = null;
+                byte[] iconBytes = null;
+                try (InputStream is = activity.getContentResolver().openInputStream(uri);
+                     ZipInputStream zis = new ZipInputStream(is)) {
+                    ZipEntry entry;
+                    while ((entry = zis.getNextEntry()) != null) {
+                        if (SETTINGS_ZIP_JSON_ENTRY.equals(entry.getName())) {
+                            settingsJson = new String(readAllBytes(zis), StandardCharsets.UTF_8);
+                        } else if (SETTINGS_ZIP_ICON_ENTRY.equals(entry.getName())) {
+                            iconBytes = readAllBytes(zis);
+                        }
+                        zis.closeEntry();
+                    }
+                }
+
+                if (settingsJson == null) {
+                    call_js_callback(task_id, false, null, "zip包中未找到 " + SETTINGS_ZIP_JSON_ENTRY);
+                    return;
+                }
+                JSONObject config = new JSONObject(settingsJson);
+                if (!config.has("watermark")) {
+                    call_js_callback(task_id, false, null, "settings.json 格式不正确（缺少 watermark 配置）");
+                    return;
+                }
+
+                // zip包含图标时：写入本地图标目录，并把配置中的图标路径改写为本机路径
+                if (iconBytes != null) {
+                    File iconFile = new File(activity.getFilesDir(), WATERMARK_ICON_RELATIVE_PATH);
+                    File parent = iconFile.getParentFile();
+                    if (parent != null && !parent.exists()) parent.mkdirs();
+                    try (OutputStream fos = new FileOutputStream(iconFile)) {
+                        fos.write(iconBytes);
+                    }
+                    JSONObject header = config.getJSONObject("watermark").optJSONObject("header");
+                    JSONObject icon = (header != null) ? header.optJSONObject("icon") : null;
+                    if (icon != null) {
+                        icon.put("value", Uri.fromFile(iconFile).toString());
+                    }
+                }
+
+                boolean success = WatermarkConfigManager.getInstance(activity).saveConfig(config.toString());
+                if (success) {
+                    call_js_callback(task_id, true, config, null);
+                } else {
+                    call_js_callback(task_id, false, null, "配置保存失败");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error in importSettingsZip()", e);
+                call_js_callback(task_id, false, null, "导入失败: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    /** "创建文档"结果：把内存中的zip字节写入用户选择的位置 */
+    private void handleCreateDocumentResult(ActivityResult result) {
+        final String currentTaskId = pendingZipTaskId;
+        final byte[] zipBytes = pendingZipBytes;
+        pendingZipTaskId = null;
+        pendingZipBytes = null;
+        if (currentTaskId == null) return;
+
+        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) {
+            call_js_callback(currentTaskId, true, null, "用户取消操作");
+            return;
+        }
+        final Uri targetUri = result.getData().getData();
+        new Thread(() -> {
+            try (OutputStream os = activity.getContentResolver().openOutputStream(targetUri, "wt")) {
+                if (os == null) throw new IOException("无法打开目标文件");
+                os.write(zipBytes);
+                call_js_callback(currentTaskId, true, new JSONObject(), null);
+            } catch (Exception e) {
+                Log.e(TAG, "Error writing exported zip", e);
+                call_js_callback(currentTaskId, false, null, "保存zip失败: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    /** 读取流中全部字节（ZipInputStream 读取到当前条目末尾即返回-1，可安全使用） */
+    private static byte[] readAllBytes(InputStream is) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int n;
+        while ((n = is.read(chunk)) != -1) {
+            buffer.write(chunk, 0, n);
+        }
+        return buffer.toByteArray();
+    }
+
     // endregion
 
     // region --- 结果处理器 ---

@@ -27,6 +27,7 @@ import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.AttributeSet;
 import android.util.Log;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.OrientationEventListener;
@@ -166,16 +167,20 @@ public class CameraActivity extends AppCompatActivity {
                 resetGpsDependentData();
             }
 
-            // 3. 检查天气
+            // 3. 检查天气（adcode为空则提示用户配置）
             if (hasWeatherItem) {
-                GaodeApi.requestWeatherUpdateIfStale(CameraActivity.this, weatherAdcode, new GaodeApi.WeatherCallback() {
-                    @Override
-                    public void onWeatherUpdated(String weatherInfo) {
-                        runOnUiThread(() -> {
-                            updateDynamicItemsByType("weather", weatherInfo);
-                        });
-                    }
-                });
+                if (weatherAdcode == null || weatherAdcode.trim().isEmpty()) {
+                    updateDynamicItemsByType("weather", "请配置adcode");
+                } else {
+                    GaodeApi.requestWeatherUpdateIfStale(CameraActivity.this, weatherAdcode, lon, lat, new GaodeApi.WeatherCallback() {
+                        @Override
+                        public void onWeatherUpdated(String weatherInfo) {
+                            runOnUiThread(() -> {
+                                updateDynamicItemsByType("weather", weatherInfo);
+                            });
+                        }
+                    });
+                }
             }
             
             uiUpdateHandler.postDelayed(this, 1000); // 1秒更新一次
@@ -286,6 +291,23 @@ public class CameraActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         isActivityResumed = true;
+
+        // 重新加载配置，确保 adcode 等设置变更后能及时生效
+        try {
+            String latestConfig = WatermarkConfigManager.getInstance(this).getConfig();
+            JSONObject root = new JSONObject(latestConfig);
+            if (root.has("watermark")) {
+                parseWatermark(root.getJSONObject("watermark"));
+                checkForWeatherItem();
+                checkForAddressItem();
+                if (hasWeatherItem) {
+                    GaodeApi.loadWeatherFromCache(this, weatherAdcode);
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "onResume 重新加载配置失败", e);
+        }
+
         // [Refactored] 不再重建UI，而是重置数据
         if (!isLocationValid()) {
             currentAddress = "获取地址中...";
@@ -806,7 +828,7 @@ public class CameraActivity extends AppCompatActivity {
         if (showQrCode && qrCodeConfig != null && isLocationValid()) {
             String qrContent = generateAmapUrl(lat, lon, "拍照位置");
             int baseQrSizeDp = 128;
-            int finalQrSizePx = dpToPx((int)(baseQrSizeDp * qrCodeConfig.scale));
+            int finalQrSizePx = wmPx(baseQrSizeDp * qrCodeConfig.scale);
             Bitmap qrCodeBitmap = generateQrCodeBitmap(qrContent, finalQrSizePx, finalQrSizePx, qrCodeConfig.padding, qrCodeConfig.radius);
             if (qrCodeBitmap != null) {
                 finalBitmap = addOverlayToBitmap(finalBitmap, qrCodeBitmap, qrCodeConfig.position, 1.0f);
@@ -1047,20 +1069,20 @@ public class CameraActivity extends AppCompatActivity {
 
             int[] padding;
             if (section == watermarkConfig.header) {
-                padding = new int[]{dp(0), dp(0), dp(0), dp(0)};
+                padding = new int[]{wmDp(0), wmDp(0), wmDp(0), wmDp(0)};
             } else if (section == watermarkConfig.body) {
-                padding = new int[]{dp(10), dp(4), dp(10), dp(4)};
+                padding = new int[]{wmDp(10), wmDp(4), wmDp(10), wmDp(4)};
             } else {
-                padding = new int[]{dp(10), dp(4), dp(10), dp(4)};
+                padding = new int[]{wmDp(10), wmDp(4), wmDp(10), wmDp(4)};
             }
             
             ClippingFrameLayout sectionLayout = createSectionLayout(section, padding);
             
             if (sectionLayout != null) {
-                float rTL = dpToPx((int) watermarkConfig.radius[0]);
-                float rTR = dpToPx((int) watermarkConfig.radius[1]);
-                float rBR = dpToPx((int) watermarkConfig.radius[2]);
-                float rBL = dpToPx((int) watermarkConfig.radius[3]);
+                float rTL = wmPx(watermarkConfig.radius[0]);
+                float rTR = wmPx(watermarkConfig.radius[1]);
+                float rBR = wmPx(watermarkConfig.radius[2]);
+                float rBL = wmPx(watermarkConfig.radius[3]);
 
                 float topLeftRadius = isFirst ? rTL : 0;
                 float topRightRadius = isFirst ? rTR : 0;
@@ -1134,7 +1156,7 @@ public class CameraActivity extends AppCompatActivity {
             if (iconWidth == 0 && iconHeight == 0) {
                 hasIcon = false;
             } else if (iconWidth == 0 && iconHeight != 0) {
-                rootHeaderLayout.setMinimumHeight(dp(iconHeight));
+                rootHeaderLayout.setMinimumHeight(wmDp(iconHeight));
                 hasIcon = false;
             } else if (iconWidth != 0 && iconHeight == 0) {
                 hasIcon = false;
@@ -1154,7 +1176,7 @@ public class CameraActivity extends AppCompatActivity {
         View titleContainer = null;
         if (hasTitle) {
             RelativeLayout innerTitleContainer = new RelativeLayout(this);
-            int[] padding = new int[]{dp(8), dp(8), dp(8), dp(8)};
+            int[] padding = new int[]{wmDp(8), wmDp(8), wmDp(8), wmDp(8)};
             innerTitleContainer.setPadding(padding[0], padding[1], padding[2], padding[3]);
             
             String titleText = watermarkDataStore.get(title.id);
@@ -1210,7 +1232,7 @@ public class CameraActivity extends AppCompatActivity {
 
         LinearLayout itemLayout = new LinearLayout(this);
         itemLayout.setOrientation(LinearLayout.HORIZONTAL);
-        itemLayout.setPadding(0, dpToPx(1), 0, dpToPx(1));
+        itemLayout.setPadding(0, wmPx(1), 0, wmPx(1));
         
         if (item.nameDisplay && !item.name.isEmpty()) {
             itemLayout.addView(createTextView(item.name + ": ", item.color, item.size, Typeface.BOLD));
@@ -1230,8 +1252,8 @@ public class CameraActivity extends AppCompatActivity {
             Bitmap bitmap = loadBitmap(icon.value);
             if (bitmap == null) return null;
             ImageView imageView = new ImageView(this);
-            int width = dp(icon.width);
-            int height = dp(icon.height);
+            int width = wmDp(icon.width);
+            int height = wmDp(icon.height);
             Bitmap scaledBitmap = Bitmap.createScaledBitmap(bitmap, width, height, true);
             imageView.setImageBitmap(scaledBitmap);
             if (bitmap != scaledBitmap) bitmap.recycle();
@@ -1246,9 +1268,10 @@ public class CameraActivity extends AppCompatActivity {
         TextView textView = new TextView(this);
         textView.setText(text);
         textView.setTextColor(color);
-        textView.setTextSize(size * watermarkConfig.scale);
+        // 使用固定 px 字号，避免系统字体缩放（老年模式 fontScale）影响烧进照片的文字大小
+        textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, wmDp(size));
         textView.setTypeface(Typeface.DEFAULT, typefaceStyle);
-        textView.setMaxWidth(dpToPx((int)(MAX_WATERMARK_LINE_WIDTH_DP * watermarkConfig.scale)));
+        textView.setMaxWidth(wmPx(MAX_WATERMARK_LINE_WIDTH_DP * watermarkConfig.scale));
         textView.setFontFeatureSettings("tnum");
         return textView;
     }
@@ -1441,7 +1464,7 @@ public class CameraActivity extends AppCompatActivity {
             params.removeRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
             params.leftMargin = params.topMargin = params.rightMargin = params.bottomMargin = 0;
 
-            int margin = dpToPx(10);
+            int margin = wmPx(10);
             int width = watermarkContainer.getWidth();
             int height = watermarkContainer.getHeight();
             Position pos = watermarkConfig.position;
@@ -1565,15 +1588,15 @@ public class CameraActivity extends AppCompatActivity {
             Bitmap qrBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
             for (int x = 0; x < width; x++) for (int y = 0; y < height; y++)
                 qrBitmap.setPixel(x, y, bitMatrix.get(x, y) ? Color.BLACK : Color.TRANSPARENT);
-            int pL = dpToPx((int) padding[0]), pT = dpToPx((int) padding[1]);
-            int pR = dpToPx((int) padding[2]), pB = dpToPx((int) padding[3]);
+            int pL = wmPx(padding[0]), pT = wmPx(padding[1]);
+            int pR = wmPx(padding[2]), pB = wmPx(padding[3]);
             int finalW = width + pL + pR, finalH = height + pT + pB;
             Bitmap finalBitmap = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888);
             Canvas canvas = new Canvas(finalBitmap);
             Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             bgPaint.setColor(Color.WHITE);
             Path path = new Path();
-            float[] radii = {dpToPx((int)radius[0]), dpToPx((int)radius[0]), dpToPx((int)radius[1]), dpToPx((int)radius[1]), dpToPx((int)radius[2]), dpToPx((int)radius[2]), dpToPx((int)radius[3]), dpToPx((int)radius[3])};
+            float[] radii = {wmPx(radius[0]), wmPx(radius[0]), wmPx(radius[1]), wmPx(radius[1]), wmPx(radius[2]), wmPx(radius[2]), wmPx(radius[3]), wmPx(radius[3])};
             path.addRoundRect(new RectF(0, 0, finalW, finalH), radii, Path.Direction.CW);
             canvas.drawPath(path, bgPaint);
             canvas.drawBitmap(qrBitmap, pL, pT, null);
@@ -1829,7 +1852,8 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private void loadInitialCaches() {
-        if (hasWeatherItem && weatherAdcode != null) {
+        if (hasWeatherItem) {
+            // adcode为空时不加载缓存，UI将显示"请配置adcode"
             GaodeApi.loadWeatherFromCache(this, weatherAdcode);
         }
         if (hasAddressItem) {
@@ -1843,9 +1867,28 @@ public class CameraActivity extends AppCompatActivity {
         return Math.round(dp * getResources().getDisplayMetrics().density);
     }
 
-    private int dp(int dp) {
-        if (watermarkConfig == null) return dpToPx(dp);
-        return Math.round(dp * watermarkConfig.scale * getResources().getDisplayMetrics().density);
+    /**
+     * 水印渲染专用的密度基准：以预览宽度对应 360dp 设计宽度进行换算。
+     * 不使用系统 DisplayMetrics.density，也不受系统 fontScale 影响，
+     * 避免老年模式（字体/显示大小缩放）导致烧进照片的水印尺寸异常。
+     */
+    private float watermarkDensity() {
+        int previewWidth = previewView != null ? previewView.getWidth() : 0;
+        if (previewWidth <= 0) {
+            previewWidth = getResources().getDisplayMetrics().widthPixels;
+        }
+        return previewWidth > 0 ? previewWidth / 360f : 3.0f;
+    }
+
+    /** 水印渲染专用 dp→px（含 watermarkConfig.scale），替代原 dp()。 */
+    private int wmDp(float dp) {
+        float scale = watermarkConfig != null ? watermarkConfig.scale : 1.0f;
+        return Math.round(dp * scale * watermarkDensity());
+    }
+
+    /** 水印渲染专用 dp→px（不含 watermarkConfig.scale），替代原 dpToPx()。 */
+    private int wmPx(float dp) {
+        return Math.round(dp * watermarkDensity());
     }
 
     private List<WatermarkItem> getSortedContentItems(Map<String, WatermarkItem> content) {
@@ -1875,6 +1918,9 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private String getCurrentWeatherText() {
+        if (weatherAdcode == null || weatherAdcode.trim().isEmpty()) {
+            return "请配置adcode";
+        }
         return GaodeApi.getCachedWeatherInfo();
     }
 
@@ -1972,10 +2018,10 @@ public class CameraActivity extends AppCompatActivity {
         
         Path clipPath = new Path();
         float[] globalRadii = watermarkConfig.radius;
-        float rTL = dpToPx((int) globalRadii[0]);
-        float rTR = dpToPx((int) globalRadii[1]);
-        float rBR = dpToPx((int) globalRadii[2]);
-        float rBL = dpToPx((int) globalRadii[3]);
+        float rTL = wmPx(globalRadii[0]);
+        float rTR = wmPx(globalRadii[1]);
+        float rBR = wmPx(globalRadii[2]);
+        float rBL = wmPx(globalRadii[3]);
         float[] radii = {rTL, rTL, rTR, rTR, rBR, rBR, rBL, rBL};
         clipPath.addRoundRect(new RectF(0, 0, view.getWidth(), view.getHeight()), radii, Path.Direction.CW);
         canvas.clipPath(clipPath);
@@ -2021,14 +2067,14 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private float calculateOverlayX(float photoWidth, float overlayWidth, Position pos, float scale) {
-        float margin = dpToPx(10);
+        float margin = wmPx(10);
         if (pos.left != null) return pos.left * scale + margin;
         if (pos.right != null) return photoWidth - overlayWidth - (pos.right * scale) - margin;
         return margin;
     }
 
     private float calculateOverlayY(float photoHeight, float overlayHeight, Position pos, float scale) {
-        float margin = dpToPx(10);
+        float margin = wmPx(10);
         if (pos.top != null) return pos.top * scale + margin;
         if (pos.bottom != null) return photoHeight - overlayHeight - (pos.bottom * scale) - margin;
         return margin;

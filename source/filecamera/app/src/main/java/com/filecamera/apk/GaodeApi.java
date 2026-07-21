@@ -26,11 +26,13 @@ import java.net.URL;
  * [重构] 移除了所有UI回调和Handler，此类现在只负责数据处理和缓存管理。
  * [修改 v2] 细化了失败返回类型，区分：无Key、Key错误、获取失败。
  * [修改 v3] 为天气(Weather)和地址(Address)添加了异步回调(Push)模式。
+ * [修改 v6] 密钥变更即时生效：新增 onGaodeApiKeyChanged()，密钥保存后无需重启应用。
+ * [修改 v7] 移除adcode自动模式：adcode为空时不再通过GPS自动解析，需手动配置adcode。
  *
  * @author Wandergis (Original JS Author)
  * @author Gemini (Java Translator & Refactor)
  * Created on 2025/10/13
- * LastModified on 2025/10/28
+ * LastModified on 2026/07/20
  */
 public final class GaodeApi {
 
@@ -59,12 +61,24 @@ public final class GaodeApi {
     // region --- API Key Management ---
 
     private static final String PREFS_NAME = "watermark_settings";
-    private static final String KEY_GAODE_WEB_API = "gaodeWebKey";
+    public static final String KEY_GAODE_WEB_API = "gaodeWebKey";
 
     public static void saveGaodeApiKey(Context context, String apiKey) {
         if (context == null || apiKey == null) return;
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         prefs.edit().putString(KEY_GAODE_WEB_API, apiKey).apply();
+        onGaodeApiKeyChanged();
+    }
+
+    /**
+     * 高德Web服务密钥变更后调用：解除天气获取的会话失败锁，并使天气缓存失效，
+     * 下一次天气轮询将立即使用新密钥重新获取，无需重启应用。
+     */
+    public static void onGaodeApiKeyChanged() {
+        weatherApiCallFailedThisSession = false;
+        weatherCacheTimestamp = 0;
+        cachedWeatherInfo = "获取中...";
+        cachedWeatherAdcode = "";
     }
 
     public static String getGaodeApiKey(Context context) {
@@ -86,6 +100,7 @@ public final class GaodeApi {
     // 初始状态
     private static String cachedWeatherInfo = "获取中...";
     private static long weatherCacheTimestamp = 0;
+    private static String cachedWeatherAdcode = "";  // 内存中缓存的adcode，用于运行时校验
     private static volatile boolean isFetchingWeather = false;
     private static boolean weatherApiCallFailedThisSession = false;
 
@@ -97,6 +112,10 @@ public final class GaodeApi {
         return cachedWeatherInfo;
     }
 
+    /**
+     * 从持久化缓存加载天气数据。仅当currentAdcode与缓存中adcode匹配且缓存未过期时加载。
+     * adcode为空时直接返回，不加载缓存。
+     */
     public static void loadWeatherFromCache(Context context, String currentAdcode) {
         if (context == null || currentAdcode == null || currentAdcode.trim().isEmpty()) {
             return;
@@ -113,13 +132,14 @@ public final class GaodeApi {
             if (info != null) {
                 cachedWeatherInfo = info;
                 weatherCacheTimestamp = timestamp;
+                cachedWeatherAdcode = cachedAdcode;
                 Log.d(TAG, "从持久化缓存加载天气: " + info);
             }
         }
     }
 
     /**
-     * [新增] 用于天气更新的异步回调接口。
+     * 用于天气更新的异步回调接口。
      */
     public interface WeatherCallback {
         /**
@@ -129,45 +149,43 @@ public final class GaodeApi {
         void onWeatherUpdated(String weatherInfo);
     }
 
-    public static void requestWeatherUpdateIfStale(Context context, final String adcode, final WeatherCallback callback) {
-        
-        // [FIX] 唯一保留在外部的检查：防止重复启动线程
-        // 如果一个获取任务已在运行中，则直接返回，
-        // 那个正在运行的任务会负责在完成后触发回调。
+    /**
+     * 请求天气更新（如缓存过期）。manualAdcode 必须为非空的有效adcode，
+     * 为空时直接返回，不做任何自动解析。
+     */
+    public static void requestWeatherUpdateIfStale(Context context, final String manualAdcode,
+                                                   final double gpsLng, final double gpsLat,
+                                                   final WeatherCallback callback) {
+
+        // 防止重复启动线程
         if (isFetchingWeather) {
             return;
         }
-        isFetchingWeather = true; // 立即设置标志
+        isFetchingWeather = true;
 
         new Thread(() -> {
             String finalWeatherInfo = null;
             try {
-                // --- [FIX] 将所有逻辑检查移入线程内部 ---
-
-                // [FIXED BUG 1] 检查会话失败标志
+                // 检查会话失败标志
                 if (weatherApiCallFailedThisSession) {
-                    finalWeatherInfo = cachedWeatherInfo; // 使用缓存中已有的错误信息
-                    return; // 跳转到 finally
-                }
-
-                // [FIXED BUG 2] 检查 adcode
-                if (adcode == null || adcode.trim().isEmpty()) {
-                    cachedWeatherInfo = "adcode未配置";
-                    finalWeatherInfo = "adcode未配置";
-                    return; // 跳转到 finally
-                }
-
-                // [FIXED BUG 3] 检查缓存是否有效
-                long now = System.currentTimeMillis();
-                boolean isCacheValid = (now - weatherCacheTimestamp < WEATHER_CACHE_EXPIRATION_MS);
-                if (isCacheValid) {
-                    // 缓存有效，无需联网，直接使用缓存数据回调
                     finalWeatherInfo = cachedWeatherInfo;
-                    return; // 跳转到 finally
+                    return;
                 }
 
-                // --- 缓存无效，执行网络请求 ---
-                
+                // adcode为空则无法获取天气，直接返回
+                if (manualAdcode == null || manualAdcode.trim().isEmpty()) {
+                    finalWeatherInfo = cachedWeatherInfo;
+                    return;
+                }
+
+                // 检查缓存是否有效：需同时满足 adcode 匹配且未过期
+                long now = System.currentTimeMillis();
+                if (manualAdcode.trim().equals(cachedWeatherAdcode)
+                        && now - weatherCacheTimestamp < WEATHER_CACHE_EXPIRATION_MS) {
+                    finalWeatherInfo = cachedWeatherInfo;
+                    return;
+                }
+
                 // 检查 API Key
                 String apiKey = getGaodeApiKey(context);
                 if (apiKey == null || apiKey.trim().isEmpty()) {
@@ -175,54 +193,49 @@ public final class GaodeApi {
                     finalWeatherInfo = ERROR_NO_KEY;
                     weatherApiCallFailedThisSession = true;
                     Log.w(TAG, "天气更新失败: " + ERROR_NO_KEY);
-                    return; // 跳转到 finally
+                    return;
                 }
 
                 // 执行网络请求
-                String newWeatherInfo = fetchWeatherInfo(context, apiKey, adcode);
+                String newWeatherInfo = fetchWeatherInfo(context, apiKey, manualAdcode.trim());
 
                 if (newWeatherInfo != null) {
-                    // 检查是否是Key错误
                     if (newWeatherInfo.equals(ERROR_INVALID_KEY)) {
                         cachedWeatherInfo = ERROR_INVALID_KEY;
                         finalWeatherInfo = ERROR_INVALID_KEY;
                         weatherApiCallFailedThisSession = true;
                         Log.e(TAG, "天气更新失败: " + ERROR_INVALID_KEY);
                     } else {
-                        // 成功获取
                         long newTimestamp = System.currentTimeMillis();
                         cachedWeatherInfo = newWeatherInfo;
                         finalWeatherInfo = newWeatherInfo;
                         weatherCacheTimestamp = newTimestamp;
+                        cachedWeatherAdcode = manualAdcode.trim();
                         SharedPreferences prefs = context.getSharedPreferences(WEATHER_PREFS_NAME, Context.MODE_PRIVATE);
                         prefs.edit()
                                 .putString(PREF_KEY_WEATHER_INFO, newWeatherInfo)
                                 .putLong(PREF_KEY_WEATHER_TIMESTAMP, newTimestamp)
-                                .putString(PREF_KEY_WEATHER_ADCODE, adcode)
+                                .putString(PREF_KEY_WEATHER_ADCODE, manualAdcode.trim())
                                 .apply();
                         Log.d(TAG, "天气获取并缓存成功。");
                     }
                 } else {
-                    // fetchWeatherInfo返回null，代表通用获取失败
                     cachedWeatherInfo = ERROR_FETCH_FAILED;
                     finalWeatherInfo = ERROR_FETCH_FAILED;
                     weatherApiCallFailedThisSession = true;
                     Log.e(TAG, "天气更新失败: " + ERROR_FETCH_FAILED);
                 }
             } finally {
-                isFetchingWeather = false; // 释放锁
-                
-                // [FIX] 现在，此代码块在所有情况下都会被执行
+                isFetchingWeather = false;
                 if (callback != null && finalWeatherInfo != null) {
                     callback.onWeatherUpdated(finalWeatherInfo);
                 } else if (callback != null) {
-                    // 增加一个保险回调，防止 finalWeatherInfo 意外为 null
                     callback.onWeatherUpdated(ERROR_FETCH_FAILED);
                     Log.e(TAG, "Weather callback triggered with fallback error; finalWeatherInfo was null.");
                 }
             }
         }).start();
-	}
+    }
     // endregion
 
     // region --- Address Caching & Fetching ---
@@ -238,7 +251,7 @@ public final class GaodeApi {
     private static double cachedAddressLng = 0.0;
 
     /**
-     * [新增] 从持久化存储加载地址数据到内存缓存。
+     * 从持久化存储加载地址数据到内存缓存。
      * 建议在应用或Activity启动时调用一次。
      * @param context 应用上下文
      */
@@ -260,7 +273,7 @@ public final class GaodeApi {
     }
 
     /**
-     * [新增] 用于地址更新的异步回调接口。
+     * 用于地址更新的异步回调接口。
      */
     public interface AddressCallback {
         /**
@@ -272,7 +285,7 @@ public final class GaodeApi {
     }
 
     /**
-     * [新增] [异步请求] 通过GPS(WGS84)坐标获取格式化的地址字符串。
+     * [异步请求] 通过GPS(WGS84)坐标获取格式化的地址字符串。
      * <p><b>重要：</b>此方法会立即返回。它将在后台线程中运行
      * {@link #getAddressFromGps(Context, double, double)} 的所有逻辑（包括缓存检查），
      * 并通过回调返回结果。
@@ -314,9 +327,7 @@ public final class GaodeApi {
     // region --- GaoDe Web API Calls ---
 
     /**
-     * [修改]
-     * 1. 移除了'apiKey == null'的检查（由调用者处理）。
-     * 2. 当API返回错误时，会检查是否为'INVALID_USER_KEY'。
+     * 获取天气信息。
      * @return 成功时返回天气字符串, Key无效时返回 ERROR_INVALID_KEY, 其他失败(网络/HTTP/JSON)返回 null。
      */
     public static String fetchWeatherInfo(Context context, String apiKey, String adcode) {
@@ -324,8 +335,6 @@ public final class GaodeApi {
             Log.e(TAG, "fetchWeatherInfo: Network is not available.");
             return null;
         }
-        // [修改] 移除了 apiKey 和 adcode 的检查，假设调用者已处理
-        // (apiKey 检查在 requestWeatherUpdateIfStale 中已新增)
         if (adcode == null || adcode.trim().isEmpty()) {
              Log.e(TAG, "fetchWeatherInfo: adcode is null or empty.");
              return null;
@@ -349,7 +358,6 @@ public final class GaodeApi {
                         return parseWeatherData(lives.getJSONObject(0)); // 成功
                     }
                 } else {
-                    // [修改] 检查是否为Key错误
                     String info = jsonResponse.optString("info");
                     Log.e(TAG, "Gaode weather API error: " + info);
                     if ("INVALID_USER_KEY".equals(info)) {
@@ -370,9 +378,7 @@ public final class GaodeApi {
     }
 
     /**
-     * [修改]
-     * 1. 当API返回 status != "1" 时，不再返回 null，而是返回包含错误信息的 JSONObject。
-     * 2. 只有在网络/HTTP/JSON解析层面失败时才返回 null。
+     * 通过坐标获取逆地理编码JSON。
      * @return 成功或API级错误时返回JSONObject，网络/解析失败时返回 null。
      */
     public static JSONObject getAddressFromCoordinates(Context context, String apiKey, double lng, double lat) {
@@ -382,7 +388,7 @@ public final class GaodeApi {
         }
         if (apiKey == null || apiKey.trim().isEmpty()) {
             Log.e(TAG, "getAddressFromCoordinates: apiKey is null or empty.");
-            return null; // 理论上不应发生，因为 getAddressFromGps 已检查
+            return null;
         }
         HttpURLConnection connection = null;
         try {
@@ -396,14 +402,12 @@ public final class GaodeApi {
             if (connection.getResponseCode() == HttpURLConnection.HTTP_OK) {
                 String response = readStream(connection.getInputStream());
                 JSONObject jsonObject = new JSONObject(response);
-                
-                // [修改] 无论 status 是 "1" 还是 "0"，都返回 jsonObject
-                // 让调用者 (getAddressFromGps) 来解析 status 和 info
+
                 if (!"1".equals(jsonObject.optString("status"))) {
                     Log.e(TAG, "Gaode regeo API error: " + jsonObject.optString("info"));
                 }
-                return jsonObject; 
-                
+                return jsonObject;
+
             } else {
                 Log.e(TAG, "HTTP error code: " + connection.getResponseCode());
             }
@@ -418,7 +422,35 @@ public final class GaodeApi {
     }
 
     /**
-     * [重构] [同步请求] 通过GPS(WGS84)坐标获取格式化的地址字符串，并集成缓存管理。
+     * [新增 v8] 通过GPS(WGS84)坐标解析adcode。
+     * 同步方法，内部调用 regeo API，必须在后台线程中调用。
+     * @return 成功返回adcode字符串，失败返回 ERROR_NO_KEY / ERROR_INVALID_KEY / ERROR_FETCH_FAILED。
+     */
+    public static String resolveAdcodeFromGps(Context context, double gpsLng, double gpsLat) {
+        String apiKey = getGaodeApiKey(context);
+        if (apiKey == null || apiKey.trim().isEmpty()) return ERROR_NO_KEY;
+
+        double[] gcj = wgs84togcj02(gpsLng, gpsLat);
+        JSONObject regeoJson = getAddressFromCoordinates(context, apiKey, gcj[0], gcj[1]);
+        if (regeoJson == null) return ERROR_FETCH_FAILED;
+
+        if (!"1".equals(regeoJson.optString("status"))) {
+            if ("INVALID_USER_KEY".equals(regeoJson.optString("info"))) return ERROR_INVALID_KEY;
+            return ERROR_FETCH_FAILED;
+        }
+
+        JSONObject regeocode = regeoJson.optJSONObject("regeocode");
+        JSONObject addressComponent = (regeocode != null) ? regeocode.optJSONObject("addressComponent") : null;
+        String adcode = (addressComponent != null) ? addressComponent.optString("adcode", "") : "";
+
+        if (adcode == null || adcode.trim().isEmpty() || adcode.startsWith("[")) {
+            return ERROR_FETCH_FAILED;
+        }
+        return adcode.trim();
+    }
+
+    /**
+     * [同步请求] 通过GPS(WGS84)坐标获取格式化的地址字符串，并集成缓存管理。
      * <p><b>重要：</b>此方法会执行同步的网络请求（如果缓存未命中），必须在后台线程中调用。
      *
      * @param context 上下文环境
@@ -439,8 +471,7 @@ public final class GaodeApi {
         // --- 2. 缓存未命中或失效，从网络获取 ---
         Log.d(TAG, "地址缓存未命中或距离过远，从网络获取...");
         String apiKey = getGaodeApiKey(context);
-        
-        // [修改] 检查Key是否配置
+
         if (apiKey == null || apiKey.trim().isEmpty()) {
             Log.e(TAG, "getAddressFromGps: " + ERROR_NO_KEY);
             return ERROR_NO_KEY; // 返回 "Key未配置"
@@ -450,8 +481,7 @@ public final class GaodeApi {
         JSONObject newAddressJson = getAddressFromCoordinates(context, apiKey, gcj02Coords[0], gcj02Coords[1]);
 
         // --- 3. 处理网络请求结果 ---
-        if (newAddressJson != null) { 
-            // [修改] 检查 status 字段
+        if (newAddressJson != null) {
             if ("1".equals(newAddressJson.optString("status"))) {
                 // --- 3a. API调用成功 ---
                 Log.d(TAG, "网络获取地址成功，更新缓存。");
@@ -478,7 +508,7 @@ public final class GaodeApi {
                 }
                 return ERROR_FETCH_FAILED; // 返回 "获取失败" (API层面)
             }
-        } else { 
+        } else {
             // --- 3c. API调用失败 (例如, 网络错误) ---
             Log.e(TAG, "网络获取地址失败 (null response)，不更新缓存。");
             return ERROR_FETCH_FAILED; // 返回 "获取失败" (网络层面)
@@ -515,7 +545,7 @@ public final class GaodeApi {
     // region --- Private Helper Methods ---
 
     /**
-     * [新增] 使用Haversine公式计算两个GPS坐标之间的距离。
+     * 使用Haversine公式计算两个GPS坐标之间的距离。
      * @param lat1 点1的纬度
      * @param lon1 点1的经度
      * @param lat2 点2的纬度
@@ -534,7 +564,7 @@ public final class GaodeApi {
     }
 
     /**
-     * [新增] 从逆地理编码的JSON响应中解析出格式化的地址字符串。
+     * 从逆地理编码的JSON响应中解析出格式化的地址字符串。
      * @param responseJson 高德API返回的完整JSONObject
      * @return 格式化的地址字符串，如果解析失败则返回 null。
      */
@@ -550,8 +580,7 @@ public final class GaodeApi {
             }
         }
         Log.e(TAG, "parseAddressFromJson: 未在JSON中找到有效地址。");
-        // [修改] 确保在API成功但地址为空时返回一个非null的错误
-        return ERROR_FETCH_FAILED; 
+        return ERROR_FETCH_FAILED;
     }
 
     private static boolean isNetworkAvailable(Context context) {

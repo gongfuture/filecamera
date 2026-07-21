@@ -1343,6 +1343,36 @@
 		text-transform: uppercase;
 	}
 
+	/* adcode 获取按钮 + 输入框容器 */
+	.adcode-input-wrapper {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	.adcode-input-wrapper input {
+		flex: 1;
+		min-width: 0;
+	}
+	.btn-adcode-fetch {
+		flex-shrink: 0;
+		padding: 7px 14px;
+		font-size: 13px;
+		font-weight: 600;
+		color: #fff;
+		background: #0366d6;
+		border: none;
+		border-radius: 6px;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.btn-adcode-fetch:active {
+		background: #0256b6;
+	}
+	.btn-adcode-fetch:disabled {
+		opacity: 0.6;
+		pointer-events: none;
+	}
+
 	.rgba-editor {
 		display: flex;
 		flex-direction: column;
@@ -1391,6 +1421,263 @@
 		padding: 4px;
 		border: 1px solid var(--border-color, #ccc);
 		border-radius: 4px;
+	}
+	</style>
+	<style>
+	/* ================= 设置页样式 ================= */
+
+	/* --- 页面容器 --- */
+	.watermark-config {
+		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+		padding: 8px;
+		background-color: var(--primary-bg);
+		color: var(--text-primary);
+		width: 100%;
+	}
+
+	/* --- 卡片 --- */
+	.watermark-config .card {
+		border-radius: 8px;
+		margin-bottom: 10px;
+		box-shadow: var(--shadow-md);
+	}
+	.watermark-config .card-header,
+	.watermark-config summary {
+		padding: 10px 12px;
+		font-size: 14px;
+	}
+	.watermark-config .card-content {
+		padding: 10px;
+	}
+
+	/* 卡片内子小节（页眉/主体/页脚） */
+	.watermark-config .card-content details {
+		border: 1px solid var(--border-color);
+		border-radius: 8px;
+		overflow: hidden;
+		margin-bottom: 8px;
+		background-color: var(--secondary-bg);
+	}
+	.watermark-config .card-content details:last-child {
+		margin-bottom: 0;
+	}
+	.watermark-config .card-content details summary {
+		background-color: var(--primary-bg);
+		padding: 9px 12px;
+		font-size: 13px;
+	}
+
+	/* 折叠指示箭头 */
+	.watermark-config summary span::before {
+		content: '\25b8';
+		display: inline-block;
+		margin-right: 8px;
+		color: var(--text-muted);
+		transition: transform 0.2s ease;
+	}
+	.watermark-config details[open] > summary span::before {
+		transform: rotate(90deg);
+	}
+
+	/* 小节内容区 */
+	.watermark-config .details-content {
+		padding: 10px;
+		background-color: var(--secondary-bg);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.watermark-config .details-content.disabled {
+		opacity: 0.55;
+		pointer-events: none;
+	}
+
+	/* --- 表单 --- */
+	.watermark-config .form-group {
+		margin-bottom: 10px;
+	}
+	.watermark-config .form-group:last-child {
+		margin-bottom: 10px;
+	}
+	.watermark-config .form-group label {
+		font-size: 12px;
+		margin-bottom: 4px;
+		letter-spacing: 0.2px;
+	}
+	.watermark-config .form-group,
+	.watermark-config input,
+	.watermark-config select {
+		min-width: 0;
+	}
+
+	/* 输入框 / 下拉框 */
+	.watermark-config input[type="text"],
+	.watermark-config input[type="number"],
+	.watermark-config select {
+		padding: 8px 10px;
+		border-radius: 6px;
+		font-size: 14px;
+	}
+	.watermark-config input:focus,
+	.watermark-config select:focus {
+		box-shadow: 0 0 0 3px rgba(3, 102, 214, 0.15);
+	}
+
+	/* 颜色输入 */
+	.watermark-config .color-input-wrapper {
+		border-radius: 6px;
+	}
+	.watermark-config .content-item-header .name-input,
+	.watermark-config .color-text-input {
+		width: 0;
+		min-width: 0;
+	}
+
+	/* 开关滑块 */
+	.watermark-config .slider:before {
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+	}
+
+	/* --- 栅格 --- */
+	.watermark-config .grid-2 {
+		grid-template-columns: 1fr;
+		gap: 8px;
+	}
+	.watermark-config .grid-3 {
+		grid-template-columns: 1fr 1fr;
+		gap: 8px;
+	}
+	.rgb-inputs-wrapper {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 6px;
+	}
+	.alpha-control-wrapper {
+		grid-template-columns: auto minmax(0, 1fr) auto;
+	}
+
+	/* --- 内容项 --- */
+	.watermark-config .content-item {
+		padding: 10px;
+		border-radius: 8px;
+		margin-bottom: 8px;
+		background: var(--primary-bg);
+		box-shadow: var(--shadow-sm);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.watermark-config .content-item .form-group,
+	.watermark-config .content-item .form-group:last-child {
+		margin-bottom: 0;
+	}
+	.watermark-config .content-item-header {
+		margin-bottom: 0;
+	}
+	.watermark-config .content-item-header .name-input {
+		font-size: 15px;
+		border-bottom: 2px solid transparent;
+		border-radius: 0;
+		transition: border-color 0.2s;
+	}
+	.watermark-config .content-item-header .name-input:focus {
+		border-bottom-color: var(--accent-color);
+		box-shadow: none;
+	}
+	.watermark-config .item-controls button {
+		font-size: 18px;
+		width: 32px;
+		height: 32px;
+	}
+	.watermark-config .item-controls button:hover {
+		background-color: var(--border-color);
+	}
+	.watermark-config .content-item .checkbox-group {
+		padding: 0;
+	}
+
+	/* --- 图标选择器 --- */
+	.icon-controls-group {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.icon-picker-control {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 8px;
+	}
+	.icon-preview {
+		width: 72px;
+		height: 72px;
+	}
+	.icon-button-group {
+		width: 100%;
+	}
+	.icon-button-group .btn {
+		flex: 1;
+	}
+
+	/* --- 按钮 --- */
+	.watermark-config .btn {
+		border-radius: 8px;
+		font-weight: 600;
+		padding: 10px;
+		font-size: 14px;
+		margin-top: 6px;
+		margin-bottom: 6px;
+	}
+	.watermark-config .btn-primary {
+		box-shadow: var(--shadow-sm);
+	}
+	.watermark-config .btn-danger-outline {
+		background-color: transparent;
+		color: var(--danger-color);
+		border: 1px solid var(--danger-color);
+	}
+	.watermark-config .btn-danger-outline:active {
+		background-color: rgba(215, 58, 73, 0.08);
+	}
+
+	/* --- 底部操作区 --- */
+	.watermark-config .settings-action-area {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		margin-top: 14px;
+		padding: 0 0 24px;
+	}
+	.watermark-config .settings-action-area .btn {
+		margin: 0;
+	}
+	.watermark-config .settings-action-area .btn-block {
+		width: 100%;
+	}
+	.watermark-config .settings-action-area .btn-row {
+		display: flex;
+		gap: 8px;
+	}
+	.watermark-config .settings-action-area .btn-row .btn {
+		flex: 1;
+	}
+
+	/* --- RGBA 颜色编辑器 --- */
+	.rgba-editor {
+		padding: 8px;
+		gap: 8px;
+		border-radius: 8px;
+		background-color: var(--secondary-bg, #fff);
+	}
+	.color-preview {
+		border-radius: 6px;
+	}
+	.color-text-input,
+	.alpha-number-input {
+		border-radius: 6px;
+	}
+
+	/* --- 位置控件 --- */
+	.watermark-config .position-control .control-row {
+		gap: 6px;
 	}
 	</style>
 	<style>
