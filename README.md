@@ -2,7 +2,9 @@
 
 一款纯粹、公益、无广告的开源水印相机，致力于为一线工作人员提供清爽、高效的拍照与管理体验。
 
-> **最新版本**：v20260720-02 | [下载 APK](./巡查相机v20260720-02.apk) | [所有版本](https://gitee.com/zjywchenhui/filecamera/releases)
+> **最新版本**：v20260810-01 | [下载 APK](./巡查相机v20260810-01.apk) | [所有版本](https://gitee.com/zjywchenhui/filecamera/releases)
+>
+> v20260810-01：修复新版安卓系统（16KB 内存页设备）上无法安装 / 运行闪退的问题（CameraX 升级至 1.4.2）
 
 ## 为什么做这个
 

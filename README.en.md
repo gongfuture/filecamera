@@ -2,7 +2,9 @@
 
 A clean, free, ad-free open-source watermark camera. Designed to provide field workers with a distraction-free, efficient photo capture and management experience.
 
-> **Latest Version**: v20260720-02 | [Download APK](./巡查相机v20260720-02.apk) | [All Releases](https://gitee.com/zjywchenhui/filecamera/releases)
+> **Latest Version**: v20260810-01 | [Download APK](./巡查相机v20260810-01.apk) | [All Releases](https://gitee.com/zjywchenhui/filecamera/releases)
+>
+> v20260810-01: Fix installation failure / crash on newer Android versions (16 KB page-size devices) by upgrading CameraX to 1.4.2
 
 ## Why This Project
 
