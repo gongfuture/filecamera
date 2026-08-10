@@ -46,7 +46,9 @@ dependencies {
 
     // 🔥 [新增] CameraX 核心库
     // 定义一个版本号变量，方便统一管理
-    def camerax_version = "1.3.3"
+    // 1.4.2 起 camera-core 内置的 libimage_processing_util_jni.so 已按 16KB 页对齐，
+    // 修复 Android 15+（16KB 页设备）上安装失败或运行时 dlopen 崩溃的问题
+    def camerax_version = "1.4.2"
     // 核心功能库
     implementation "androidx.camera:camera-core:${camerax_version}"
     // Camera2 的具体实现 (必需)
