@@ -740,9 +740,15 @@ public class FilePickerBridge {
     private void startLocationUpdates() {
         try {
             if (ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0.0f, locationListener);
+                // 部分设备无 GPS 模块或无 GMS（无 network 提供者），需先检测提供者是否存在，否则会崩溃
+                if (locationManager.getAllProviders().contains(LocationManager.GPS_PROVIDER)) {
+                    locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0.0f, locationListener);
+                } else if (locationManager.getAllProviders().contains(LocationManager.NETWORK_PROVIDER)) {
+                    // 设备无 GPS 模块时回退到网络定位
+                    locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000, 0.0f, locationListener);
+                }
             }
-        } catch (SecurityException e) {
+        } catch (IllegalArgumentException | SecurityException e) {
             Log.e(TAG, "请求位置更新失败", e);
         }
     }

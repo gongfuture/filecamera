@@ -106,6 +106,8 @@ public class CameraActivity extends AppCompatActivity {
     
     private static final int REQUEST_PERMISSIONS = 101;
     private static final long LOCATION_TIMEOUT_MS = 5000L;
+    // GPS 优先策略：GPS 定位在此时间窗口内仍有效时，忽略网络定位结果
+    private static final long GPS_PRIORITY_TIMEOUT_MS = 15000L;
     private static final int MAX_WATERMARK_LINE_WIDTH_DP = 260;
     private static final String[] REQUIRED_PERMISSIONS = {
             Manifest.permission.CAMERA,
@@ -137,6 +139,8 @@ public class CameraActivity extends AppCompatActivity {
     private LocationListener locationListener;
     private double lat = 0, lon = 0, alt = 0;
     private long locationTime = 0;
+    // 最近一次 GPS 定位的时间，用于 GPS 优先策略（网络定位仅在 GPS 超时时使用）
+    private long gpsLocationTime = 0;
 
     // 外部API数据
     private boolean hasWeatherItem = false;
@@ -443,6 +447,14 @@ public class CameraActivity extends AppCompatActivity {
             @Override
             public void onLocationChanged(@NonNull Location location) {
                 Log.d(TAG, "New location update received.");
+                if (LocationManager.GPS_PROVIDER.equals(location.getProvider())) {
+                    gpsLocationTime = location.getTime();
+                } else if (gpsLocationTime != 0
+                        && System.currentTimeMillis() - gpsLocationTime < GPS_PRIORITY_TIMEOUT_MS) {
+                    // GPS 定位仍然有效，优先使用 GPS，忽略网络定位结果
+                    Log.d(TAG, "Ignoring network location, GPS fix is still fresh.");
+                    return;
+                }
                 lat = location.getLatitude();
                 lon = location.getLongitude();
                 alt = location.getAltitude();
@@ -464,33 +476,48 @@ public class CameraActivity extends AppCompatActivity {
             return;
         }
 
-        Location lastKnownGps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-        Location lastKnownNetwork = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-        Location bestLastKnownLocation = null;
-        if (lastKnownGps != null && lastKnownNetwork != null) {
-            bestLastKnownLocation = lastKnownGps.getTime() > lastKnownNetwork.getTime() ? lastKnownGps : lastKnownNetwork;
-        } else {
-            bestLastKnownLocation = (lastKnownGps != null) ? lastKnownGps : lastKnownNetwork;
+        try {
+            // 部分设备（如无 GMS 的安卓系统）不存在 network 定位提供者，需先检测再使用，否则会崩溃
+            boolean hasGpsProvider = locationManager.getAllProviders().contains(LocationManager.GPS_PROVIDER);
+            boolean hasNetworkProvider = locationManager.getAllProviders().contains(LocationManager.NETWORK_PROVIDER);
+
+            Location lastKnownGps = hasGpsProvider ? locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER) : null;
+            Location lastKnownNetwork = hasNetworkProvider ? locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) : null;
+            Location bestLastKnownLocation = null;
+            if (lastKnownGps != null && lastKnownNetwork != null) {
+                bestLastKnownLocation = lastKnownGps.getTime() > lastKnownNetwork.getTime() ? lastKnownGps : lastKnownNetwork;
+            } else {
+                bestLastKnownLocation = (lastKnownGps != null) ? lastKnownGps : lastKnownNetwork;
+            }
+
+            if (bestLastKnownLocation != null && (System.currentTimeMillis() - bestLastKnownLocation.getTime()) < LOCATION_TIMEOUT_MS) {
+                Log.d(TAG, "Using a recent last known location for initial match.");
+                lat = bestLastKnownLocation.getLatitude();
+                lon = bestLastKnownLocation.getLongitude();
+                alt = bestLastKnownLocation.getAltitude();
+                locationTime = bestLastKnownLocation.getTime();
+                if (LocationManager.GPS_PROVIDER.equals(bestLastKnownLocation.getProvider())) {
+                    gpsLocationTime = bestLastKnownLocation.getTime();
+                }
+
+                updateDynamicItemsByType("camera_coord", getCurrentCoordText());
+                findRoadInfoInBackground(lon, lat);
+                fetchAddressOnce();
+
+            } else {
+                Log.d(TAG, "No recent last known location found. Waiting for new updates.");
+            }
+
+            if (hasGpsProvider) {
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0.0f, locationListener);
+            }
+            if (hasNetworkProvider) {
+                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000, 0.0f, locationListener);
+            }
+            Log.d(TAG, "Location updates started.");
+        } catch (IllegalArgumentException | SecurityException e) {
+            Log.e(TAG, "Location updates failed to start (provider may not exist on this device).", e);
         }
-
-        if (bestLastKnownLocation != null && (System.currentTimeMillis() - bestLastKnownLocation.getTime()) < LOCATION_TIMEOUT_MS) {
-            Log.d(TAG, "Using a recent last known location for initial match.");
-            lat = bestLastKnownLocation.getLatitude();
-            lon = bestLastKnownLocation.getLongitude();
-            alt = bestLastKnownLocation.getAltitude();
-            locationTime = bestLastKnownLocation.getTime();
-            
-            updateDynamicItemsByType("camera_coord", getCurrentCoordText());
-            findRoadInfoInBackground(lon, lat);
-            fetchAddressOnce();
-
-        } else {
-            Log.d(TAG, "No recent last known location found. Waiting for new updates.");
-        }
-
-        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0.0f, locationListener);
-        locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000, 0.0f, locationListener);
-        Log.d(TAG, "Location updates started.");
     }
 
     private void stopLocationUpdates() {

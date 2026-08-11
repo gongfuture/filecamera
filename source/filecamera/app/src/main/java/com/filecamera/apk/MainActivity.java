@@ -69,6 +69,9 @@ public class MainActivity extends AppCompatActivity {
     private LocationListener locationListener;
     private double lat, lon, alt;
     private long locationTime;
+    // 最近一次 GPS 定位的时间，用于 GPS 优先策略（网络定位仅在 GPS 超时时使用）
+    private long gpsLocationTime;
+    private static final long GPS_PRIORITY_TIMEOUT_MS = 15000L;
 
     // 系统服务和 JS 桥接
     private Android_js_bridge jsBridge;
@@ -187,6 +190,13 @@ public class MainActivity extends AppCompatActivity {
         locationListener = new LocationListener() {
             @Override
             public void onLocationChanged(Location location) {
+                if (LocationManager.GPS_PROVIDER.equals(location.getProvider())) {
+                    gpsLocationTime = location.getTime();
+                } else if (gpsLocationTime != 0
+                        && System.currentTimeMillis() - gpsLocationTime < GPS_PRIORITY_TIMEOUT_MS) {
+                    // GPS 定位仍然有效，优先使用 GPS，忽略网络定位结果
+                    return;
+                }
                 lat = location.getLatitude();
                 lon = location.getLongitude();
                 alt = location.getAltitude();
@@ -727,25 +737,40 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         if (locationManager == null) return;
-        Location lastKnownGps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-        Location lastKnownNetwork = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-        Location bestLastKnown = null;
-        if (lastKnownGps != null && lastKnownNetwork != null) {
-            bestLastKnown = lastKnownGps.getTime() > lastKnownNetwork.getTime() ? lastKnownGps : lastKnownNetwork;
-        } else {
-            bestLastKnown = (lastKnownGps != null) ? lastKnownGps : lastKnownNetwork;
-        }
-        if (bestLastKnown != null) {
-            lat = bestLastKnown.getLatitude();
-            lon = bestLastKnown.getLongitude();
-            alt = bestLastKnown.getAltitude();
-            locationTime = bestLastKnown.getTime();
-            if (backServer != null) {
-                backServer.updateGpsLocation(lat, lon);
+        try {
+            // 部分设备（如无 GMS 的安卓系统）不存在 network 定位提供者，需先检测再使用，否则会崩溃
+            boolean hasGpsProvider = locationManager.getAllProviders().contains(LocationManager.GPS_PROVIDER);
+            boolean hasNetworkProvider = locationManager.getAllProviders().contains(LocationManager.NETWORK_PROVIDER);
+
+            Location lastKnownGps = hasGpsProvider ? locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER) : null;
+            Location lastKnownNetwork = hasNetworkProvider ? locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) : null;
+            Location bestLastKnown = null;
+            if (lastKnownGps != null && lastKnownNetwork != null) {
+                bestLastKnown = lastKnownGps.getTime() > lastKnownNetwork.getTime() ? lastKnownGps : lastKnownNetwork;
+            } else {
+                bestLastKnown = (lastKnownGps != null) ? lastKnownGps : lastKnownNetwork;
             }
+            if (bestLastKnown != null) {
+                lat = bestLastKnown.getLatitude();
+                lon = bestLastKnown.getLongitude();
+                alt = bestLastKnown.getAltitude();
+                locationTime = bestLastKnown.getTime();
+                if (LocationManager.GPS_PROVIDER.equals(bestLastKnown.getProvider())) {
+                    gpsLocationTime = bestLastKnown.getTime();
+                }
+                if (backServer != null) {
+                    backServer.updateGpsLocation(lat, lon);
+                }
+            }
+            if (hasGpsProvider) {
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0.0f, locationListener);
+            }
+            if (hasNetworkProvider) {
+                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000, 0.0f, locationListener);
+            }
+        } catch (IllegalArgumentException | SecurityException e) {
+            Log.e(TAG, "定位服务启动失败（设备可能不支持 GPS 或网络定位）", e);
         }
-        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0.0f, locationListener);
-        locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000, 0.0f, locationListener);
     }
 
     // 公共的 getter 方法，以便其他类可以访问这些助手对象
