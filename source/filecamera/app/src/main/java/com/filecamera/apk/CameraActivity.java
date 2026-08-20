@@ -171,21 +171,14 @@ public class CameraActivity extends AppCompatActivity {
                 resetGpsDependentData();
             }
 
-            // 3. 检查天气（adcode为空时进入自动模式：从GPS解析adcode，会话级内存缓存）
+            // 3. 检查天气（adcode为空时进入自动模式：GPS解析adcode→比对缓存→按需拉取）
             if (hasWeatherItem) {
                 if (weatherAdcode == null || weatherAdcode.trim().isEmpty()) {
-                    // 自动模式：adcode仅缓存到内存，App关闭即失效，每次冷启动重新解析并拉取天气
+                    // 自动模式：每次冷启动后首次打开相机执行一次（进程级一次性由GaodeApi内部保证），
+                    // 城市变化时重启App即可刷新
                     if (isLocationValid()) {
-                        GaodeApi.requestAutoAdcodeFromGps(CameraActivity.this, lon, lat, autoAdcode -> {
-                            if (autoAdcode.equals(GaodeApi.ERROR_NO_KEY)
-                                    || autoAdcode.equals(GaodeApi.ERROR_INVALID_KEY)
-                                    || autoAdcode.equals(GaodeApi.ERROR_FETCH_FAILED)) {
-                                runOnUiThread(() -> updateDynamicItemsByType("weather", autoAdcode));
-                            } else {
-                                GaodeApi.requestWeatherUpdateIfStale(CameraActivity.this, autoAdcode, lon, lat,
-                                        weatherInfo -> runOnUiThread(() -> updateDynamicItemsByType("weather", weatherInfo)));
-                            }
-                        });
+                        GaodeApi.requestAutoWeatherFromGps(CameraActivity.this, lon, lat,
+                                weatherInfo -> runOnUiThread(() -> updateDynamicItemsByType("weather", weatherInfo)));
                     }
                     // GPS未就绪时保持当前显示（"获取中..."），等待下一秒轮询
                 } else {
@@ -1900,8 +1893,8 @@ public class CameraActivity extends AppCompatActivity {
 
     private void loadInitialCaches() {
         if (hasWeatherItem) {
-            // adcode为空（自动模式）时不加载持久化缓存：内存天气缓存为空，
-            // 后续轮询会从GPS重新解析adcode并拉取一次天气，即每次冷启动都获取最新天气
+            // adcode为空（自动模式）时此处无法预加载：需先由GPS解析出adcode才能匹配持久化缓存，
+            // 由首次打开相机时的自动流程统一处理（解析后比对缓存，一致且未过期则复用，否则拉取）
             GaodeApi.loadWeatherFromCache(this, weatherAdcode);
         }
         if (hasAddressItem) {
