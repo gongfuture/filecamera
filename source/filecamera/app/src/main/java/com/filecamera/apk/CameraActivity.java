@@ -171,10 +171,23 @@ public class CameraActivity extends AppCompatActivity {
                 resetGpsDependentData();
             }
 
-            // 3. 检查天气（adcode为空则提示用户配置）
+            // 3. 检查天气（adcode为空时进入自动模式：从GPS解析adcode，会话级内存缓存）
             if (hasWeatherItem) {
                 if (weatherAdcode == null || weatherAdcode.trim().isEmpty()) {
-                    updateDynamicItemsByType("weather", "请配置adcode");
+                    // 自动模式：adcode仅缓存到内存，App关闭即失效，每次冷启动重新解析并拉取天气
+                    if (isLocationValid()) {
+                        GaodeApi.requestAutoAdcodeFromGps(CameraActivity.this, lon, lat, autoAdcode -> {
+                            if (autoAdcode.equals(GaodeApi.ERROR_NO_KEY)
+                                    || autoAdcode.equals(GaodeApi.ERROR_INVALID_KEY)
+                                    || autoAdcode.equals(GaodeApi.ERROR_FETCH_FAILED)) {
+                                runOnUiThread(() -> updateDynamicItemsByType("weather", autoAdcode));
+                            } else {
+                                GaodeApi.requestWeatherUpdateIfStale(CameraActivity.this, autoAdcode, lon, lat,
+                                        weatherInfo -> runOnUiThread(() -> updateDynamicItemsByType("weather", weatherInfo)));
+                            }
+                        });
+                    }
+                    // GPS未就绪时保持当前显示（"获取中..."），等待下一秒轮询
                 } else {
                     GaodeApi.requestWeatherUpdateIfStale(CameraActivity.this, weatherAdcode, lon, lat, new GaodeApi.WeatherCallback() {
                         @Override
@@ -1818,6 +1831,9 @@ public class CameraActivity extends AppCompatActivity {
     private void checkForAddressItem() {
         if (watermarkConfig == null) return;
 
+        // 先重置再扫描：配置中移除地址项后（onResume重新解析），标志位能正确归零
+        this.hasAddressItem = false;
+
         List<Section> sections = new ArrayList<>();
         if (watermarkConfig.header != null) sections.add(watermarkConfig.header);
         if (watermarkConfig.body != null) sections.add(watermarkConfig.body);
@@ -1860,6 +1876,10 @@ public class CameraActivity extends AppCompatActivity {
     private void checkForWeatherItem() {
         if (watermarkConfig == null) return;
 
+        // 先重置再扫描：配置中移除天气项后（onResume重新解析），标志位能正确归零
+        this.hasWeatherItem = false;
+        this.weatherAdcode = null;
+
         List<Section> sections = new ArrayList<>();
         if (watermarkConfig.header != null) sections.add(watermarkConfig.header);
         if (watermarkConfig.body != null) sections.add(watermarkConfig.body);
@@ -1880,7 +1900,8 @@ public class CameraActivity extends AppCompatActivity {
 
     private void loadInitialCaches() {
         if (hasWeatherItem) {
-            // adcode为空时不加载缓存，UI将显示"请配置adcode"
+            // adcode为空（自动模式）时不加载持久化缓存：内存天气缓存为空，
+            // 后续轮询会从GPS重新解析adcode并拉取一次天气，即每次冷启动都获取最新天气
             GaodeApi.loadWeatherFromCache(this, weatherAdcode);
         }
         if (hasAddressItem) {
@@ -1945,9 +1966,8 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private String getCurrentWeatherText() {
-        if (weatherAdcode == null || weatherAdcode.trim().isEmpty()) {
-            return "请配置adcode";
-        }
+        // adcode为空时为自动模式：天气由GPS解析的adcode拉取，统一返回内存缓存
+        // （初始为"获取中..."，失败时为错误提示），保证预览与拍照出图一致
         return GaodeApi.getCachedWeatherInfo();
     }
 

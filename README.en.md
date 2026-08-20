@@ -2,9 +2,9 @@
 
 A clean, free, ad-free open-source watermark camera. Designed to provide field workers with a distraction-free, efficient photo capture and management experience.
 
-> **Latest Version**: v20260811-01 | [Download APK](./巡查相机v20260811-01.apk) | [All Releases](https://gitee.com/zjywchenhui/filecamera/releases)
+> **Latest Version**: v20260820-01 | [Download APK](./巡查相机v20260820-01.apk) | [All Releases](https://gitee.com/zjywchenhui/filecamera/releases)
 >
-> v20260811-01: Fix startup crash on Android devices without GMS (missing network location provider); GPS-first location strategy — falls back to network location when GPS times out (outdoor → indoor) and switches back to GPS when it recovers (indoor → outdoor)
+> v20260820-01: Weather watermark adcode can now be left empty — local weather is resolved automatically from GPS and refreshed on every launch (requires your own Amap/Gaode API key configured in settings); fix: background network requests kept running after the weather/address watermark item was removed in settings
 
 ## Why This Project
 
@@ -76,7 +76,7 @@ road_data.js        ←──→          RoadApiHelper.java       Route matchin
 
 ### Direct Install (Recommended)
 
-1. Download the latest [APK](./巡查相机v20260811-01.apk)
+1. Download the latest [APK](./巡查相机v20260820-01.apk)
 2. Install on your Android device — ready to use
 
 > Weather and geocoding features require an Amap API Key. See instructions below.

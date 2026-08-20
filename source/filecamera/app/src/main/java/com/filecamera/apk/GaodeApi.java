@@ -28,11 +28,14 @@ import java.net.URL;
  * [修改 v3] 为天气(Weather)和地址(Address)添加了异步回调(Push)模式。
  * [修改 v6] 密钥变更即时生效：新增 onGaodeApiKeyChanged()，密钥保存后无需重启应用。
  * [修改 v7] 移除adcode自动模式：adcode为空时不再通过GPS自动解析，需手动配置adcode。
+ * [修改 v9] 新增会话级adcode自动模式：手动adcode为空时，从GPS解析adcode并缓存到内存
+ *           （不落盘，进程结束即失效），每次冷启动重新解析并拉取一次天气；
+ *           手动adcode非空时行为与v7保持一致。
  *
  * @author Wandergis (Original JS Author)
  * @author Gemini (Java Translator & Refactor)
  * Created on 2025/10/13
- * LastModified on 2026/07/20
+ * LastModified on 2026/08/20
  */
 public final class GaodeApi {
 
@@ -236,6 +239,72 @@ public final class GaodeApi {
             }
         }).start();
     }
+    // endregion
+
+    // region --- Session Auto Adcode (手动adcode为空时按GPS自动解析) ---
+
+    // 会话级内存缓存的adcode：仅在手动adcode为空时由GPS解析填充，不落盘，进程结束即失效
+    private static String sessionAutoAdcode = null;
+    private static volatile boolean isResolvingAutoAdcode = false;
+
+    /**
+     * 用于自动adcode解析的异步回调接口。
+     */
+    public interface AutoAdcodeCallback {
+        /**
+         * 解析完成后在后台线程中调用。
+         * @param adcode 成功时为adcode字符串；失败时为 ERROR_NO_KEY / ERROR_INVALID_KEY / ERROR_FETCH_FAILED
+         */
+        void onAutoAdcode(String adcode);
+    }
+
+    /**
+     * [新增 v9] 手动adcode为空时的自动模式：从GPS(WGS84)解析adcode并缓存到内存（会话级，不落盘）。
+     * 已缓存则直接回调缓存值；正在解析中则直接返回，由下一次轮询触发回调。
+     * 失败时不缓存结果，同步天气缓存为错误提示并置会话失败锁（与天气拉取共用，
+     * 由 onGaodeApiKeyChanged() 或重启App解锁），避免每秒重试拖垮接口。
+     */
+    public static void requestAutoAdcodeFromGps(final Context context, final double gpsLng, final double gpsLat,
+                                                final AutoAdcodeCallback callback) {
+        if (sessionAutoAdcode != null) {
+            if (callback != null) callback.onAutoAdcode(sessionAutoAdcode);
+            return;
+        }
+        // 会话失败锁：本次会话已失败过（如Key未配置/无效），不再重试
+        if (weatherApiCallFailedThisSession) {
+            return;
+        }
+        // 防止重复启动线程
+        if (isResolvingAutoAdcode) {
+            return;
+        }
+        isResolvingAutoAdcode = true;
+        new Thread(() -> {
+            try {
+                String result = resolveAdcodeFromGps(context, gpsLng, gpsLat);
+                boolean success = result != null
+                        && !result.equals(ERROR_NO_KEY)
+                        && !result.equals(ERROR_INVALID_KEY)
+                        && !result.equals(ERROR_FETCH_FAILED);
+                if (success) {
+                    sessionAutoAdcode = result;
+                    Log.d(TAG, "自动解析adcode成功: " + result);
+                } else {
+                    // 解析失败则天气也无法获取：同步天气缓存为错误提示，保证预览与拍照出图一致
+                    result = (result != null) ? result : ERROR_FETCH_FAILED;
+                    cachedWeatherInfo = result;
+                    weatherApiCallFailedThisSession = true;
+                    Log.e(TAG, "自动解析adcode失败: " + result);
+                }
+                if (callback != null) {
+                    callback.onAutoAdcode(result);
+                }
+            } finally {
+                isResolvingAutoAdcode = false;
+            }
+        }).start();
+    }
+
     // endregion
 
     // region --- Address Caching & Fetching ---
