@@ -7,3 +7,6 @@
 
 # 版本标记文件
 source/*.version
+
+# 根目录 IDE 配置（本机状态，不入库）
+/.idea/

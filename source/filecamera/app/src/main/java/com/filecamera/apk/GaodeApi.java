@@ -28,9 +28,9 @@ import java.net.URL;
  * [修改 v3] 为天气(Weather)和地址(Address)添加了异步回调(Push)模式。
  * [修改 v6] 密钥变更即时生效：新增 onGaodeApiKeyChanged()，密钥保存后无需重启应用。
  * [修改 v7] 移除adcode自动模式：adcode为空时不再通过GPS自动解析，需手动配置adcode。
- * [修改 v9] 新增adcode自动模式：手动adcode为空时，每次冷启动后首次打开相机从GPS实时
- *           解析adcode，与缓存天气的adcode比对——一致且未过期则复用缓存，不一致或过期则按新adcode拉取。
- *           与手动模式共用同一条天气管线，仅adcode来源不同（配置读取 vs GPS解析）。
+ * [修改 v9] 新增adcode自动模式：手动adcode为空时，与手动模式共用同一入口和天气管线，
+ *           仅adcode来源不同——由GPS实时解析（天气冷却内不解析、零请求；冷却过后解析，
+ *           adcode变化则立即拉取新城市天气，未变化则按1小时过期策略刷新）。
  *
  * @author Wandergis (Original JS Author)
  * @author Gemini (Java Translator & Refactor)
@@ -82,8 +82,6 @@ public final class GaodeApi {
         weatherCacheTimestamp = 0;
         cachedWeatherInfo = "获取中...";
         cachedWeatherAdcode = "";
-        // 自动模式的进程级一次性标志一并复位：密钥修复后无需重启App即可重新走自动流程
-        autoWeatherFetchedThisProcess = false;
     }
 
     public static String getGaodeApiKey(Context context) {
@@ -155,8 +153,13 @@ public final class GaodeApi {
     }
 
     /**
-     * 请求天气更新（如缓存过期）。manualAdcode 必须为非空的有效adcode，
-     * 为空时直接返回，不做任何自动解析（自动模式见 requestAutoWeatherFromGps）。
+     * 请求天气更新（如缓存过期）。手动/自动模式统一入口，后续走同一条管线
+     * （{@link #fetchWeatherWithCache}），仅adcode来源不同：
+     * manualAdcode 非空 → 手动模式，直接读取配置值；
+     * manualAdcode 为空 → 自动模式，天气冷却（1小时）内直接用缓存（零请求），
+     * 冷却过后由GPS实时解析adcode——与缓存adcode比对：不一致（城市变了）则立即
+     * 拉取新城市天气（不受冷却时间限制），一致则按过期策略决定是否刷新。
+     * 自动模式下GPS未就绪时不应调用本方法（调用方按 isLocationValid() 门控）。
      */
     public static void requestWeatherUpdateIfStale(Context context, final String manualAdcode,
                                                    final double gpsLng, final double gpsLat,
@@ -177,13 +180,38 @@ public final class GaodeApi {
                     return;
                 }
 
-                // adcode为空则无法获取天气，直接返回
-                if (manualAdcode == null || manualAdcode.trim().isEmpty()) {
-                    finalWeatherInfo = cachedWeatherInfo;
-                    return;
+                // 获取adcode：手动模式读配置，自动模式由GPS实时解析
+                final String adcode;
+                if (manualAdcode != null && !manualAdcode.trim().isEmpty()) {
+                    adcode = manualAdcode.trim();
+                } else {
+                    // 自动模式冷却闸门：内存缓存未过期直接用，此时无需adcode，零请求
+                    if (System.currentTimeMillis() - weatherCacheTimestamp < WEATHER_CACHE_EXPIRATION_MS) {
+                        finalWeatherInfo = cachedWeatherInfo;
+                        return;
+                    }
+                    String resolved = resolveAdcodeFromGps(context, gpsLng, gpsLat);
+                    if (resolved == null) {
+                        // resolveAdcodeFromGps不返回null，此处仅兜底
+                        finalWeatherInfo = cachedWeatherInfo;
+                        return;
+                    }
+                    if (resolved.equals(ERROR_NO_KEY)
+                            || resolved.equals(ERROR_INVALID_KEY)
+                            || resolved.equals(ERROR_FETCH_FAILED)) {
+                        // 解析失败则天气也无法获取：同步天气缓存为错误提示并置会话失败锁
+                        cachedWeatherInfo = resolved;
+                        finalWeatherInfo = resolved;
+                        weatherApiCallFailedThisSession = true;
+                        Log.e(TAG, "自动解析adcode失败: " + resolved);
+                        return;
+                    }
+                    adcode = resolved;
                 }
 
-                finalWeatherInfo = fetchWeatherWithCache(context, manualAdcode.trim());
+                // 统一管线：adcode与缓存不一致（城市变了）会跳过过期检查立即拉取；
+                // 一致则按1小时过期策略决定复用还是刷新
+                finalWeatherInfo = fetchWeatherWithCache(context, adcode);
             } finally {
                 isFetchingWeather = false;
                 if (callback != null && finalWeatherInfo != null) {
@@ -251,72 +279,6 @@ public final class GaodeApi {
         Log.e(TAG, "天气更新失败: " + error);
         return error;
     }
-    // endregion
-
-    // region --- Auto Weather (手动adcode为空时按GPS自动获取) ---
-
-    // 进程级一次性标志：自动模式只在每次冷启动后首次打开相机时执行一次（GPS解析adcode有API配额，不能高频调用）
-    private static boolean autoWeatherFetchedThisProcess = false;
-
-    /**
-     * [新增 v9] 手动adcode为空时的自动模式：每次冷启动后首次打开相机时执行一次
-     * （进程级一次性，由 autoWeatherFetchedThisProcess 保证），从GPS实时解析adcode，
-     * 再走与手动模式完全相同的管线（{@link #fetchWeatherWithCache}）：
-     * 解析出的adcode与缓存天气的adcode一致且未过期 → 直接复用缓存，不发天气请求；
-     * 不一致（城市变了）或已过期 → 按新adcode重新拉取。
-     * 唯一区别是adcode来源——GPS实时解析，不做单独缓存。
-     */
-    public static void requestAutoWeatherFromGps(final Context context, final double gpsLng, final double gpsLat,
-                                                 final WeatherCallback callback) {
-        // 进程级一次性：本次冷启动已执行过则直接返回
-        if (autoWeatherFetchedThisProcess) {
-            return;
-        }
-        // 防止重复启动线程（与手动模式共用同一把锁）
-        if (isFetchingWeather) {
-            return;
-        }
-        isFetchingWeather = true;
-        autoWeatherFetchedThisProcess = true;
-
-        new Thread(() -> {
-            String finalWeatherInfo = null;
-            try {
-                // 检查会话失败标志
-                if (weatherApiCallFailedThisSession) {
-                    finalWeatherInfo = cachedWeatherInfo;
-                    return;
-                }
-
-                // 从GPS实时解析adcode
-                String adcode = resolveAdcodeFromGps(context, gpsLng, gpsLat);
-                if (adcode == null
-                        || adcode.equals(ERROR_NO_KEY)
-                        || adcode.equals(ERROR_INVALID_KEY)
-                        || adcode.equals(ERROR_FETCH_FAILED)) {
-                    // 解析失败则天气也无法获取：同步天气缓存为错误提示并置会话失败锁
-                    String error = (adcode != null) ? adcode : ERROR_FETCH_FAILED;
-                    cachedWeatherInfo = error;
-                    finalWeatherInfo = error;
-                    weatherApiCallFailedThisSession = true;
-                    Log.e(TAG, "自动解析adcode失败: " + error);
-                    return;
-                }
-
-                // 与手动模式共用后续管线：adcode一致且未过期则复用缓存，否则按新adcode拉取
-                finalWeatherInfo = fetchWeatherWithCache(context, adcode);
-            } finally {
-                isFetchingWeather = false;
-                if (callback != null && finalWeatherInfo != null) {
-                    callback.onWeatherUpdated(finalWeatherInfo);
-                } else if (callback != null) {
-                    callback.onWeatherUpdated(ERROR_FETCH_FAILED);
-                    Log.e(TAG, "Weather callback triggered with fallback error; finalWeatherInfo was null.");
-                }
-            }
-        }).start();
-    }
-
     // endregion
 
     // region --- Address Caching & Fetching ---

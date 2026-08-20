@@ -171,17 +171,11 @@ public class CameraActivity extends AppCompatActivity {
                 resetGpsDependentData();
             }
 
-            // 3. 检查天气（adcode为空时进入自动模式：GPS解析adcode→比对缓存→按需拉取）
+            // 3. 检查天气（手动/自动统一入口：仅adcode来源不同——配置读取 vs GPS实时解析）
             if (hasWeatherItem) {
-                if (weatherAdcode == null || weatherAdcode.trim().isEmpty()) {
-                    // 自动模式：每次冷启动后首次打开相机执行一次（进程级一次性由GaodeApi内部保证），
-                    // 城市变化时重启App即可刷新
-                    if (isLocationValid()) {
-                        GaodeApi.requestAutoWeatherFromGps(CameraActivity.this, lon, lat,
-                                weatherInfo -> runOnUiThread(() -> updateDynamicItemsByType("weather", weatherInfo)));
-                    }
-                    // GPS未就绪时保持当前显示（"获取中..."），等待下一秒轮询
-                } else {
+                boolean isAutoAdcode = weatherAdcode == null || weatherAdcode.trim().isEmpty();
+                // 自动模式需等GPS就绪才能解析adcode；手动模式不依赖GPS
+                if (!isAutoAdcode || isLocationValid()) {
                     GaodeApi.requestWeatherUpdateIfStale(CameraActivity.this, weatherAdcode, lon, lat, new GaodeApi.WeatherCallback() {
                         @Override
                         public void onWeatherUpdated(String weatherInfo) {
@@ -191,6 +185,7 @@ public class CameraActivity extends AppCompatActivity {
                         }
                     });
                 }
+                // 自动模式GPS未就绪时保持当前显示（"获取中..."），等待下一秒轮询
             }
             
             uiUpdateHandler.postDelayed(this, 1000); // 1秒更新一次
@@ -1894,7 +1889,7 @@ public class CameraActivity extends AppCompatActivity {
     private void loadInitialCaches() {
         if (hasWeatherItem) {
             // adcode为空（自动模式）时此处无法预加载：需先由GPS解析出adcode才能匹配持久化缓存，
-            // 由首次打开相机时的自动流程统一处理（解析后比对缓存，一致且未过期则复用，否则拉取）
+            // 由后续轮询的自动流程统一处理（解析后比对缓存，一致且未过期则复用，否则拉取）
             GaodeApi.loadWeatherFromCache(this, weatherAdcode);
         }
         if (hasAddressItem) {

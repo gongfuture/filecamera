@@ -59,7 +59,7 @@ const TYPE_OPTIONS = {
     camera_coord: '坐标 (动态)',
     camera_pile: '桩号 (动态)',
     time: '时间 (动态)',
-	weather: '天气 (动态，需秘钥；adcode留空则按GPS自动获取)',
+	weather: '天气 (动态，需秘钥；留空自动获取)',
 	address: '地址 (动态，需秘钥)'
 };
 async function open_setting_page(){
