@@ -36,6 +36,7 @@ import android.view.OrientationEventListener;
 import android.view.ScaleGestureDetector;
 import android.view.Surface;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.EditText;
@@ -66,6 +67,7 @@ import androidx.camera.core.resolutionselector.AspectRatioStrategy;
 import androidx.camera.core.resolutionselector.ResolutionSelector;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
+import androidx.lifecycle.LiveData;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
@@ -123,9 +125,11 @@ public class CameraActivity extends AppCompatActivity {
     private LinearLayout watermarkContainer;
     private ImageButton flashButton;
     private ImageButton exitButton;
-    // 变焦按钮（位于两个模式标签中间，点击弹出倍数选择框）
+    // 变焦按钮（位于两个模式标签中间，显示当前倍数，点击弹出倍数选择框）
     private TextView zoomButton;
     private final List<Float> availableZoomRatios = new ArrayList<>();
+    // 当前正在观察的 ZoomState LiveData，切换摄像头时需移除旧观察者
+    private LiveData<ZoomState> observedZoomState;
     // 预设变焦倍数，仅展示设备支持范围内的档位
     private static final float[] ZOOM_PRESETS = {0.6f, 1.0f, 2.0f, 3.0f, 5.0f};
     // 拍照提示音
@@ -440,6 +444,10 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private void initGestureDetectors() {
+        final float[] downPos = new float[2];
+        final boolean[] pinchScaled = {false};
+        final int touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
             public boolean onScale(ScaleGestureDetector detector) {
@@ -447,14 +455,29 @@ public class CameraActivity extends AppCompatActivity {
                 float currentZoom = camera.getCameraInfo().getZoomState().getValue().getZoomRatio();
                 float newZoom = currentZoom * detector.getScaleFactor();
                 cameraControl.setZoomRatio(newZoom);
+                pinchScaled[0] = true;
                 return true;
             }
         });
 
         previewView.setOnTouchListener((v, event) -> {
             scaleGestureDetector.onTouchEvent(event);
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                performFocusOnPoint(event.getX(), event.getY());
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    pinchScaled[0] = false;
+                    downPos[0] = event.getX();
+                    downPos[1] = event.getY();
+                    break;
+                case MotionEvent.ACTION_UP:
+                    // 抬手时才对焦：避免双指缩放的第一根手指落下就触发对焦，干扰缩放流畅度
+                    if (!pinchScaled[0]) {
+                        float dx = event.getX() - downPos[0];
+                        float dy = event.getY() - downPos[1];
+                        if (dx * dx + dy * dy < touchSlop * touchSlop) {
+                            performFocusOnPoint(downPos[0], downPos[1]);
+                        }
+                    }
+                    break;
             }
             return true;
         });
@@ -778,7 +801,7 @@ public class CameraActivity extends AppCompatActivity {
 
     /**
      * 根据当前摄像头支持的变焦范围，计算可选倍数档位并更新模式栏右侧的倍数按钮
-     * （切换前后摄像头后需重新调用，无可用档位时隐藏按钮）
+     * （按钮实时显示当前倍数，点击弹出档位选择框；切换前后摄像头后需重新调用，无可用档位时隐藏按钮）
      */
     private void setupZoomButton() {
         availableZoomRatios.clear();
@@ -810,6 +833,18 @@ public class CameraActivity extends AppCompatActivity {
             return;
         }
         zoomButton.setVisibility(View.VISIBLE);
+
+        // 实时显示当前变焦倍数（捏合缩放、档位选择都会触发更新）
+        LiveData<ZoomState> liveData = camera.getCameraInfo().getZoomState();
+        if (observedZoomState != null) {
+            observedZoomState.removeObservers(this);
+        }
+        observedZoomState = liveData;
+        liveData.observe(this, state -> {
+            if (state != null) {
+                zoomButton.setText(formatZoomText(state.getZoomRatio()));
+            }
+        });
     }
 
     /**

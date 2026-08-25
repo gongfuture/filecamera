@@ -2,9 +2,9 @@
 
 A clean, free, ad-free open-source watermark camera. Designed to provide field workers with a distraction-free, efficient photo capture and management experience.
 
-> **Latest Version**: v20260825-01 | [Download APK](./巡查相机v20260825-01.apk) | [All Releases](https://gitee.com/zjywchenhui/filecamera/releases)
+> **Latest Version**: v20260825-02 | [Download APK](./巡查相机v20260825-02.apk) | [All Releases](https://gitee.com/zjywchenhui/filecamera/releases)
 >
-> v20260825-01: Three new camera features — original image backup (saves a watermark-free original processed through the same pipeline: rotation, EXIF and GPS included, ready for post-adjustment); shutter sound toggle (audible capture confirmation); quick zoom-ratio switching (a "Zoom" button between the mode tabs opens a picker for exact ratios supported by the device, e.g. 0.6x/1x/2x/3x/5x). Settings page camera toggles restyled as list rows; thumbnail generation now respects EXIF orientation and decodes with downsampling, greatly reducing memory usage
+> v20260825-02: The zoom button now shows the current zoom ratio in real time (refreshes on pinch zoom and preset selection; tapping still opens the ratio picker). Tap-to-focus now triggers on finger lift with a movement threshold, so pinch-to-zoom no longer causes an accidental refocus — zooming feels smoother
 
 ## Why This Project
 
@@ -39,7 +39,7 @@ Most watermark cameras on the market are bloated with ads. Workers in the field 
 ### 📷 Camera
 - Multiple aspect ratios (16:9 / 4:3 / 1:1)
 - Touch to focus, flash control, GPS positioning
-- **Zoom ratios**: A "Zoom" button between the mode tabs opens a picker for exact ratios supported by the device
+- **Zoom ratios**: The button between the mode tabs shows the current zoom ratio live; tap it to open a picker for exact ratios supported by the device
 - **Shutter sound**: Optional audible capture confirmation
 - **Original image backup**: Optionally save a watermark-free original (same EXIF/GPS) for post-adjustment
 - **Sync to album**: Automatically save a copy to DCIM/Camera when enabled (syncs both images when combined with original backup)
@@ -79,7 +79,7 @@ road_data.js        ←──→          RoadApiHelper.java       Route matchin
 
 ### Direct Install (Recommended)
 
-1. Download the latest [APK](./巡查相机v20260825-01.apk)
+1. Download the latest [APK](./巡查相机v20260825-02.apk)
 2. Install on your Android device — ready to use
 
 > Weather and geocoding features require an Amap API Key. See instructions below.

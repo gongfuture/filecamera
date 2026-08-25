@@ -51,7 +51,7 @@
                 android:textColor="@color/white"
                 android:textSize="14sp" />
 
-            <!-- 变焦按钮：点击弹出倍数选择框 -->
+            <!-- 变焦按钮：实时显示当前倍数，点击弹出倍数选择框 -->
             <TextView
                 android:id="@+id/zoomButton"
                 android:layout_width="0dp"
@@ -60,7 +60,7 @@
                 android:layout_marginHorizontal="36dp"
                 android:background="@drawable/zoom_button_background"
                 android:gravity="center"
-                android:text="变焦"
+                android:text="1x"
                 android:textColor="@color/white"
                 android:textSize="14sp"
                 android:visibility="gone" />
