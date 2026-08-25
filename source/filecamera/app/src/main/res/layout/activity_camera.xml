@@ -28,26 +28,55 @@
 
     </RelativeLayout>
 
-    <!-- 模式选择区域 (新增) -->
+    <!-- 模式选择区域：普通模式 / 变焦倍数 / 自拍模式 三等分 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#DD000000"
         android:orientation="vertical">
-        
-        <com.google.android.material.tabs.TabLayout
-            android:id="@+id/cameraModeTabLayout"
+
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:background="@android:color/transparent"
-            app:tabMode="fixed"
-            app:tabGravity="fill"
-            app:tabIndicatorColor="@color/icon_gold"
-            app:tabIndicatorHeight="2dp"
-            app:tabSelectedTextColor="@color/icon_gold"
-            app:tabTextColor="@color/white"
-            app:tabTextAppearance="@style/CameraModeTabText" />
-            
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/modeTabNormal"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="普通模式"
+                android:textColor="@color/white"
+                android:textSize="14sp" />
+
+            <!-- 变焦按钮：点击弹出倍数选择框 -->
+            <TextView
+                android:id="@+id/zoomButton"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:layout_marginHorizontal="36dp"
+                android:background="@drawable/zoom_button_background"
+                android:gravity="center"
+                android:text="变焦"
+                android:textColor="@color/white"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/modeTabSelfie"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="自拍模式"
+                android:textColor="@color/white"
+                android:textSize="14sp" />
+
+        </LinearLayout>
+
     </LinearLayout>
 
     <!-- 控制区域 -->

@@ -1,6 +1,7 @@
 package com.filecamera.apk;
 
 import android.Manifest;
+import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
@@ -19,6 +20,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.media.MediaActionSound;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
@@ -59,6 +61,7 @@ import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
 import androidx.camera.core.MeteringPoint;
 import androidx.camera.core.Preview;
+import androidx.camera.core.ZoomState;
 import androidx.camera.core.resolutionselector.AspectRatioStrategy;
 import androidx.camera.core.resolutionselector.ResolutionSelector;
 import androidx.camera.lifecycle.ProcessCameraProvider;
@@ -68,7 +71,6 @@ import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import androidx.exifinterface.media.ExifInterface;
 
-import com.google.android.material.tabs.TabLayout;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.EncodeHintType;
@@ -121,6 +123,13 @@ public class CameraActivity extends AppCompatActivity {
     private LinearLayout watermarkContainer;
     private ImageButton flashButton;
     private ImageButton exitButton;
+    // 变焦按钮（位于两个模式标签中间，点击弹出倍数选择框）
+    private TextView zoomButton;
+    private final List<Float> availableZoomRatios = new ArrayList<>();
+    // 预设变焦倍数，仅展示设备支持范围内的档位
+    private static final float[] ZOOM_PRESETS = {0.6f, 1.0f, 2.0f, 3.0f, 5.0f};
+    // 拍照提示音
+    private MediaActionSound mediaActionSound;
 
     // CameraX 组件
     private ImageCapture imageCapture;
@@ -199,7 +208,9 @@ public class CameraActivity extends AppCompatActivity {
     private boolean showWatermark = false;
     private boolean showQrCode = false;
     private int targetAspectRatio = AspectRatio.RATIO_16_9;
-    private TabLayout cameraModeTabLayout;
+    // 模式选择（普通/自拍）两个标签
+    private TextView modeTabNormal;
+    private TextView modeTabSelfie;
     private int currentLensFacing = CameraSelector.LENS_FACING_BACK; // 当前摄像头方向
 
     // [Refactored] 水印数据和视图的单一来源
@@ -255,6 +266,10 @@ public class CameraActivity extends AppCompatActivity {
         initGestureDetectors();
         initLocationServices(); // 仅初始化服务，不请求更新
         initOrientationListener();
+
+        // 预加载拍照提示音，避免拍照时首次加载产生延迟
+        mediaActionSound = new MediaActionSound();
+        mediaActionSound.load(MediaActionSound.SHUTTER_CLICK);
         
         // 解析读取到的配置
         parseConfig(configJson);
@@ -346,6 +361,10 @@ public class CameraActivity extends AppCompatActivity {
         if (cameraProvider != null) {
             cameraProvider.unbindAll(); // 作为最后保障
         }
+        if (mediaActionSound != null) {
+            mediaActionSound.release();
+            mediaActionSound = null;
+        }
     }
     // endregion
 
@@ -354,9 +373,12 @@ public class CameraActivity extends AppCompatActivity {
         previewView = findViewById(R.id.previewView);
         captureButton = findViewById(R.id.captureButton);
         flashButton = findViewById(R.id.flashButton);
-        cameraModeTabLayout = findViewById(R.id.cameraModeTabLayout);
+        modeTabNormal = findViewById(R.id.modeTabNormal);
+        modeTabSelfie = findViewById(R.id.modeTabSelfie);
         watermarkContainer = findViewById(R.id.watermarkContainer);
         exitButton = findViewById(R.id.exitButton);
+        zoomButton = findViewById(R.id.zoomButton);
+        zoomButton.setOnClickListener(v -> showZoomRatioDialog());
         captureButton.setOnClickListener(v -> takePhoto());
         flashButton.setOnClickListener(v -> cycleFlashMode());
         exitButton.setOnClickListener(v -> {
@@ -388,37 +410,33 @@ public class CameraActivity extends AppCompatActivity {
     }
     
     /**
-     * 设置模式选择器 (普通/自拍)
+     * 设置模式选择器 (普通/自拍)：两个等宽标签，点击切换前后摄像头，选中项金色加粗
      */
     private void setupCameraModeSelector() {
-        cameraModeTabLayout.addTab(cameraModeTabLayout.newTab().setText("普通模式"));
-        cameraModeTabLayout.addTab(cameraModeTabLayout.newTab().setText("自拍模式"));
-        
-        if (currentLensFacing == CameraSelector.LENS_FACING_BACK) {
-            cameraModeTabLayout.selectTab(cameraModeTabLayout.getTabAt(0));
-        } else {
-            cameraModeTabLayout.selectTab(cameraModeTabLayout.getTabAt(1));
-        }
-        
-        cameraModeTabLayout.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
-            @Override
-            public void onTabSelected(TabLayout.Tab tab) {
-                int position = tab.getPosition();
-                if (position == 0) {
-                    // 普通模式 - 后置
-                    if (currentLensFacing != CameraSelector.LENS_FACING_BACK) {
-                        switchCamera(CameraSelector.LENS_FACING_BACK);
-                    }
-                } else {
-                    // 自拍模式 - 前置
-                    if (currentLensFacing != CameraSelector.LENS_FACING_FRONT) {
-                        switchCamera(CameraSelector.LENS_FACING_FRONT);
-                    }
-                }
+        modeTabNormal.setOnClickListener(v -> {
+            if (currentLensFacing != CameraSelector.LENS_FACING_BACK) {
+                switchCamera(CameraSelector.LENS_FACING_BACK);
             }
-            @Override public void onTabUnselected(TabLayout.Tab tab) {}
-            @Override public void onTabReselected(TabLayout.Tab tab) {}
         });
+        modeTabSelfie.setOnClickListener(v -> {
+            if (currentLensFacing != CameraSelector.LENS_FACING_FRONT) {
+                switchCamera(CameraSelector.LENS_FACING_FRONT);
+            }
+        });
+        updateModeTabHighlight();
+    }
+
+    /**
+     * 根据当前摄像头方向高亮对应的模式标签
+     */
+    private void updateModeTabHighlight() {
+        if (modeTabNormal == null || modeTabSelfie == null) return;
+        int selectedColor = ContextCompat.getColor(this, R.color.icon_gold);
+        boolean isBack = currentLensFacing == CameraSelector.LENS_FACING_BACK;
+        modeTabNormal.setTextColor(isBack ? selectedColor : Color.WHITE);
+        modeTabNormal.setTypeface(null, isBack ? Typeface.BOLD : Typeface.NORMAL);
+        modeTabSelfie.setTextColor(isBack ? Color.WHITE : selectedColor);
+        modeTabSelfie.setTypeface(null, isBack ? Typeface.NORMAL : Typeface.BOLD);
     }
 
     private void initGestureDetectors() {
@@ -700,6 +718,8 @@ public class CameraActivity extends AppCompatActivity {
             cameraControl = camera.getCameraControl();
             preview.setSurfaceProvider(previewView.getSurfaceProvider());
             previewView.setScaleType(PreviewView.ScaleType.FILL_CENTER);
+            setupZoomButton();
+            updateModeTabHighlight();
             
             if (camera.getCameraInfo().hasFlashUnit()) {
                 flashButton.setVisibility(View.VISIBLE);
@@ -716,6 +736,11 @@ public class CameraActivity extends AppCompatActivity {
     private void takePhoto() {
         if (imageCapture == null) return;
         setCaptureButtonEnabled(false);
+
+        // 根据设置播放拍照提示音，便于用户确认拍摄已触发
+        if (cameraConfig != null && cameraConfig.shutter_sound && mediaActionSound != null) {
+            mediaActionSound.play(MediaActionSound.SHUTTER_CLICK);
+        }
 
         try {
             File photoFile = createImageFile();
@@ -750,16 +775,108 @@ public class CameraActivity extends AppCompatActivity {
             Log.e(TAG, "聚焦失败", e);
         }
     }
+
+    /**
+     * 根据当前摄像头支持的变焦范围，计算可选倍数档位并更新模式栏右侧的倍数按钮
+     * （切换前后摄像头后需重新调用，无可用档位时隐藏按钮）
+     */
+    private void setupZoomButton() {
+        availableZoomRatios.clear();
+        if (camera == null) {
+            zoomButton.setVisibility(View.GONE);
+            return;
+        }
+
+        ZoomState zoomState = camera.getCameraInfo().getZoomState().getValue();
+        if (zoomState == null) {
+            zoomButton.setVisibility(View.GONE);
+            return;
+        }
+        float minZoom = zoomState.getMinZoomRatio();
+        float maxZoom = zoomState.getMaxZoomRatio();
+
+        for (float preset : ZOOM_PRESETS) {
+            if (preset >= minZoom - 0.01f && preset <= maxZoom + 0.01f) {
+                availableZoomRatios.add(preset);
+            }
+        }
+        // 1x 必须存在，作为基准档位
+        if (!availableZoomRatios.contains(1.0f)) {
+            availableZoomRatios.add(1.0f);
+            Collections.sort(availableZoomRatios);
+        }
+        if (availableZoomRatios.size() < 2) {
+            zoomButton.setVisibility(View.GONE);
+            return;
+        }
+        zoomButton.setVisibility(View.VISIBLE);
+    }
+
+    /**
+     * 弹出倍数选择模态框，最接近当前倍数的一项默认选中，点击即精确切换
+     */
+    private void showZoomRatioDialog() {
+        if (camera == null || availableZoomRatios.isEmpty()) return;
+
+        String[] labels = new String[availableZoomRatios.size()];
+        for (int i = 0; i < availableZoomRatios.size(); i++) {
+            labels[i] = formatZoomText(availableZoomRatios.get(i));
+        }
+
+        float currentZoom = 1.0f;
+        ZoomState zoomState = camera.getCameraInfo().getZoomState().getValue();
+        if (zoomState != null) {
+            currentZoom = zoomState.getZoomRatio();
+        }
+        int checkedIndex = 0;
+        float minDiff = Float.MAX_VALUE;
+        for (int i = 0; i < availableZoomRatios.size(); i++) {
+            float diff = Math.abs(availableZoomRatios.get(i) - currentZoom);
+            if (diff < minDiff) {
+                minDiff = diff;
+                checkedIndex = i;
+            }
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("选择变焦倍数")
+                .setSingleChoiceItems(labels, checkedIndex, (dialog, which) -> {
+                    if (cameraControl != null) {
+                        cameraControl.setZoomRatio(availableZoomRatios.get(which));
+                    }
+                    dialog.dismiss();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /**
+     * 倍数显示格式化：1.0 -> "1x"，0.6 -> "0.6x"，1.25 -> "1.3x"
+     */
+    private String formatZoomText(float ratio) {
+        return String.format(Locale.getDefault(), "%.1fx", ratio).replace(".0x", "x");
+    }
     // endregion
 
     // region --- 图像和文件处理 ---
     private void processAndizeImage(File photoFile) {
         try {
-            processImageOverlays(photoFile.getAbsolutePath());
+            // 备份无水印原图：先复制原始捕获，再走与水印图完全相同的处理管线（旋转/EXIF/GPS），只是不叠加任何叠加层
+            File originalFile = null;
+            if (cameraConfig != null && cameraConfig.save_original) {
+                originalFile = copyOriginalImage(photoFile);
+                processImageOverlays(originalFile.getAbsolutePath(), false);
+            }
+            processImageOverlays(photoFile.getAbsolutePath(), true);
             if (cameraConfig != null && cameraConfig.sync_album) {
+                final File originalToSync = originalFile;
                 new Thread(() -> {
                     try {
-                        copyToDcim(photoFile);
+                        copyToDcim(photoFile, true);
+                        // 开启原图保存时，相册中会同时出现水印图和无水印原图两张照片
+                        if (originalToSync != null) {
+                            copyToDcim(originalToSync, false);
+                        }
                     } catch (IOException e) {
                         Log.e(TAG, "同步到相册失败", e);
                         runOnUiThread(() -> Toast.makeText(CameraActivity.this, "同步相册失败", Toast.LENGTH_SHORT).show());
@@ -771,13 +888,46 @@ public class CameraActivity extends AppCompatActivity {
             Uri savedUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", photoFile);
             Intent resultIntent = new Intent();
             resultIntent.setData(savedUri);
+            if (originalFile != null) {
+                // 通过 ClipData 把原图一并返回给调用方（第1项为水印图，第2项为原图）
+                Uri originalUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", originalFile);
+                ClipData clipData = ClipData.newUri(getContentResolver(), "photos", savedUri);
+                clipData.addItem(new ClipData.Item(originalUri));
+                resultIntent.setClipData(clipData);
+                resultIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            }
             setResult(RESULT_OK, resultIntent);
             finish();
         } catch (Exception e) {
             handlePhotoError("处理照片失败", e);
         }
     }
+
+    /**
+     * 将刚拍摄、尚未叠加水印的原始照片复制为同目录下的 "*_原图.jpg" 文件，
+     * 随后由 processImageOverlays 统一完成旋转和 EXIF 处理
+     */
+    private File copyOriginalImage(File photoFile) throws IOException {
+        String name = photoFile.getName();
+        int dotIndex = name.lastIndexOf('.');
+        String originalName = (dotIndex > 0 ? name.substring(0, dotIndex) : name) + "_原图.jpg";
+        File originalFile = new File(photoFile.getParentFile(), originalName);
+        try (java.io.InputStream in = new java.io.FileInputStream(photoFile);
+             FileOutputStream out = new FileOutputStream(originalFile)) {
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = in.read(buf)) > 0) {
+                out.write(buf, 0, len);
+            }
+        }
+        return originalFile;
+    }
+
     private void copyToDcim(File sourceFile) throws IOException {
+        copyToDcim(sourceFile, true);
+    }
+
+    private void copyToDcim(File sourceFile, boolean showToast) throws IOException {
         ContentValues values = new ContentValues();
         String fileName = sourceFile.getName();
         values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
@@ -813,7 +963,9 @@ public class CameraActivity extends AppCompatActivity {
             values.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(itemUri, values, null, null);
             Log.d(TAG, "照片已成功同步到相册: " + itemUri);
-            runOnUiThread(() -> Toast.makeText(CameraActivity.this, "照片已保存并同步到相册", Toast.LENGTH_SHORT).show());
+            if (showToast) {
+                runOnUiThread(() -> Toast.makeText(CameraActivity.this, "照片已保存并同步到相册", Toast.LENGTH_SHORT).show());
+            }
         } catch (Exception e) {
             Log.e(TAG, "同步到相册失败", e);
             if (itemUri != null) {
@@ -822,13 +974,17 @@ public class CameraActivity extends AppCompatActivity {
             throw new IOException("同步到相册失败: " + e.getMessage(), e);
         }
     }
-    private void processImageOverlays(String imagePath) throws IOException {
+    /**
+     * 图片处理统一管线：按 EXIF 旋转像素、可选叠加水印/二维码、重写 EXIF（含 GPS）。
+     * @param applyOverlays true=水印图（叠加水印和二维码）；false=无水印原图（其余处理完全一致）
+     */
+    private void processImageOverlays(String imagePath, boolean applyOverlays) throws IOException {
         Bitmap originalBitmap = BitmapFactory.decodeFile(imagePath);
         if (originalBitmap == null) throw new IOException("无法解码图片文件");
 
         ExifInterface oldExif = new ExifInterface(imagePath);
         int orientation = oldExif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-        
+
         Matrix matrix = new Matrix();
         switch (orientation) {
             case ExifInterface.ORIENTATION_ROTATE_90: matrix.postRotate(90); break;
@@ -845,7 +1001,7 @@ public class CameraActivity extends AppCompatActivity {
             rotatedBitmap.recycle();
         }
 
-        if (showWatermark && watermarkConfig != null) {
+        if (applyOverlays && showWatermark && watermarkConfig != null) {
             Bitmap watermarkBitmap = createBitmapFromView(watermarkContainer);
             if (watermarkBitmap != null) {
                 finalBitmap = addOverlayToBitmap(finalBitmap, watermarkBitmap, watermarkConfig.position, watermarkConfig.scale);
@@ -853,7 +1009,7 @@ public class CameraActivity extends AppCompatActivity {
             }
         }
 
-        if (showQrCode && qrCodeConfig != null && isLocationValid()) {
+        if (applyOverlays && showQrCode && qrCodeConfig != null && isLocationValid()) {
             String qrContent = generateAmapUrl(lat, lon, "拍照位置");
             int baseQrSizeDp = 128;
             int finalQrSizePx = wmPx(baseQrSizeDp * qrCodeConfig.scale);
@@ -870,8 +1026,8 @@ public class CameraActivity extends AppCompatActivity {
         finalBitmap.recycle();
 
         ExifInterface newExif = new ExifInterface(imagePath);
-        
-        copyExifTags(oldExif, newExif); 
+
+        copyExifTags(oldExif, newExif);
 
         newExif.setAttribute(ExifInterface.TAG_ORIENTATION, String.valueOf(ExifInterface.ORIENTATION_NORMAL));
 
@@ -881,17 +1037,20 @@ public class CameraActivity extends AppCompatActivity {
             newExif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, currentTimestamp);
             newExif.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, currentTimestamp);
         }
-        
+
         if (isLocationValid()) {
             Log.d(TAG, "正在写入最新的 (LocationManager) GPS 信息到 EXIF");
             Location location = new Location("");
             location.setLatitude(lat);
             location.setLongitude(lon);
             location.setAltitude(alt);
-            newExif.setGpsInfo(location); 
+            newExif.setGpsInfo(location);
         } else {
             Log.w(TAG, "最终未写入 GPS 信息。");
-            Toast.makeText(this, "GPS信号弱，未写入位置信息", Toast.LENGTH_LONG).show();
+            if (applyOverlays) {
+                // 仅处理水印图时提示一次，原图不重复提示
+                Toast.makeText(this, "GPS信号弱，未写入位置信息", Toast.LENGTH_LONG).show();
+            }
         }
 
         newExif.saveAttributes();
@@ -1655,6 +1814,9 @@ public class CameraActivity extends AppCompatActivity {
             cameraConfig = new CameraConfig();
             cameraConfig.proportion = json.optString("proportion", "16:9");
             cameraConfig.sync_album = json.optBoolean("sync_album", false);
+            // 旧配置无此字段时默认关闭提示音、不保存原图
+            cameraConfig.shutter_sound = json.optBoolean("shutter_sound", false);
+            cameraConfig.save_original = json.optBoolean("save_original", false);
             if ("4:3".equals(cameraConfig.proportion)) {
                 targetAspectRatio = AspectRatio.RATIO_4_3;
             } else {
@@ -2169,7 +2331,9 @@ public class CameraActivity extends AppCompatActivity {
 
     private static class CameraConfig {
         String proportion = "16:9";
-        boolean sync_album = false; 
+        boolean sync_album = false;
+        boolean shutter_sound = false;
+        boolean save_original = false;
     }
 
     private static class WatermarkConfig {

@@ -100,7 +100,9 @@ public class WatermarkConfigManager {
             // --- 相机配置 ---
             JSONObject camera = new JSONObject()
                     .put("proportion", "16:9")
-                    .put("sync_album", false);
+                    .put("sync_album", false)
+                    .put("shutter_sound", false)
+                    .put("save_original", false);
             rootConfig.put("camera", camera);
 
             // --- 水印配置 ---

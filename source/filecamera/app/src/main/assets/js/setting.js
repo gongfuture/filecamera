@@ -2,7 +2,9 @@
 let DEFAULT_CONFIG = {
     camera:{
 		proportion:"16:9",
-		sync_album:false
+		sync_album:false,
+		shutter_sound:false,
+		save_original:false
 	},
     watermark: {
         enable: true,
@@ -163,6 +165,17 @@ function createFormGroup(label, input) {
         children: [
             createElement('label', { textContent: label }),
             input
+        ]
+    });
+}
+
+// 开关行：标签在左、开关在右（经典设置列表样式）
+function createSwitchRow(label, path) {
+    return createElement('div', {
+        className: 'switch-row',
+        children: [
+            createElement('label', { textContent: label }),
+            createSwitch(path)
         ]
     });
 }
@@ -466,7 +479,7 @@ function createSwitch(path, targetSelector = null) {
 
     // --- [修改] 在这里添加特殊判断 ---
     let isChecked;
-    if (path === 'camera.sync_album') {
+    if (path === 'camera.sync_album' || path === 'camera.save_original' || path === 'camera.shutter_sound') {
 		if(value){
 			isChecked = true;
 		}else{
@@ -781,13 +794,12 @@ function createCameraSettingsContent() {
         )
     });
 
-    const syncAlbumSwitch = createSwitch('camera.sync_album');
-    // --- 新增代码结束 ---
-
     return [
-        createFormGroup('相机比例', proportionSelect),
-        createFormGroup('同步到相册', syncAlbumSwitch)
-        // --- 新增代码结束 ---
+        // 三个开关采用"标签左、开关右"的列表行样式，行间带分隔线
+        createSwitchRow('相册同步', 'camera.sync_album'),
+        createSwitchRow('拍照声音', 'camera.shutter_sound'),
+        createSwitchRow('原图保存', 'camera.save_original'),
+        createFormGroup('相机比例', proportionSelect)
     ];
 }
 

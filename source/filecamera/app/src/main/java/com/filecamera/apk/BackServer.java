@@ -3,6 +3,7 @@ package com.filecamera.apk;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -15,6 +16,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -46,6 +48,7 @@ import android.media.MediaScannerConnection;
 import android.webkit.MimeTypeMap;
 import android.app.Activity;
 import java.util.List;
+import androidx.exifinterface.media.ExifInterface;
 
 public class BackServer {
     private WebView webView;
@@ -1890,9 +1893,45 @@ public class BackServer {
 				return null;
 			}
 
-			Bitmap original_bitmap = BitmapFactory.decodeByteArray(file_data, 0, file_data.length);
-			if (original_bitmap == null) {
+			// 先只解码边界获取尺寸，再按比例降采样解码，
+			// 避免全尺寸解码（如 50MP 照片约占用 200MB 内存）把后台的主 Activity 挤死
+			BitmapFactory.Options boundsOptions = new BitmapFactory.Options();
+			boundsOptions.inJustDecodeBounds = true;
+			BitmapFactory.decodeByteArray(file_data, 0, file_data.length, boundsOptions);
+			int srcWidth = boundsOptions.outWidth;
+			int srcHeight = boundsOptions.outHeight;
+			if (srcWidth <= 0 || srcHeight <= 0) {
 				return null;
+			}
+
+			BitmapFactory.Options decodeOptions = new BitmapFactory.Options();
+			decodeOptions.inSampleSize = Math.max(1, Math.min(srcWidth, srcHeight) / 512);
+			Bitmap decoded_bitmap = BitmapFactory.decodeByteArray(file_data, 0, file_data.length, decodeOptions);
+			if (decoded_bitmap == null) {
+				return null;
+			}
+
+			// 按 EXIF 方向旋转：相机直出的原图像素未旋转，方向记录在 EXIF 中，
+			// 不处理会导致缩略图方向错误
+			int orientation = ExifInterface.ORIENTATION_NORMAL;
+			try (ByteArrayInputStream exif_stream = new ByteArrayInputStream(file_data)) {
+				orientation = new ExifInterface(exif_stream)
+						.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+			} catch (Exception ignored) {
+			}
+			Matrix matrix = new Matrix();
+			switch (orientation) {
+				case ExifInterface.ORIENTATION_ROTATE_90: matrix.postRotate(90); break;
+				case ExifInterface.ORIENTATION_ROTATE_180: matrix.postRotate(180); break;
+				case ExifInterface.ORIENTATION_ROTATE_270: matrix.postRotate(270); break;
+			}
+			Bitmap original_bitmap = decoded_bitmap;
+			if (!matrix.isIdentity()) {
+				original_bitmap = Bitmap.createBitmap(decoded_bitmap, 0, 0,
+						decoded_bitmap.getWidth(), decoded_bitmap.getHeight(), matrix, true);
+				if (original_bitmap != decoded_bitmap) {
+					decoded_bitmap.recycle();
+				}
 			}
 
 			int original_width = original_bitmap.getWidth();
@@ -1913,7 +1952,7 @@ public class BackServer {
 
 			ByteArrayOutputStream output_stream = new ByteArrayOutputStream();
 			scaled_bitmap.compress(Bitmap.CompressFormat.PNG, 100, output_stream);
-			
+
 			original_bitmap.recycle();
 			scaled_bitmap.recycle();
 

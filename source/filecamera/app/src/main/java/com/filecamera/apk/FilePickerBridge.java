@@ -716,8 +716,18 @@ public class FilePickerBridge {
 
     private JSONArray handleCustomCameraResult(Intent data) throws JSONException {
         JSONArray results = new JSONArray();
-        if (data != null && data.getData() != null) {
-            results.put(createFileObject(data.getData()));
+        if (data != null) {
+            // 开启“保存无水印原图”时，相机会通过 ClipData 同时返回水印图和原图
+            if (data.getClipData() != null && data.getClipData().getItemCount() > 0) {
+                for (int i = 0; i < data.getClipData().getItemCount(); i++) {
+                    Uri uri = data.getClipData().getItemAt(i).getUri();
+                    if (uri != null) {
+                        results.put(createFileObject(uri));
+                    }
+                }
+            } else if (data.getData() != null) {
+                results.put(createFileObject(data.getData()));
+            }
         }
         return results;
     }

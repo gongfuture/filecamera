@@ -142,18 +142,19 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 		if (!uri_arr ||uri_arr.length === 0) {
 			return;
 		}
-		let filecount = uri_arr.length
-		let file = uri_arr[0]
-		if(!file){
-			return;
-		}
-		try {
-			let file_obj = await uploadfile(file.uri, open_dir.id, file.name);
-			let file_sort_mode  = open_dir.filesortmode
-			insertobj(file_sort_mode,file_obj)
-		} catch (error) {
-			await updateTable(open_dir.id);
-			await alert_fix("图片上传失败：" + error);
+		// 开启“保存无水印原图”时会一次返回水印图和原图两张照片，逐张入库
+		let file_sort_mode  = open_dir.filesortmode
+		for (let file of uri_arr) {
+			if (!file) {
+				continue;
+			}
+			try {
+				let file_obj = await uploadfile(file.uri, open_dir.id, file.name);
+				insertobj(file_sort_mode, file_obj)
+			} catch (error) {
+				await updateTable(open_dir.id);
+				await alert_fix("图片上传失败：" + error);
+			}
 		}
 	}else if(event.target.id == 'settingbutton'){
 		close_opening_menu(menu_set);

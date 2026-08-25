@@ -1009,6 +1009,23 @@
    		display: none;
    	}
 
+   	/* 设置开关行：标签在左、开关在右，行间细分隔线 */
+   	.watermark-config .switch-row {
+   		display: flex;
+   		justify-content: space-between;
+   		align-items: center;
+   		padding: 12px 0;
+   	}
+   	.watermark-config .switch-row + .switch-row {
+   		border-top: 1px solid var(--border-color);
+   	}
+   	.watermark-config .switch-row label {
+   		margin-bottom: 0;
+   		font-size: 14px;
+   		font-weight: 500;
+   		color: var(--text-primary);
+   	}
+
    	.slider {
    		position: absolute;
    		cursor: pointer;
