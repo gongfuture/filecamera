@@ -605,7 +605,7 @@ public class FileImporter {
                 File[] children = dir.listFiles();
                 if (children != null) {
                     for (File child : children) {
-                        if (child.getName().endsWith(".part") || child.getName().endsWith(".wmp4")) {
+                        if (child.getName().endsWith(".part")) {
                             videoFile = child;
                             break;
                         }

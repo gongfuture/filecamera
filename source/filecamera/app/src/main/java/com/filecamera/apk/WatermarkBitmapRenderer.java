@@ -18,13 +18,10 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 把水印数据（.wmp4 文件尾部那段 JSON）画到 Bitmap 上。
+ * 把水印数据（JSON）画到 Bitmap 上。
  *
- * <p>用途：
- * <ul>
- *     <li>视频首帧缩略图合成水印（列表里看到的封面也带印）</li>
- *     <li>以后"烧录水印"导出带印视频时，逐帧合成也用这里</li>
- * </ul>
+ * <p>用途：录像边录边烧时，把当前水印画成与编码画面同尺寸的透明位图，
+ * 交给 Camera2GlRenderer 合成到每一帧。
  *
  * <p>绘制规则与相机端/播放端保持一致：整块只圆角一次（半径来自配置 radius），
  * header/body/foot 之间是直边；密度基准 = 画面宽度 / 360；锚点来自数据的 pos。

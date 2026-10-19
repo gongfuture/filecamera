@@ -861,7 +861,7 @@ public class CameraActivity extends AppCompatActivity {
             setCaptureButtonAlphaForRecording(true);
 
             camera2Controller.startVideoRecording(videoTicket.targetFile,
-                    camera2Controller.getJpegRotation(), liveWatermark);
+                    camera2Controller.getPreviewRotation(), liveWatermark);
         } catch (Exception e) {
             isRecording = false;
             if (recordingTimer != null) recordingTimer.setVisibility(View.GONE);

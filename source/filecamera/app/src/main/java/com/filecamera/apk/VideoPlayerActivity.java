@@ -31,20 +31,16 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.InputStream;
-import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
 /**
- * 视频播放页：播放库里的视频；.wmp4 的水印数据存在文件尾部，读取后在画面上叠加。
+ * 视频播放页：播放库里的视频。新录像的水印已经在录制时烧进画面；
+ * 旧 .wmp4 仅作为普通视频播放（不再读取尾部数据）。
  *
  * <p>界面完全自定义（不使用 Media3 默认控制条）：顶部返回 + 文件名，中间播放/暂停，
  * 底部音量行 + 进度行；点画面显隐控制层，播放中自动隐藏。
- *
- * <p>水印层紧贴视频画面矩形：按画面坐标定位，与设备横竖屏无关；水印的锚点/位置全部来自数据。
  */
 public class VideoPlayerActivity extends AppCompatActivity {
 
@@ -141,22 +137,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
             return;
         }
 
-        // 1) 读水印数据并做防篡改校验（指纹不一致就不叠印）
-        watermark = loadWatermark(fileId, videoFile);
-        if (watermark != null) {
-            String expect = watermark.optString("_content_hash", "");
-            String actual = WatermarkFileCodec.isWatermarkVideo(videoFile)
-                    ? WatermarkFileCodec.contentHash(videoFile)
-                    : sha256(videoFile);
-            if (expect.isEmpty() || !expect.equalsIgnoreCase(actual)) {
-                Log.w(TAG, "水印指纹不匹配 expect=" + expect + " actual=" + actual);
-                watermark = null;
-                Toast.makeText(this, "该视频的水印信息与视频不匹配，无法显示水印", Toast.LENGTH_LONG).show();
-            }
-        }
-        if (watermark != null) {
-            segments = watermark.optJSONArray("segments") == null ? new JSONArray() : watermark.optJSONArray("segments");
-        }
+        // 水印已在录制时烧进画面；不再读取旧 .wmp4 尾部数据
+        watermark = null;
 
         // 2) 播放
         player = new ExoPlayer.Builder(this).build();
@@ -399,50 +381,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
         uiHandler.removeCallbacks(hideControlsRunnable);
         if (player != null && player.isPlaying()) {
             uiHandler.postDelayed(hideControlsRunnable, CONTROLS_HIDE_DELAY_MS);
-        }
-    }
-
-    // endregion
-
-    // region --- 水印数据 ---
-
-    /** 读取 .wmp4 文件尾部的水印数据；返回的 JSON 里额外带上 _content_hash 便于校验。 */
-    private JSONObject loadWatermark(String fileId, File videoFile) {
-        // .wmp4：水印数据只存在文件尾部（数据库不保存），直接读文件
-        if (WatermarkFileCodec.isWatermarkVideo(videoFile)) {
-            try {
-                String json = WatermarkFileCodec.readTrailer(videoFile);
-                Log.i(TAG, ".wmp4 尾部水印数据长度: " + (json == null ? -1 : json.length()));
-                if (json != null && !json.isEmpty()) {
-                    JSONObject wm = new JSONObject(json);
-                    wm.put("_content_hash", wm.optString("content_hash", ""));
-                    return wm;
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "读取 .wmp4 水印数据失败", e);
-            }
-            return null;
-        }
-        // 非 .wmp4（例如烧录出的普通 mp4）：文件里没有水印数据，不叠印
-        return null;
-    }
-
-    private static String sha256(File file) {
-        try (InputStream in = new FileInputStream(file)) {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] buf = new byte[64 * 1024];
-            int read;
-            while ((read = in.read(buf)) > 0) {
-                digest.update(buf, 0, read);
-            }
-            StringBuilder sb = new StringBuilder();
-            for (byte b : digest.digest()) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            Log.e(TAG, "计算视频指纹失败", e);
-            return "";
         }
     }
 

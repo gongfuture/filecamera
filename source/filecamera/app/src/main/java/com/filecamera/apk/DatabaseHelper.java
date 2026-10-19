@@ -12,7 +12,7 @@ import org.json.JSONObject;
 public class DatabaseHelper extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "backserver.db";
     // v2：新增 pending_file（入库预备表，对现有表零侵入）
-    // v4：删除 file_watermark（水印数据改存 .wmp4 文件尾部，数据库不再保存）
+    // v4：删除 file_watermark（水印改为录制时烧进视频，数据库不保存）
     private static final int DATABASE_VERSION = 4;
 
     private static volatile DatabaseHelper instance;
@@ -94,7 +94,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
             db.execSQL(CREATE_PENDING_FILE);
         }
         if (oldVersion < 4) {
-            // 水印数据改存 .wmp4 文件尾部，旧的水印表直接删掉
+            // 水印改为录制时烧进视频，旧的水印表直接删掉
             db.execSQL("DROP TABLE IF EXISTS file_watermark");
         }
     }

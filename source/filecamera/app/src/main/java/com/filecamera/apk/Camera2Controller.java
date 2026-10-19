@@ -339,6 +339,11 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         return computeJpegRotation();
     }
 
+    /** 预览画面相对传感器的旋转角度（跟随屏幕方向；本页锁竖屏时恒为 sensorOrientation）。 */
+    public int getPreviewRotation() {
+        return previewRotationDegrees();
+    }
+
     public void takePhoto(File file) {
         pendingPhotoFile = file;
         cameraHandler.post(() -> captureStill(file, computeJpegRotation()));

@@ -210,7 +210,7 @@ public class FilePickerBridge {
     }
 
     /**
-     * 打开视频播放页（.wmp4 从文件尾部读取水印数据后叠加显示）。
+     * 打开视频播放页（新录像的水印已烧进画面，播放器不再读尾部数据）。
      * 参数: { id: 文件id, name: 显示名, real_file_name: app_data 里的真实文件名 }
      */
     /**
