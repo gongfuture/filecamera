@@ -456,11 +456,12 @@ public class MainActivity extends AppCompatActivity {
         // 启动修复未完成的入库：主线程同步执行，且必须在加载页面前完成，
         // 这样首屏列表就已经包含"上次被打断、这次被补提交"的那张照片（全程无任何提示，用户只会看到多了一张图）
         repairPendingImports();
-        // 录像临时目录：草稿纸，启动无条件清空（app_data 里只有完整已提交的文件）
+        // 待入库录像目录：已入库的清掉、可播的补入库、不可播的丢弃
         try {
-            new FileImporter(this).cleanVideoTemp();
+            int recovered = new FileImporter(this).scanPendingVideoDirs();
+            if (recovered > 0) android.util.Log.i(TAG, "启动恢复待入库录像: " + recovered + " 条");
         } catch (Exception e) {
-            android.util.Log.e(TAG, "清理录像临时目录失败", e);
+            android.util.Log.e(TAG, "扫描待入库录像失败", e);
         }
         // 烧录临时目录：每次启动清一次，避免半成品堆积占闪存
         try {

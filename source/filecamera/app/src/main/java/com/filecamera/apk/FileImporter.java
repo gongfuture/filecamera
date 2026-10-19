@@ -382,20 +382,20 @@ public class FileImporter {
         String realIconName = fileId + "_icon.png";
         // 录制期间只写临时目录（草稿纸），收尾成功才搬进 app_data：
         // 保证 app_data 里永远只有"完整已提交"的文件，列表也不会看到半成品
-        File tmpDir = videoTempDir();
+        File tmpDir = videoPendingDir(fileId);
         File part = new File(tmpDir, realFileName + ".part");
-        File sidecar = new File(tmpDir, fileId + ".json");
+
 
         dbHelper.db_run("INSERT INTO pending_file (" + COLUMNS + ",tmp_photo_path,tmp_icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 new JSONArray()
                         .put(fileId).put(finalName).put(targetDirId).put("file")
                         .put(realFileName).put(realIconName).put(System.currentTimeMillis())
                         .put(getSeqNumberFromString(baseNameOf(finalName))).put(0L).put(extension)
-                        .put(part.getAbsolutePath()).put(sidecar.getAbsolutePath()));
+                        .put(part.getAbsolutePath()).put(""));
         // .wmp4 专用格式：水印数据只写进文件尾部，数据库不保存任何水印信息
         // 水印资源旁文件：录制中每秒落盘，收尾时再写进 .wmp4 尾部
-        persistVideoWatermark(fileId, watermarkJson, sidecar);
-        return new VideoTicket(fileId, realFileName, part, finalName, targetDirId, watermarkJson, sidecar);
+        appendVideoMeta(fileId, buildMetaHead(watermarkJson));
+        return new VideoTicket(fileId, realFileName, part, finalName, targetDirId, watermarkJson, null);
     }
 
     /**
@@ -412,8 +412,8 @@ public class FileImporter {
         long size = ticket.targetFile.length();
         // 先折叠关键帧时间轴并把水印数据写进临时文件尾部，再整体搬进 app_data
         try {
-            JSONObject wm = ticket.watermark;
-            if (wm == null) wm = readVideoWatermarkSidecar(ticket.fileId, ticket.watermarkSidecar);
+            JSONObject wm = loadVideoMeta(ticket.fileId);
+            if (wm == null) wm = ticket.watermark;
             String wmJson = rebuildWatermarkTimeline(wm, ticket.targetFile);
             if (wmJson != null) {
                 WatermarkFileCodec.writeTrailer(ticket.targetFile, WatermarkFileCodec.withContentHash(ticket.targetFile, wmJson));
@@ -456,6 +456,7 @@ public class FileImporter {
                 new JSONArray().put(size).put(iconWritten == null ? JSONObject.NULL : iconWritten).put(ticket.fileId));
         size = ticket.targetFile.length();
         promote(ticket.fileId);
+        deleteVideoPendingDir(ticket.fileId);
         return buildRecord(ticket.fileId, ticket.displayName, ticket.parentDirId, ticket.realFileName,
                 iconWritten, System.currentTimeMillis(), getSeqNumberFromString(baseNameOf(ticket.displayName)),
                 size, extensionOf(ticket.displayName));
@@ -855,6 +856,239 @@ public class FileImporter {
             if (child.delete()) removed++;
         }
         if (removed > 0) Log.i(TAG, "启动清理录像临时文件: " + removed + " 个");
+    }
+
+    // endregion
+    // region --- 持久待入库目录（video_pending/<id>/）---
+
+    /** 待入库目录根：录制中写这里，入库成功后整目录删除。 */
+    private File videoPendingRoot() {
+        File dir = new File(context.getFilesDir(), "video_pending");
+        if (!dir.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    /** 某次录制的待入库目录 files/video_pending/&lt;id&gt;/ */
+    public File videoPendingDir(String fileId) {
+        File dir = new File(videoPendingRoot(), fileId);
+        if (!dir.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    /** meta.jsonl：追加一行 + fsync（JSONL 天生可流式写，崩溃最多丢半行）。 */
+    public void appendVideoMeta(String fileId, JSONObject line) {
+        if (fileId == null || line == null) return;
+        try {
+            File dir = videoPendingDir(fileId);
+            File meta = new File(dir, "meta.jsonl");
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(meta, true)) {
+                out.write((line.toString() + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                out.flush();
+                out.getFD().sync();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "追加水印 meta 失败: " + fileId, e);
+        }
+    }
+
+    /** 读 meta.jsonl：逐行解析，遇到坏行立即停止（前面的都是有效前缀）。 */
+    static java.util.List<JSONObject> readVideoMetaLines(File metaFile) {
+        java.util.List<JSONObject> lines = new java.util.ArrayList<>();
+        if (metaFile == null || !metaFile.isFile()) return lines;
+        try {
+            String text = new String(readAll(metaFile), java.nio.charset.StandardCharsets.UTF_8);
+            for (String row : text.split("\n")) {
+                String line = row.trim();
+                if (line.isEmpty()) continue;
+                try {
+                    lines.add(new JSONObject(line));
+                } catch (Exception bad) {
+                    break;   // 崩溃截断/半行：到这里为止
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "读 water meta 失败", e);
+        }
+        return lines;
+    }
+
+    /**
+     * 把 meta.jsonl 折叠成最终水印 JSON：首行 head 提供 base_time/样式/位置，
+     * 后续每行按 t（毫秒）作为 from_ms 追加成一条 segment。
+     */
+    static JSONObject foldVideoMeta(java.util.List<JSONObject> lines) {
+        if (lines == null || lines.isEmpty()) return null;
+        try {
+            JSONObject head = lines.get(0);
+            JSONObject wm = new JSONObject();
+            wm.put("ver", head.optInt("ver", 1));
+            wm.put("base_time_ms", head.optLong("base_time_ms", 0));
+            for (String key : new String[]{"scale", "radius", "position", "header", "body", "foot", "icon_ref"}) {
+                if (head.has(key)) wm.put(key, head.get(key));
+            }
+            String pos = head.optString("pos", "");
+            if (!pos.isEmpty()) wm.put("pos", pos);
+            JSONObject firstValues = head.optJSONObject("values");
+            JSONArray segments = new JSONArray();
+            JSONObject first = new JSONObject();
+            first.put("from_ms", 0);
+            if (firstValues != null) first.put("values", firstValues);
+            if (!pos.isEmpty()) first.put("pos", pos);
+            segments.put(first);
+            for (int i = 1; i < lines.size(); i++) {
+                JSONObject row = lines.get(i);
+                long t = row.optLong("t", 0);
+                JSONObject values = row.optJSONObject("values");
+                String rowPos = row.optString("pos", "");
+                if (t <= 0) continue;
+                JSONObject seg = new JSONObject();
+                seg.put("from_ms", t);
+                if (values != null) seg.put("values", values);
+                if (!rowPos.isEmpty()) seg.put("pos", rowPos);
+                segments.put(seg);
+            }
+            wm.put("segments", segments);
+            wm.put("incomplete", head.optBoolean("incomplete", false));
+            return wm;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 由开录时的水印数据生成 meta.jsonl 的首行（head）。 */
+    private JSONObject buildMetaHead(JSONObject watermarkJson) {
+        JSONObject head = new JSONObject();
+        try {
+            JSONObject src = watermarkJson == null ? new JSONObject() : watermarkJson;
+            head.put("ver", src.optInt("ver", 1));
+            head.put("base_time_ms", src.optLong("base_time_ms", System.currentTimeMillis()));
+            for (String key : new String[]{"scale", "radius", "position", "header", "body", "foot", "icon_ref"}) {
+                if (src.has(key)) head.put(key, src.get(key));
+            }
+            String pos = src.optString("pos", "");
+            if (!pos.isEmpty()) head.put("pos", pos);
+            JSONArray segs = src.optJSONArray("segments");
+            if (segs != null && segs.length() > 0) {
+                JSONObject first = segs.optJSONObject(0);
+                if (first != null && first.has("values")) head.put("values", first.get("values"));
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "构建 meta 首行失败", e);
+        }
+        return head;
+    }
+    /** 读某次录制的 meta 并折叠成水印 JSON。 */
+    public JSONObject loadVideoMeta(String fileId) {
+        if (fileId == null) return null;
+        File meta = new File(videoPendingDir(fileId), "meta.jsonl");
+        return foldVideoMeta(readVideoMetaLines(meta));
+    }
+
+    /** 入库成功后删除该次录制的待入库目录。 */
+    public void deleteVideoPendingDir(String fileId) {
+        if (fileId == null) return;
+        File dir = new File(videoPendingRoot(), fileId);
+        File[] children = dir.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                //noinspection ResultOfMethodCallIgnored
+                child.delete();
+            }
+        }
+        //noinspection ResultOfMethodCallIgnored
+        dir.delete();
+    }
+
+    /** 启动扫描待入库目录：已入库就删、可播就补入库、不可播就丢弃。 */
+    public int scanPendingVideoDirs() {
+        File root = new File(context.getFilesDir(), "video_pending");
+        File[] dirs = root.listFiles();
+        if (dirs == null) return 0;
+        int recovered = 0;
+        for (File dir : dirs) {
+            if (!dir.isDirectory()) continue;
+            String fileId = dir.getName();
+            try {
+                if (dbHelper.db_get("SELECT id FROM file WHERE id = ?", new JSONArray().put(fileId)) != null) {
+                    deleteVideoPendingDir(fileId);       // 已入库，只是目录没删
+                    continue;
+                }
+                File videoFile = null;
+                File[] children = dir.listFiles();
+                if (children != null) {
+                    for (File child : children) {
+                        if (child.getName().endsWith(".part") || child.getName().endsWith(".wmp4")) {
+                            videoFile = child;
+                            break;
+                        }
+                    }
+                }
+                if (videoFile == null || !videoFile.isFile() || !isPlayableVideo(videoFile)) {
+                    Log.w(TAG, "待入库录像不可用，丢弃: " + fileId);
+                    dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(fileId));
+                    deleteVideoPendingDir(fileId);
+                    continue;
+                }
+                // 可播：补做收尾入库
+                JSONObject pendingRow = dbHelper.db_get(
+                        "SELECT parent_dir_id, name, extension FROM pending_file WHERE id = ?",
+                        new JSONArray().put(fileId));
+                if (pendingRow == null) {
+                    deleteVideoPendingDir(fileId);
+                    continue;
+                }
+                String parentDirId = pendingRow.optString("parent_dir_id", "root");
+                String name = pendingRow.optString("name", fileId + "." + WatermarkFileCodec.EXTENSION);
+                String extension = pendingRow.optString("extension", WatermarkFileCodec.EXTENSION);
+                String realFileName = fileId + "." + extension;
+                JSONObject wm = loadVideoMeta(fileId);
+                String wmJson = wm == null ? null : rebuildWatermarkTimeline(wm, videoFile);
+                if (wmJson != null) {
+                    WatermarkFileCodec.writeTrailer(videoFile, WatermarkFileCodec.withContentHash(videoFile, wmJson));
+                }
+                File dataDir = dataDirectory();
+                if (!dataDir.isDirectory()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    dataDir.mkdirs();
+                }
+                File finalFile = new File(dataDir, realFileName);
+                if (finalFile.isFile()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    finalFile.delete();
+                }
+                if (!moveFile(videoFile, finalFile)) {
+                    Log.e(TAG, "待入库录像搬移失败: " + fileId);
+                    continue;
+                }
+                long size = finalFile.length();
+                String iconWritten = null;
+                byte[] thumb = watermarkThumbnail(wm, finalFile);
+                File iconDir = iconDirectory();
+                if (!iconDir.isDirectory()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    iconDir.mkdirs();
+                }
+                String iconName = fileId + "_icon.png";
+                if (thumb != null && saveFile(thumb, new File(iconDir, iconName))) {
+                    iconWritten = iconName;
+                }
+                dbHelper.db_run("UPDATE pending_file SET size = ?, real_icon_name = ? WHERE id = ?",
+                        new JSONArray().put(size).put(iconWritten == null ? JSONObject.NULL : iconWritten).put(fileId));
+                promote(fileId);
+                deleteVideoPendingDir(fileId);
+                recovered++;
+                Log.i(TAG, "已从待入库目录恢复录像: " + fileId);
+            } catch (Exception e) {
+                Log.e(TAG, "恢复待入库录像失败: " + dir.getName(), e);
+            }
+        }
+        return recovered;
     }
 
     // endregion

@@ -1129,9 +1129,22 @@ public class CameraActivity extends AppCompatActivity {
             String anchor = currentAnchor();
             boolean anchorChanged = !anchor.equals(lastWatermarkAnchor);
 
-            // 每次（每秒）都把当前时间轴落到临时目录的旁文件：崩溃最多丢草稿，app_data 不受影响
+            // 每秒把"最新的那一段变化"追加到 meta.jsonl（JSONL 可流式写，崩溃最多丢半行）
             if (videoTicket != null && videoWatermarkJson != null) {
-                fileImporter.persistVideoWatermark(videoTicket.fileId, videoWatermarkJson, videoTicket.watermarkSidecar);
+                JSONArray segs = videoWatermarkJson.optJSONArray("segments");
+                if (segs != null && segs.length() > 0) {
+                    JSONObject last = segs.optJSONObject(segs.length() - 1);
+                    if (last != null) {
+                        try {
+                            JSONObject line = new JSONObject();
+                            line.put("t", last.optLong("from_ms", 0));
+                            if (last.has("values")) line.put("values", last.get("values"));
+                            if (last.has("pos")) line.put("pos", last.get("pos"));
+                            fileImporter.appendVideoMeta(videoTicket.fileId, line);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
             }
             if (valuesDelta.length() > 0 || anchorChanged) {
                 JSONObject seg = new JSONObject();
