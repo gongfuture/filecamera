@@ -83,7 +83,6 @@ public class MainActivity extends AppCompatActivity {
     private RoadDatabaseHelper roadDatabaseHelper;
     private RoadApiHelper roadApiHelper;
     // 启动修复：是否已触发过（每次启动只跑一次）
-    private boolean repairStarted = false;
 
     // --- 现代化的 ActivityResult Launcher ---
 
@@ -181,7 +180,26 @@ public class MainActivity extends AppCompatActivity {
             restoreInstanceState(savedInstanceState);
         }
 
+        // 启动修复未完成的入库：主线程同步执行，且必须在加载页面前完成，
+        // 这样首屏列表就已经包含"上次被打断、这次被补提交"的那张照片（全程无任何提示，用户只会看到多了一张图）
+        repairPendingImports();
+
         webView.loadUrl(indexurl);
+    }
+
+    /**
+     * 启动修复未完成的入库（拍照/导入时进程被杀留下的 pending_file 记录）。
+     * 全程主线程同步完成、不弹任何 Toast/对话框；正常情况下没有待修复记录，开销只是一条空查询。
+     */
+    private void repairPendingImports() {
+        try {
+            int repaired = new FileImporter(this).repairPendingImports();
+            if (repaired > 0) {
+                Log.i(TAG, "启动修复完成，处理了 " + repaired + " 条未完成的入库记录");
+            }
+        } catch (Throwable e) {
+            Log.e(TAG, "启动修复未完成的入库记录失败", e);
+        }
     }
 
     /**
@@ -324,7 +342,6 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 webView.evaluateJavascript("if(typeof onAndroidReady === 'function') { onAndroidReady(); }", null);
-                repairPendingImports();
             }
         });
 
@@ -366,25 +383,6 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
         });
-    }
-
-    /**
-     * 启动时修复未完成的入库（拍照/导入时进程被杀留下的 pending_file 记录）：
-     * 主图缺失的丢弃、缩略图缺失的重建、文件齐的补提交。照片早已入库的不会重复处理。
-     */
-    private void repairPendingImports() {
-        if (repairStarted) return;
-        repairStarted = true;
-        new Thread(() -> {
-            try {
-                int repaired = new FileImporter(this).repairPendingImports();
-                if (repaired > 0) {
-                    Log.i(TAG, "启动修复完成，处理了 " + repaired + " 条未完成的入库记录");
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "启动修复未完成的入库记录失败", e);
-            }
-        }).start();
     }
 
     /**
