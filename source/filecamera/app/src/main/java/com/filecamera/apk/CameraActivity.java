@@ -1038,8 +1038,8 @@ public class CameraActivity extends AppCompatActivity {
         if (recording) {
             // 录像中：白底红描边（按下即停止）
             captureButton.setBackgroundResource(R.drawable.capture_button_recording);
-            captureButton.setScaleX(0.82f);
-            captureButton.setScaleY(0.82f);
+            captureButton.setScaleX(1.0f);
+            captureButton.setScaleY(1.0f);
         } else {
             // 未录像：按当前模式还原（录像模式红色内圆，拍照模式白色内圆）
             captureButton.setBackgroundResource(isVideoMode
