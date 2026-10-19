@@ -1,7 +1,9 @@
 # 巡查相机 · 交接文档（新会话从这里开始）
 
-> 最后更新：2026-10-19（本地 `master` @ `9bbbe92`）
-> 下一次要做的任务：**把相机技术栈从 CameraX 迁移到 Camera2**（详见第 9 节）
+> 最后更新：2026-10-19（本地 `master` @ `b4aad81`）
+> 当前状态：**Camera2 迁移 + 边录边烧已完成**；录像直接输出标准 `.mp4`（带水印 + 音频），
+> 分片封装保证录制中被杀也能恢复。旧的 `.wmp4` 只保留只读播放兼容。
+> 下一步：真机回归竖拍/横拍/前后摄/闪光/变焦，以及第 13 节的收尾项。
 
 ---
 
@@ -48,12 +50,14 @@ WebView(assets/index.html + js)  ── bridge ──┐
 
 原生：
   MainActivity       WebView 宿主；启动自愈；原生文件/文件夹导入（系统选择器 + 进度遮罩）
-  CameraActivity     相机（CameraX）：预览 / 拍照 / 录像 / 水印渲染 / 会话
-  VideoPlayerActivity 播放器：自定义控制条、音量、烧录
-  FileImporter       【唯一入库实现】照片 / 录像 / 烧录产物 / 待入库目录恢复
-  WatermarkFileCodec .wmp4 文件尾部（水印数据区）读写
-  WatermarkBitmapRenderer 把水印画到 Bitmap（缩略图 + 烧录用）
-  VideoWatermarkBurner  Media3 Transformer 烧录（GL 合成）
+  CameraActivity     相机（Camera2）：预览 / 拍照 / 录像 / 水印 / 会话
+  Camera2Controller  Camera2 设备/会话/拍照/对焦/变焦/闪光/录像生命周期
+  Camera2GlRenderer  相机帧 + 水印 → OpenGL 合成到编码器 Surface
+  Camera2MuxerSink   视频/音频样本 → 分片 MP4（Media3 FragmentedMp4Muxer）
+  VideoPlayerActivity 播放器：自定义控制条、音量；旧 .wmp4 仍可叠印
+  FileImporter       【唯一入库实现】照片 / 录像 / 启动恢复
+  WatermarkBitmapRenderer 把水印画到 Bitmap（拍照缩略图 + 录像边录边烧）
+  WatermarkFileCodec 旧 .wmp4 尾部水印数据只读兼容（不再写入）
   CameraSessionStore 拍照会话临时目录
   DatabaseHelper     SQLite（v4）
   IdGenerator        get_id_by_time() → "<毫秒时间戳>-<同毫秒序号>"
@@ -79,15 +83,18 @@ files/
   app_data/<id>.<ext>              已入库的正式文件（只有完整已提交才会出现在这里）
   icons/<id>_icon.png              缩略图（图片是缩放图；视频是"带水印的首帧"）
   photo_tmp/session_<id>/          拍照会话临时目录（CameraSessionStore，启动 gc）
-  burn_tmp/                        烧录临时文件（启动无条件清空）
   video_pending/<id>/              录像待入库目录（★ 关键）
-      meta.jsonl                   水印时间轴（JSONL，追加写）
-      <id>.wmp4.part               录像数据（CameraX 写入）
+      <id>.mp4.part                录像数据（Camera2 + GL 边录边烧，分片 MP4）
 ```
+
+> 已删除：`burn_tmp/`、`video_tmp/`、`meta.jsonl`。新录像不需要水印旁文件。
 
 ---
 
-## 4. `.wmp4` 专用视频格式（★核心）
+## 4. 旧 `.wmp4` 格式（仅历史文件只读兼容）
+
+> 新录像已改为标准 `.mp4`：水印在录制时由 GL 烧进画面，不再写尾部数据。
+> 下面仅用于读懂/播放历史 `.wmp4`；`WatermarkFileCodec` 只保留读取与哈希校验。
 
 ```
 [ 标准 MP4（ftyp/moov/mdat） ][ 水印JSON ][ 4字节长度 ][ 魔术字 "WMP4" ]
@@ -135,28 +142,30 @@ files/
 ### 5.1 拍照
 `CameraActivity.takePhoto()` → 拍照快照（水印位图 + GPS + 配置）→ 同步合成 → `FileImporter.importLocalFile()` → 入库 → 会话记录 → 退出时通过 `RESULT_OK` 把新增记录回传前端
 
-### 5.2 录像（当前 CameraX 实现）
+### 5.2 录像（Camera2 + 边录边烧）
 ```
 startRecording()
-  ├ beginVideo(): 建 files/video_pending/<id>/，写 meta.jsonl 首行(head)，pending 行
-  ├ CameraX Recorder 录到 <id>.wmp4.part
-  └ 每秒 appendVideoMeta() 一行 delta（JSONL 追加 + fsync）
+  ├ beginVideo(): 建 files/video_pending/<id>/，pending 行，目标 .mp4
+  ├ Camera2 会话输出：预览 Surface + GL 相机 SurfaceTexture
+  ├ Camera2GlRenderer：相机帧 + 当前水印位图 → MediaCodec 输入 Surface（H.264）
+  ├ AudioRecord → MediaCodec AAC（按第一帧视频建立相机时钟基准，避免音画/时长错位）
+  └ Camera2MuxerSink：FragmentedMp4Muxer，1 秒一个分片，写 <id>.mp4.part
 
-stop → onVideoRecordEvent(Finalize)
-  → finishVideo():
-      ① 探测可播 ② loadVideoMeta() 折叠时间轴 ③ 读关键帧重排为"关键帧全量快照"
-      ④ writeTrailer()（含 content_hash） ⑤ rename → app_data/<id>.wmp4
-      ⑥ 首帧缩略图（WatermarkBitmapRenderer 合成水印） ⑦ promote() ⑧ 删除 video_pending/<id>/
+stop → signalEndOfInputStream / 音频 EOS
+  → muxer.close() → finishVideo():
+      ① 探测可播 ② 首帧缩略图（画面已带水印）③ move 到 app_data/<id>.mp4
+      ④ promote() ⑤ 删除 video_pending/<id>/
 ```
+旋转：始终按传感器方向编码横屏，`Mp4OrientationData(jpegRotation)` 写 tkhd；
+竖拍/横拍/倒置都由播放器按元数据转正，水印位图在编码前按同一角度预旋转。
 
 ### 5.3 启动自愈（MainActivity.onCreate，主线程，静默）
 ```
-① scanPendingVideoDirs()
+① scanPendingVideoDirs()  先扫录像（必须在照片修复之前）
      a. id 已在 file 表 → 删目录（入库成功但没删干净）
      b. 视频可播        → 补做收尾并入库 → 删目录
      c. 视频不可播/没有 → 丢弃目录 + 删 pending 行
-② cleanBurnTemp()    清空 burn_tmp
-③ repairPendingImports()  照片等遗留 pending 行：主文件在→补提交；缺失→丢弃
+② repairPendingImports()  照片等遗留 pending 行（跳过 .part/录像行）：主文件在→补提交；缺失→丢弃
 ```
 
 ### 5.4 文件 / 文件夹导入（原生统一入口）
@@ -169,24 +178,27 @@ JS: await callAndroidMethod(FilePicker, 'importPath', {dirId, mode:'file'|'dir'}
 ```
 
 ### 5.5 播放器（VideoPlayerActivity）
-- 自定义控制层（不用 Media3 默认控制条）：顶部返回+文件名、中央播放键、底部音量行 + 进度行（时间 / 进度 / 时长 / 「烧录水印」文字按钮 / 音量图标）
+- 自定义控制层（不用 Media3 默认控制条）：顶部返回+文件名、中央播放键、底部音量行 + 进度行
 - **水印层紧贴视频画面矩形**：按画面宽高算 letterbox，水印只在画面内定位，密度基准 = 画面宽度/360
 - 水印与控制层**解耦**：控制条显隐不改变水印位置
 - 播放键：**播放中隐藏、暂停/结束显示**（只由播放状态决定）
 - 控制条：无操作 **5 秒**自动隐藏；任何操作重置计时；暂停不自动隐藏
 - 播放结束：进度条顶到最右、时间显示总时长（容器时长可能略长于实际内容）
-- 烧录：确认框 → 全屏遮罩（可「停止烧录」）→ 写 `files/burn_tmp/` → 成功才 `importBurnedVideo()` 入库；失败/停止删临时文件
+- 新 `.mp4` 水印已烧进画面，播放器不叠印；旧 `.wmp4` 仍按尾部数据叠印（只读兼容）
+- 烧录按钮/遮罩已移除
 
 ---
 
-## 6. 已验证过的事实（真机）
+## 6. 已验证过的事实（真机 Sony XQ-AT72 / Android 12）
 
 - 拍照导入：`file`/`app_data`/`icons` 三者 1:1:1 增长，`pending_file` 收尾为 0
-- 录像 → `.wmp4`：文件尾 12 字节形如 `…"} \0\0\x05\x9b W M P 4`，播放时水印从文件尾部加载并叠加
-- 水印时间轴：9 秒录像生成 9 条关键帧快照，`from_ms` 与 `keyframes` 完全一致
-- 导入：系统选择器可拉起、取消能释放锁、选中文件能入库、文件夹权限流程正常
-- 录制中退出：`video_pending/<id>/` 里**只有 meta.jsonl（约 3KB，流式写入成功）**，
-  **没有视频文件**——CameraX 在取消录制时把临时 MP4 自己删了；启动扫描按规则丢弃该目录
+- 拍照：真机竖拍照片方向正确，水印/二维码正常合成，EXIF/GPS 正常
+- 录像：横拍 5 秒 → 标准 `.mp4`（1920×1080 + AAC），播放器显示时长 00:04/00:05，带水印、可播
+- 录像（强制竖拍元数据）：1920×1080 编码 + tkhd 90°，播放器转正后水印文字正立
+- 录制中被 `am force-stop` 强杀：`video_pending/<id>/<id>.mp4.part` 保留，
+  重开 App 自动恢复为 app_data 里的 `.mp4`，缩略图生成成功、可播（约丢最后不到 1 秒）
+- 启动顺序修正后：录像不会再被照片修复器当成图片搬走
+- 音频：MP4 内 AAC 样本正常，首个音频样本与首个视频样本相差约 16ms
 
 ---
 
@@ -194,11 +206,13 @@ JS: await callAndroidMethod(FilePicker, 'importPath', {dirId, mode:'file'|'dir'}
 
 | # | 问题 | 状态 |
 |---|---|---|
-| 1 | 录制中退出/被硬杀 → 视频丢失（CameraX 删掉临时文件；我们只有 meta） | **本次迁移要解决** |
-| 2 | 烧录（Media3 Transformer，GL 合成）在模拟器报 `GlUtil.bindTexture` 失败；真机用户已实测通过 | 模拟器不可用，真机可用 |
-| 3 | 录像比例固定 16:9（FHD→HD→SD 退让），不跟随设置里的 4:3 | 待做 |
+| 1 | 录制中退出/被硬杀 → 视频丢失 | **已解决**：1 秒分片 + 启动扫描恢复 |
+| 2 | 烧录（Media3 Transformer）在模拟器报 `GlUtil.bindTexture` | **已移除烧录功能**，不再依赖 |
+| 3 | 录像比例固定 16:9，不跟随设置里的 4:3 | 待做 |
 | 4 | 手机无 `sqlite3` CLI，需把 db 拉回电脑查（见第 10 节坑） | 已知 |
-| 5 | `VideoPlayerActivity.sha256()` 仍保留（非 .wmp4 分支用），未来可清理 | 小 |
+| 5 | 相机 Activity 仍锁竖屏：手机横持时预览/UI 是竖屏画面（录像本身会按 tkhd 转正） | 待确认是否要支持横屏 UI |
+| 6 | 水印位图每秒整帧重绘 + 上传（1080p） | 可用，后续可优化为只画水印块 |
+| 7 | 前置录像未做镜像（预览镜像，成片不镜像） | 按常见相机行为，待确认 |
 
 ---
 
@@ -208,14 +222,17 @@ JS: await callAndroidMethod(FilePicker, 'importPath', {dirId, mode:'file'|'dir'}
 2. 图片/视频处理尽量**同步**（同步处理不容易出 bug）；
 3. 提示不要盖住底部操作区；修复过程要**静默**（不弹 toast）；
 4. 中文注释、提交信息用中文；每个里程碑**提交到本地 git**（不 push，除非用户要求）；
-5. `.wmp4` 是专用格式，牺牲通用性可以接受；**分享/导出不做转换**，要通用视频先烧录；
-6. 水印数据只存文件（`.wmp4` 尾部），**数据库不得保存任何水印信息**；
-7. 关键帧快照 + 帧间不存数据；位置锚点变化也要回填；
+5. 新录像直接输出标准 `.mp4`（水印已烧进画面），分享/导出不做转换；旧 `.wmp4` 只读兼容；
+6. 水印在录制时合成，数据库不保存任何水印信息；
+7. 录像按第一帧视频建立相机时钟基准，音画用同一时钟；
 8. 先讨论方案再写代码（"先不写代码"是常态要求）。
 
 ---
 
-## 9. ★ 下一步任务：CameraX → Camera2 迁移
+## 9. CameraX → Camera2 迁移（已完成，2026-10-19 @ b4aad81）
+
+> 本节保留为迁移记录；实际实现比原计划更彻底：录像直接边录边烧、输出标准 `.mp4`。
+> 新实现见第 13 节。
 
 ### 9.1 为什么必须整体迁移
 
@@ -306,18 +323,32 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
 - 修复程序（`repairPendingImports`）对"视频不可播"的行会 `discard`（删 pending + 文件），这是设计行为，不是 bug。
 - `pending_file` 的两阶段事务：`INSERT pending` → 搬文件 → 缩略图 → 一个事务里 `INSERT file ... ; DELETE pending`，保证"可见即完整"。
 
+### 10.4 Camera2 / GL 录像踩坑
+- **相机 PTS 与 `System.nanoTime` 可能不在同一时钟域**：相机时间戳更接近 BOOTTIME（含深度睡眠），
+  `System.nanoTime()` 是 MONOTONIC。直接相减会得到几百/几千秒的偏移，表现为视频时长 77:49、
+  音轨首样本时长远大于正常值。现在先等第一帧视频，记录 `videoBasePtsUs` 和
+  `cameraClockOffsetUs`，音频再用同一个相机时钟打时间戳。
+- **`MediaMetadataRetriever` 读 fMP4**：`mvhd duration` 可能为 0，不能只看 duration 判断可播；
+  改成 `MediaExtractor` 选视频轨 + 读一个样本。
+- **启动修复顺序**：必须先 `scanPendingVideoDirs()` 再 `repairPendingImports()`，
+  否则照片修复器会把 `video_pending/<id>/<id>.mp4.part` 当图片搬进 app_data。
+- **旋转**：不要用 GL 猜相机方向；始终横屏编码 + `Mp4OrientationData(jpegRotation)`，
+  水印位图按同一角度预旋转。这样竖拍/横拍/倒置都走同一条路。
+- **GL 合成**：相机 SurfaceTexture → OES 纹理 → 编码器输入 Surface；
+  水印用与编码画面同尺寸的透明位图，每秒重绘一次。EGL 要带 `EGL_RECORDABLE_ANDROID`，
+  每帧 `eglPresentationTimeANDROID` 必须设置，否则编码器 PTS 不对。
+
 ---
 
 ## 11. Git 状态
 
 ```
 分支：master
-状态：领先 origin/master 约 50 个提交，从未推送；工作区干净
+状态：领先 origin/master 约 51 个提交，从未推送；工作区干净
 最近提交：
+  b4aad81 录像改为 Camera2 边录边烧：标准 MP4 + 音频 + 强杀恢复
+  3bca2f8 新增交接文档 HANDOVER.md
   9bbbe92 录像改为"持久待入库目录 + meta.jsonl 流式水印 + 启动扫描恢复"
-  bae3003 录像改为"草稿目录 + 收尾入库"
-  145edf2 修复真机水印写不进 .wmp4：关键帧读取缓冲区太小
-  120cc72 清理：删掉闲置的烧录图标，修正过时注释
 ```
 如需推远端：`git push origin master`（用户未要求，先别推）。
 
@@ -327,8 +358,47 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
 
 1. **读这份文档** + `git log --oneline -10` 对齐状态；
 2. **确认构建可过**：`.\gradlew.bat :app:assembleDebug`；
-3. 从第 9 节"阶段 1：Camera2 预览 + 拍照"开始，先出方案让用户确认，再写代码。
+3. **真机回归**竖拍/横拍/前后摄/闪光/变焦，再按第 13 节收尾。
 
-> 提醒：本轮之所以迁移，是因为要**自己掌控编码输出**以实现"录制中被杀也能播"的 fMP4。
-> 若用户改变主意，回退方式很简单：放弃迁移，保留现状（CameraX + 持久待入库目录 + 启动扫描），
-> 代价是"录制中被硬杀"仍会丢当前这一段。
+---
+
+## 13. 2026-10-19 Camera2 + 边录边烧 变更记录（★当前实现）
+
+### 13.1 新录像链路
+```
+CameraActivity.startRecording()
+  → FileImporter.beginVideo(dir, "<id>.mp4")
+  → Camera2Controller.startVideoRecording(file, jpegRotation, liveWatermark)
+      ├ Camera2 预览 Surface + GL 相机 SurfaceTexture
+      ├ Camera2GlRenderer：相机帧 + 水印 → MediaCodec(H.264) 输入 Surface
+      ├ AudioRecord → MediaCodec(AAC)
+      └ Camera2MuxerSink：FragmentedMp4Muxer(1s) → video_pending/<id>/<id>.mp4.part
+  → stop：EOS → muxer.close() → finishVideo() → app_data/<id>.mp4
+```
+
+### 13.2 关键类
+| 类 | 职责 |
+|---|---|
+| `Camera2Controller` | 开/关相机、会话、拍照 ImageReader、对焦/变焦/闪光、录像生命周期、音频 |
+| `Camera2GlRenderer` | EGL/GL：OES 相机纹理 + 水印位图 → 编码器 Surface；每帧 PTS |
+| `Camera2MuxerSink` | 等视频/音频格式齐 → addTrack → 分片写入；支持音频轨降级 |
+| `WatermarkBitmapRenderer` | 按画面尺寸画水印；边录边烧每秒重绘 |
+| `FileImporter` | 两阶段入库；录像 `beginVideo/finishVideo/abortVideo`；启动扫描恢复 |
+
+### 13.3 输出格式
+- 新录像：标准 `.mp4`，视频 H.264（1920×1080，约 10Mbps）+ 音频 AAC（44.1kHz 单声道 96kbps）；
+- 横屏编码 + `tkhd` 旋转元数据（`Mp4OrientationData`），竖拍/横拍都能转正；
+- 水印已烧进像素，不写 `.wmp4` 尾部、不写 `meta.jsonl`；
+- 旧 `.wmp4` 仍可播放/叠印（只读兼容），但不再产生新文件。
+
+### 13.4 已知行为
+- 相机 Activity 仍锁竖屏；手机横持时预览是竖屏画面（录像会按旋转元数据转正）；
+- 前置录像不做镜像（预览镜像）；
+- 水印每秒整帧重绘一次，1080p 下偶发掉一帧，可后续优化为只画水印块；
+- 音频拒绝授权时录像继续但无声（`audio_permission_asked` 只问一次）。
+
+### 13.5 下一步
+1. 真机回归：竖拍/横拍、前后摄、闪光、变焦、对焦、连续拍照、录像中退出/强杀；
+2. 需要的话再做“横屏 UI”或“边录边烧开关”；
+3. 观察长录像（>10 分钟）的音画同步、文件大小、分片恢复；
+4. 如要清理：`WatermarkFileCodec` 的旧格式只读兼容可在确认没有历史文件后移除。
