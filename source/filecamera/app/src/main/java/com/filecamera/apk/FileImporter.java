@@ -31,7 +31,9 @@ import java.io.InputStream;
  * <pre>
  *   ① INSERT INTO pending_file      // 未就绪：对外完全不可见（现有查询都不看这张表）
  *   ② 主图落位（同分区 rename 原子）  // 失败可回滚
- *   ③ 生成缩略图（失败不阻塞入库，置空交给前端兜底图标）
+ *   ③ 主图就位后，**直接在目标文件夹按主图生成缩略图**
+ *      → 由此得到一条强不变量：「缩略图存在 ⇒ 主图一定已经就位」，
+ *        修复时不必考虑"缩略图搬了、主图没搬"这种中间态，逻辑最简单
  *   ④ 事务：INSERT INTO file SELECT ... FROM pending_file ; DELETE FROM pending_file  // 可见性 0/1 切换
  * </pre>
  * 任何一步崩掉，用户都不会看到"半张照片"：要么查不到，要么完整。
@@ -146,36 +148,18 @@ public class FileImporter {
         File dataDir = dataDirectory();
         File iconDir = iconDirectory();
         File targetFile = new File(dataDir, realFileName);
-        File targetIcon = isImage ? new File(iconDir, realIconName) : null;
+        File iconFile = isImage ? new File(iconDir, realIconName) : null;
 
-        // ① 先在临时目录把缩略图也做好（此时主图+缩略图都已在临时目录，内容齐了才往下走）
-        File tempIcon = null;
-        String iconName = isImage ? realIconName : null;
-        if (isImage) {
-            byte[] iconBytes = iconMake(readAll(sourceFile), finalName);
-            iconName = null;
-            if (iconBytes != null) {
-                File candidate = new File(sourceFile.getParentFile(), realIconName);
-                if (saveFile(iconBytes, candidate)) {
-                    tempIcon = candidate;
-                    iconName = realIconName;
-                }
-            }
-        }
-
-        // ② 写待入表：记录目标目录、显示名、真实文件名、缩略图名，以及两个临时文件路径
-        //    （此时所有内容都已存在，接下来只做搬移 + 提交；对现有查询仍完全不可见）
+        // ① 未就绪记录：对外不可见，崩溃后由 repairPendingImports 处理
         dbHelper.db_run("INSERT INTO pending_file (" + COLUMNS + ",tmp_photo_path,tmp_icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 new JSONArray()
                         .put(fileId).put(finalName).put(targetDirId).put("file")
-                        .put(realFileName).put(iconName == null ? JSONObject.NULL : iconName)
-                        .put(createTime).put(seqNumber).put(size).put(extension)
-                        .put(sourceFile.getAbsolutePath())
-                        .put(tempIcon == null ? "" : tempIcon.getAbsolutePath()));
+                        .put(realFileName).put(realIconName).put(createTime).put(seqNumber)
+                        .put(size).put(extension).put(sourceFile.getAbsolutePath()).put(""));
 
         boolean promoted = false;
         try {
-            // ③ 主图与缩略图一起搬进正式目录（内部分区同目录树，单次 rename 即原子）
+            // ② 主图落位（同分区 rename；跨分区自动退化为复制）
             if (!dataDir.isDirectory() && !dataDir.mkdirs()) {
                 throw new IOException("无法创建数据目录");
             }
@@ -183,28 +167,33 @@ public class FileImporter {
             if (!moveFile(sourceFile, targetFile) || !targetFile.isFile()) {
                 throw new IOException("照片写入失败");
             }
-            if (tempIcon != null) {
+
+            // ③ 主图已就位 → 直接按目标文件夹里的主图生成缩略图（失败不阻塞入库，前端有默认图标兜底）
+            String iconWritten = null;
+            if (isImage) {
                 if (!iconDir.isDirectory()) {
                     //noinspection ResultOfMethodCallIgnored
                     iconDir.mkdirs();
                 }
-                if (!moveFile(tempIcon, targetIcon)) {
-                    // 缩略图搬移失败不阻塞入库：置空让前端用默认图标
-                    Log.w(TAG, "缩略图搬移失败，改用以默认图标: " + finalName);
-                    iconName = null;
-                    dbHelper.db_run("UPDATE pending_file SET real_icon_name = NULL, tmp_icon_path = ? WHERE id = ?",
-                            new JSONArray().put("").put(fileId));
+                byte[] iconBytes = iconMake(readAll(targetFile), finalName);
+                if (iconBytes != null && saveFile(iconBytes, iconFile)) {
+                    iconWritten = realIconName;
                 }
             }
+            dbHelper.db_run("UPDATE pending_file SET real_icon_name = ?, tmp_photo_path = ? WHERE id = ?",
+                    new JSONArray()
+                            .put(iconWritten == null ? JSONObject.NULL : iconWritten)
+                            .put("")
+                            .put(fileId));
 
-            // ④ 事务提交：写 file 表 + 清掉待入表这条（可见性在此原子切换）
+            // ④ 事务提交：pending → file，可见性在此原子切换
             promote(fileId);
             promoted = true;
-            return buildRecord(fileId, finalName, targetDirId, realFileName, iconName,
+            return buildRecord(fileId, finalName, targetDirId, realFileName, iconWritten,
                     createTime, seqNumber, size, extension);
         } finally {
             if (!promoted) {
-                rollback(fileId, sourceFile, targetFile, targetIcon);
+                rollback(fileId, sourceFile, targetFile, iconFile);
             }
         }
     }
@@ -223,8 +212,8 @@ public class FileImporter {
         }
     }
 
-    /** 失败回滚：删掉待入表记录，把已搬走的主图退回临时目录（不销毁照片），清掉已搬的缩略图。 */
-    private void rollback(String fileId, File sourceFile, File targetFile, File targetIcon) {
+    /** 失败回滚：删掉未就绪记录，把已经移动的主图退回源位置（保留给重试/清理），清掉缩略图。 */
+    private void rollback(String fileId, File sourceFile, File targetFile, File iconFile) {
         try {
             dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(fileId));
         } catch (Exception e) {
@@ -239,9 +228,9 @@ public class FileImporter {
                     targetFile.delete();
                 }
             }
-            if (targetIcon != null && targetIcon.isFile()) {
+            if (iconFile != null && iconFile.isFile()) {
                 //noinspection ResultOfMethodCallIgnored
-                targetIcon.delete();
+                iconFile.delete();
             }
         } catch (Exception e) {
             Log.e(TAG, "回滚文件失败", e);
@@ -269,13 +258,7 @@ public class FileImporter {
 
     // region --- 启动修复 ---
 
-    /**
-     * 修复一条待入表记录。判定顺序与入库顺序对称：
-     * 文件是否已搬进正式目录 → 没搬就从临时目录搬 → 缩略图缺就补 → 最后补提交（事务）。
-     * 主图既不在正式目录也不在临时目录时，这条照片已经无法完整呈现，直接丢弃。
-     *
-     * @return true 表示这条记录被修复/清理掉了
-     */
+    /** @return true 表示这条记录被修复/清理掉了 */
     private boolean repairOne(JSONObject row) {
         String id = row.optString("id");
         String realFileName = row.optString("real_file_name");
@@ -288,72 +271,64 @@ public class FileImporter {
         if (realIconName != null && realIconName.isEmpty()) realIconName = null;
 
         File targetFile = new File(dataDirectory(), realFileName);
-        File targetIcon = realIconName == null ? null : new File(iconDirectory(), realIconName);
-        File tmpPhoto = new File(row.optString("tmp_photo_path", ""));
-        File tmpIcon = new File(row.optString("tmp_icon_path", ""));
+        File iconFile = realIconName == null ? null : new File(iconDirectory(), realIconName);
 
         try {
             // 目标目录已经被删掉 → 这条记录永远不可见，连同文件一起清掉
             if (dbHelper.db_get("SELECT id FROM dir WHERE id = ?", new JSONArray().put(parentDirId)) == null) {
-                discard(id, targetFile, targetIcon, tmpPhoto, tmpIcon);
+                discard(id, targetFile, iconFile, row);
                 return true;
             }
 
-            // 1) 主图：正式目录没有就从临时目录搬；两边都没有 → 丢弃
+            // 主图缺失：先尝试从临时文件补位
             if (!targetFile.isFile()) {
-                File dataDir = dataDirectory();
-                if (!dataDir.isDirectory()) {
-                    //noinspection ResultOfMethodCallIgnored
-                    dataDir.mkdirs();
-                }
-                if (tmpPhoto.isFile() && moveFile(tmpPhoto, targetFile) && targetFile.isFile()) {
-                    Log.i(TAG, "已从临时目录补齐主图: " + id);
+                File tmp = new File(row.optString("tmp_photo_path", ""));
+                if (tmp.isFile() && moveFile(tmp, targetFile) && targetFile.isFile()) {
+                    Log.i(TAG, "已从临时文件补齐主图: " + id);
                 } else {
-                    Log.w(TAG, "主图缺失，丢弃待入表记录: " + id);
-                    discard(id, targetFile, targetIcon, tmpPhoto, tmpIcon);
+                    // 主图彻底找不回 → 这条记录不可能完整显示，丢弃
+                    Log.w(TAG, "主图缺失，丢弃未就绪记录: " + id);
+                    discard(id, targetFile, iconFile, row);
                     return true;
                 }
             }
 
-            // 2) 缩略图：正式目录没有 → 先试临时目录里的，再试重新生成；都不行就置空（前端回退默认图标）
-            if (realIconName != null && (targetIcon == null || !targetIcon.isFile())) {
+            // 缩略图缺失：重新生成；生成失败就把 real_icon_name 置空（前端回退默认图标）
+            if (isImageFile(displayName) && (iconFile == null || !iconFile.isFile())) {
+                String iconName = (iconFile == null) ? (id + "_icon.png") : iconFile.getName();
                 File iconDir = iconDirectory();
                 if (!iconDir.isDirectory()) {
                     //noinspection ResultOfMethodCallIgnored
                     iconDir.mkdirs();
                 }
-                boolean iconReady = tmpIcon.isFile() && moveFile(tmpIcon, targetIcon) && targetIcon.isFile();
-                if (!iconReady) {
-                    byte[] iconBytes = iconMake(readAll(targetFile), displayName);
-                    iconReady = iconBytes != null && saveFile(iconBytes, targetIcon);
+                byte[] iconBytes = iconMake(readAll(targetFile), displayName);
+                String written = null;
+                if (iconBytes != null && saveFile(iconBytes, new File(iconDir, iconName))) {
+                    written = iconName;
                 }
-                if (!iconReady) {
-                    Log.w(TAG, "缩略图无法补齐，改用默认图标: " + id);
-                    dbHelper.db_run("UPDATE pending_file SET real_icon_name = NULL, tmp_icon_path = ? WHERE id = ?",
-                            new JSONArray().put("").put(id));
-                }
+                dbHelper.db_run("UPDATE pending_file SET real_icon_name = ? WHERE id = ?",
+                        new JSONArray().put(written == null ? JSONObject.NULL : written).put(id));
             }
 
-            // 3) 文件齐了 → 补提交（事务），可见性在这里切换
+            // 都齐了 → 补提交（事务），可见性在这里切换
             promote(id);
             return true;
         } catch (Exception e) {
-            Log.e(TAG, "修复待入表记录失败: " + id, e);
+            Log.e(TAG, "修复未就绪记录失败: " + id, e);
             return false;
         }
     }
 
-    /** 丢弃一条待入表记录及其文件（主图 / 缩略图 / 临时文件）。 */
-    private void discard(String id, File targetFile, File targetIcon, File tmpPhoto, File tmpIcon) {
+    /** 丢弃一条未就绪记录及其文件（主图 / 缩略图 / 临时文件）。 */
+    private void discard(String id, File targetFile, File iconFile, JSONObject row) {
         try {
             dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(id));
         } catch (Exception e) {
             Log.e(TAG, "删除 pending_file 失败", e);
         }
         deleteQuietly(targetFile);
-        deleteQuietly(targetIcon);
-        deleteQuietly(tmpPhoto);
-        deleteQuietly(tmpIcon);
+        deleteQuietly(iconFile);
+        deleteQuietly(new File(row.optString("tmp_photo_path", "")));
     }
 
     // endregion
