@@ -463,20 +463,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
         String outName = (dot > 0 ? baseName.substring(0, dot) : baseName) + "_带水印.mp4";
 
         final FileImporter importer = new FileImporter(this);
-        final FileImporter.VideoTicket ticket;
-        try {
-            // 烧录产物是独立的新文件（新编号 + _带水印 命名），水印数据照常留一行，
-            // 内容是"已烧录"标记：播放时据此跳过叠印，而不是删掉数据行
-            JSONObject burnMark = new JSONObject();
-            burnMark.put("ver", 1);
-            burnMark.put("burned", true);
-            burnMark.put("source_file_id", sourceFileId == null ? "" : sourceFileId);
-            ticket = importer.beginVideo(dirId, outName, burnMark);
-        } catch (Exception e) {
-            Log.e(TAG, "准备烧录失败", e);
-            Toast.makeText(this, "烧录失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
-            return;
-        }
+        // 先烧到临时文件；只有烧录成功后才走入库流程把它搬进 app_data
+        final File tempFile = importer.newBurnTempFile("burn.mp4");
+        final String targetDirId = dirId;
+        final String targetName = outName;
 
         burning = true;
         if (burnStop != null) {
@@ -491,7 +481,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
         burnBar.setProgress(0);
         burnText.setText("正在烧录水印… 0%");
 
-        burnHandle = VideoWatermarkBurner.burn(this, sourceVideoFile, ticket.targetFile, watermark,
+        burnHandle = VideoWatermarkBurner.burn(this, sourceVideoFile, tempFile, watermark,
                 new VideoWatermarkBurner.Callback() {
                     @Override
                     public void onProgress(int percent) {
@@ -502,14 +492,17 @@ public class VideoPlayerActivity extends AppCompatActivity {
                     @Override
                     public void onDone(File output) {
                         try {
-                            importer.finishVideo(ticket);
+                            importer.importBurnedVideo(tempFile, targetDirId, targetName);   // 烧录成功才入库（从临时文件搬走）
                             burning = false;
                             burnHandle = null;
                             burnMask.setVisibility(View.GONE);
                             Toast.makeText(VideoPlayerActivity.this, "烧录完成，已保存到当前文件夹", Toast.LENGTH_LONG).show();
                         } catch (Exception e) {
                             Log.e(TAG, "烧录入库失败", e);
-                            importer.abortVideo(ticket);
+                            if (tempFile != null && tempFile.isFile()) {
+                                //noinspection ResultOfMethodCallIgnored
+                                tempFile.delete();
+                            }
                             burning = false;
                             burnMask.setVisibility(View.GONE);
                             Toast.makeText(VideoPlayerActivity.this, "烧录完成但保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -518,7 +511,11 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
                     @Override
                     public void onError(Throwable error) {
-                        importer.abortVideo(ticket);   // 中途停止/失败：清掉已烧录的半成品
+                        // 中途停止/失败：直接删掉临时文件，绝不留半成品
+                        if (tempFile != null && tempFile.isFile()) {
+                            //noinspection ResultOfMethodCallIgnored
+                            tempFile.delete();
+                        }
                         burning = false;
                         burnHandle = null;
                         burnMask.setVisibility(View.GONE);

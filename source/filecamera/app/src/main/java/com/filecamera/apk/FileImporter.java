@@ -663,6 +663,101 @@ public class FileImporter {
 
     // endregion
 
+    // region --- 烧录临时文件 + 烧录产物入库 ---
+
+    /** 烧录临时目录（与 app_data 同一分区，入库时可原子 rename）。 */
+    private File burnTempDir() {
+        File dir = new File(context.getFilesDir(), "burn_tmp");
+        if (!dir.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    /** 烧录输出先落到临时目录，入库时才搬进 app_data。 */
+    public File newBurnTempFile(String baseName) {
+        String name = (baseName == null || baseName.isEmpty()) ? "burn" : baseName;
+        return new File(burnTempDir(), IdGenerator.get_id_by_time() + "-" + name);
+    }
+
+    /** 启动时清理烧录临时目录：闪存占用不堆积。 */
+    public void cleanBurnTemp() {
+        File dir = new File(context.getFilesDir(), "burn_tmp");
+        if (!dir.isDirectory()) return;
+        File[] children = dir.listFiles();
+        if (children == null) return;
+        int removed = 0;
+        for (File child : children) {
+            if (child.delete()) removed++;
+        }
+        if (removed > 0) Log.i(TAG, "启动清理烧录临时文件: " + removed + " 个");
+    }
+
+    /**
+     * 烧录完成后入库：与拍照/录像同一条链路（pending → 搬文件 → 缩略图 → 事务提交）。
+     * 烧录产物画面里已经带水印，所以不写任何水印数据；首帧缩略图直接取（不再合成）。
+     */
+    public JSONObject importBurnedVideo(File tempFile, String dirId, String displayName) throws Exception {
+        if (tempFile == null || !tempFile.isFile() || tempFile.length() <= 0) {
+            throw new IOException("烧录产物不可用");
+        }
+        if (!isPlayableVideo(tempFile)) {
+            throw new IOException("烧录产物无法播放");
+        }
+        String targetDirId = (dirId == null || dirId.trim().isEmpty()) ? "root" : dirId;
+        if (dbHelper.db_get("SELECT id FROM dir WHERE id = ?", new JSONArray().put(targetDirId)) == null) {
+            throw new Exception("文件夹不存在");
+        }
+        String finalName = dedupeName(targetDirId, displayName);
+        String extension = extensionOf(finalName);
+        if (extension.isEmpty()) {
+            extension = "mp4";
+            finalName = finalName + ".mp4";
+        }
+        String fileId = IdGenerator.get_id_by_time();
+        String realFileName = fileId + "." + extension;
+        File dataDir = dataDirectory();
+        if (!dataDir.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            dataDir.mkdirs();
+        }
+        File target = new File(dataDir, realFileName);
+
+        dbHelper.db_run("INSERT INTO pending_file (" + COLUMNS + ",tmp_photo_path,tmp_icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                new JSONArray()
+                        .put(fileId).put(finalName).put(targetDirId).put("file")
+                        .put(realFileName).put(fileId + "_icon.png").put(System.currentTimeMillis())
+                        .put(getSeqNumberFromString(baseNameOf(finalName))).put(0L).put(extension)
+                        .put("").put(""));
+
+        if (!moveFile(tempFile, target)) {
+            dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(fileId));
+            throw new IOException("烧录产物搬移失败");
+        }
+
+        long size = target.length();
+        byte[] thumb = scaleAndCompress(videoFirstFrame(target));
+        String iconName = fileId + "_icon.png";
+        String iconWritten = null;
+        File iconDir = iconDirectory();
+        if (!iconDir.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            iconDir.mkdirs();
+        }
+        if (thumb != null && saveFile(thumb, new File(iconDir, iconName))) {
+            iconWritten = iconName;
+        }
+
+        dbHelper.db_run("UPDATE pending_file SET size = ?, real_icon_name = ? WHERE id = ?",
+                new JSONArray().put(size).put(iconWritten == null ? JSONObject.NULL : iconWritten).put(fileId));
+        promote(fileId);
+        return buildRecord(fileId, finalName, targetDirId, realFileName, iconWritten,
+                System.currentTimeMillis(), getSeqNumberFromString(baseNameOf(finalName)),
+                size, extension);
+    }
+
+    // endregion
     // region --- 文件/命名工具 ---
 
     private File dataDirectory() {

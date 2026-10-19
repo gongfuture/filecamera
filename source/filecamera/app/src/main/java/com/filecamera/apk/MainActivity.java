@@ -183,6 +183,12 @@ public class MainActivity extends AppCompatActivity {
         // 启动修复未完成的入库：主线程同步执行，且必须在加载页面前完成，
         // 这样首屏列表就已经包含"上次被打断、这次被补提交"的那张照片（全程无任何提示，用户只会看到多了一张图）
         repairPendingImports();
+        // 烧录临时目录：每次启动清一次，避免半成品堆积占闪存
+        try {
+            new FileImporter(this).cleanBurnTemp();
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "清理烧录临时目录失败", e);
+        }
 
         webView.loadUrl(indexurl);
     }
