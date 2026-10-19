@@ -213,6 +213,36 @@ public class FilePickerBridge {
      * 打开视频播放页（播放干净视频，按 file_watermark 里的水印数据叠加水印）。
      * 参数: { id: 文件id, name: 显示名, real_file_name: app_data 里的真实文件名 }
      */
+    /**
+     * 统一导入入口（文件 / 文件夹）：原生侧弹系统选择器并走入库流程，
+     * 参数 { dirId: 当前文件夹id, mode: "file"|"dir" }；取消也会回调，避免前端死锁。
+     */
+    @JavascriptInterface
+    public void importPath(String task_id, String json_data) {
+        try {
+            JSONObject params = new JSONObject(json_data);
+            String dirId = params.optString("dirId", params.optString("dir_id", "root"));
+            String mode = params.optString("mode", "file");
+            if (!(activity instanceof MainActivity)) {
+                call_js_callback(task_id, false, null, "导入不可用");
+                return;
+            }
+            ((MainActivity) activity).beginImport(mode, dirId, payload -> {
+                try {
+                    if (payload != null && payload.optBoolean("canceled", false)) {
+                        call_js_callback(task_id, true, payload.put("canceled", true), null);
+                    } else {
+                        call_js_callback(task_id, true, payload, null);
+                    }
+                } catch (Exception e) {
+                    call_js_callback(task_id, false, null, "导入回调失败: " + e.getMessage());
+                }
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "Error in importPath()", e);
+            call_js_callback(task_id, false, null, "导入失败: " + e.getMessage());
+        }
+    }
     @JavascriptInterface
     public void openVideo(String task_id, String json_data) {
         try {

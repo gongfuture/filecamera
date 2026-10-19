@@ -166,68 +166,25 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 		}else if(event.target.id == "inputbutton"){
 			//menu_upload_file()
 			window.Android.startwakelock()			
-			let uri_arr = await nativeOpenFilePicker(true,'file')
-			if (!uri_arr ||uri_arr.length === 0) {
-				window.Android.endwakelock()				
+			// 统一交给原生层：弹系统选择器 → 走入库流程 → 返回新增记录（取消也会返回，锁能释放）
+			let res = await callAndroidMethod(window.FilePicker, 'importPath', { dirId: open_dir.id, mode: 'file' });
+			window.Android.endwakelock();
+			document.getElementById("loadingoverlay").style.display = "none";
+			window.updata_load_info("");
+			if (res && res.canceled) {
 				return;
 			}
-			let filecount = uri_arr.length
-			let fileseq = 0
-			
-			document.getElementById("loadingoverlay").style.display = "flex"
-			document.getElementById("loadingmessage").innerText = "导入中..."+String(fileseq)+'/'+String(filecount); 
-			for(let file of uri_arr){
-				fileseq++
-				if (file) {
-				  try {
-					await uploadfile(file.uri, open_dir.id, file.name);
-				  } catch (error) {
-					await alert_fix("图片上传失败：" + error);
-				  }
-				}
-				document.getElementById("loadingmessage").innerText = "导入中..."+String(fileseq)+'/'+String(filecount); 
-			}
-			document.getElementById("loadingoverlay").style.display = "none";
-			
 			await updateTable(open_dir.id);
 			window.Android.endwakelock()
 		}else if(event.target.id == "uploadirbutton"){
 			try{
 				window.Android.startwakelock()
-				let uri_arr = await nativeOpenFilePicker(true,'dir')
-				if (!uri_arr ||uri_arr.length === 0) {
-					window.Android.endwakelock()					
+				let res = await callAndroidMethod(window.FilePicker, 'importPath', { dirId: open_dir.id, mode: 'dir' });
+				window.Android.endwakelock();
+				document.getElementById("loadingoverlay").style.display = "none";
+				window.updata_load_info("");
+				if (res && res.canceled) {
 					return;
-				}
-				let filecount = uri_arr.filter(item => item.type === "file").length  // 只计算文件数量
-				let fileseq = 0
-				
-				document.getElementById("loadingmessage").innerText = "正在获取文件路径......"
-				document.getElementById("loadingoverlay").style.display = "flex"
-				document.getElementById("loadingmessage").innerText = "导入中..."+String(fileseq)+'/'+String(filecount);
-				let path_id_map = new Map();
-				for(let i = 0; i < uri_arr.length; i++){
-					let item = uri_arr[i]
-					if (item && item.type === "file"){
-						fileseq++
-						try {
-							let path = item.relativePath
-							let file_path_arr = path.split('/')
-							let name = file_path_arr.pop()
-							let dir_id = path_id_map.get(path)
-							if(dir_id){
-								await uploadfile(item.uri, dir_id, name)
-							}else{
-								let path_and_id = await upload_file_to_path(item.uri, file_path_arr, name, open_dir.id)
-								if(path_and_id){
-									path_id_map.set(path,path_and_id[1])
-								}
-							}
-						} catch (error) {
-							await alert_fix("文件上传失败：" + error);
-						}
-						document.getElementById("loadingmessage").innerText = "导入中..."+String(fileseq)+'/'+String(filecount); 
-					}
 				}
 				await updateTable(open_dir.id);	
 			}catch(err){

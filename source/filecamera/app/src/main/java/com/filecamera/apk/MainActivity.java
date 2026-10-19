@@ -77,6 +77,160 @@ public class MainActivity extends AppCompatActivity {
     private Android_js_bridge jsBridge;
     private FilePickerBridge filePickerBridge;
 
+    // region --- 原生侧统一导入入口（文件 / 文件夹，走同一套入库流程） ---
+    /** 导入结果回调：payload 里带 records（成功）或 canceled=true（取消）。 */
+    public interface ImportResult {
+        void onResult(org.json.JSONObject payload);
+    }
+
+    private ImportResult pendingImportResult;
+    private String pendingImportDirId = "root";
+    private String pendingImportMode = "file";
+
+    private final androidx.activity.result.ActivityResultLauncher<String[]> importFilesLauncher =
+            registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments(),
+                    uris -> runImportFiles(uris));
+    private final androidx.activity.result.ActivityResultLauncher<android.net.Uri> importDirLauncher =
+            registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree(),
+                    uri -> runImportDir(uri));
+
+    /**
+     * 统一导入入口：mode = "file" 选文件（可多选），mode = "dir" 选文件夹（递归导入）。
+     * 调用方（WebView）等这个回调，天然就是"同步/加锁"语义；取消也要回调，保证锁能释放。
+     */
+    public void beginImport(String mode, String dirId, ImportResult result) {
+        pendingImportResult = result;
+        pendingImportDirId = (dirId == null || dirId.trim().isEmpty()) ? "root" : dirId;
+        pendingImportMode = "dir".equals(mode) ? "dir" : "file";
+        try {
+            if ("dir".equals(pendingImportMode)) {
+                importDirLauncher.launch(null);
+            } else {
+                importFilesLauncher.launch(new String[]{"*/*"});
+            }
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "启动导入选择器失败", e);
+            finishImport("");
+        }
+    }
+
+    private void runImportFiles(java.util.List<android.net.Uri> uris) {
+        if (uris == null || uris.isEmpty()) {
+            finishImport("");
+            return;
+        }
+        org.json.JSONArray records = new org.json.JSONArray();
+        FileImporter importer = new FileImporter(this);
+        for (android.net.Uri uri : uris) {
+            try {
+                String name = queryDisplayName(uri);
+                org.json.JSONObject record = importer.importFromContentUri(uri.toString(), pendingImportDirId, name);
+                if (record != null) records.put(record);
+            } catch (Exception e) {
+                android.util.Log.e("MainActivity", "导入文件失败: " + uri, e);
+            }
+        }
+        finishImportWithRecords(records);
+    }
+
+    private void runImportDir(android.net.Uri treeUri) {
+        if (treeUri == null) {
+            finishImport("");
+            return;
+        }
+        org.json.JSONArray records = new org.json.JSONArray();
+        try {
+            getContentResolver().takePersistableUriPermission(treeUri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception ignored) {
+        }
+        try {
+            androidx.documentfile.provider.DocumentFile root =
+                    androidx.documentfile.provider.DocumentFile.fromTreeUri(this, treeUri);
+            if (root != null) {
+                importTree(root, pendingImportDirId, new FileImporter(this), records);
+            }
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "导入文件夹失败", e);
+        }
+        finishImportWithRecords(records);
+    }
+
+    /** 递归导入：目录先建库记录，文件走 FileImporter。 */
+    private void importTree(androidx.documentfile.provider.DocumentFile node, String parentDirId,
+                            FileImporter importer, org.json.JSONArray records) {
+        androidx.documentfile.provider.DocumentFile[] children = node.listFiles();
+        if (children == null) return;
+        DatabaseHelper db = DatabaseHelper.getInstance(this);
+        for (androidx.documentfile.provider.DocumentFile child : children) {
+            String name = child.getName();
+            if (name == null || name.startsWith(".")) continue;
+            if (child.isDirectory()) {
+                String childId = IdGenerator.get_id_by_time();
+                try {
+                    db.db_run("INSERT INTO dir (id, name, parent_dir_id, type, createtime, filesortmode, dirsortmode, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            new org.json.JSONArray().put(childId).put(name).put(parentDirId)
+                                    .put("dir").put(System.currentTimeMillis()).put(2).put(2).put(0L));
+                    importTree(child, childId, importer, records);
+                } catch (Exception e) {
+                    android.util.Log.e("MainActivity", "创建目录失败: " + name, e);
+                }
+            } else {
+                try {
+                    org.json.JSONObject record = importer.importFromContentUri(child.getUri().toString(), parentDirId, name);
+                    if (record != null) records.put(record);
+                } catch (Exception e) {
+                    android.util.Log.e("MainActivity", "导入文件失败: " + name, e);
+                }
+            }
+        }
+    }
+
+    /** 取文件显示名（拿不到就用 uri 末段）。 */
+    private String queryDisplayName(android.net.Uri uri) {
+        try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (index >= 0) {
+                    String name = cursor.getString(index);
+                    if (name != null && !name.isEmpty()) return name;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        String last = uri.getLastPathSegment();
+        return last == null ? "imported" : last;
+    }
+
+    private void finishImportWithRecords(org.json.JSONArray records) {
+        try {
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("records", records == null ? new org.json.JSONArray() : records);
+            payload.put("count", records == null ? 0 : records.length());
+            finishImport(payload.toString());
+        } catch (Exception e) {
+            finishImport("");
+        }
+    }
+
+    private void finishImport(String payloadJson) {
+        ImportResult result = pendingImportResult;
+        pendingImportResult = null;
+        if (result == null) return;
+        try {
+            if (payloadJson == null || payloadJson.isEmpty()) {
+                org.json.JSONObject canceled = new org.json.JSONObject();
+                canceled.put("canceled", true);
+                result.onResult(canceled);
+            } else {
+                result.onResult(new org.json.JSONObject(payloadJson));
+            }
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "回调导入结果失败", e);
+        }
+    }
+    // endregion
+
     // 后端和数据库
     private BackServer backServer;
     private DatabaseHelper dbHelper;
