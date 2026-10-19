@@ -342,13 +342,16 @@ public class FileImporter {
         public final String realFileName;
         public final File targetFile;
         public final String displayName;
+        /** 本次录像的水印数据（只写进 .wmp4 文件尾部，不存数据库） */
+        public final JSONObject watermark;
         public final String parentDirId;
 
-        VideoTicket(String fileId, String realFileName, File targetFile, String displayName, String parentDirId) {
+        VideoTicket(String fileId, String realFileName, File targetFile, String displayName, String parentDirId, JSONObject watermark) {
             this.fileId = fileId;
             this.realFileName = realFileName;
             this.targetFile = targetFile;
             this.displayName = displayName;
+            this.watermark = watermark;
             this.parentDirId = parentDirId;
         }
     }
@@ -369,7 +372,7 @@ public class FileImporter {
             displayName = IdGenerator.get_id_by_time() + ".mp4";
         }
         String finalName = dedupeName(targetDirId, displayName);
-        if (extensionOf(finalName).isEmpty()) finalName = finalName + ".mp4";
+        if (extensionOf(finalName).isEmpty()) finalName = finalName + "." + WatermarkFileCodec.EXTENSION;
         String extension = extensionOf(finalName);
         String fileId = IdGenerator.get_id_by_time();
         String realFileName = fileId + "." + extension;
@@ -387,11 +390,8 @@ public class FileImporter {
                         .put(realFileName).put(realIconName).put(System.currentTimeMillis())
                         .put(getSeqNumberFromString(baseNameOf(finalName))).put(0L).put(extension)
                         .put("").put(""));
-        // 水印数据先落库（content_hash 录完再补），崩溃后修复也能带上水印
-        dbHelper.db_run("INSERT OR REPLACE INTO file_watermark (file_id,data,content_hash,created) VALUES (?,?,?,?)",
-                new JSONArray().put(fileId).put(watermarkJson == null ? "{}" : watermarkJson.toString())
-                        .put("").put(System.currentTimeMillis()));
-        return new VideoTicket(fileId, realFileName, target, finalName, targetDirId);
+        // .wmp4 专用格式：水印数据只写进文件尾部，数据库不保存任何水印信息
+        return new VideoTicket(fileId, realFileName, target, finalName, targetDirId, watermarkJson);
     }
 
     /**
@@ -415,7 +415,7 @@ public class FileImporter {
             //noinspection ResultOfMethodCallIgnored
             iconDir.mkdirs();
         }
-        byte[] thumb = watermarkThumbnail(ticket.fileId, ticket.targetFile);
+        byte[] thumb = watermarkThumbnail(ticket.watermark, ticket.targetFile);
         String iconName = ticket.fileId + "_icon.png";
         if (thumb != null && saveFile(thumb, new File(iconDir, iconName))) {
             iconWritten = iconName;
@@ -423,15 +423,16 @@ public class FileImporter {
 
         dbHelper.db_run("UPDATE pending_file SET size = ?, real_icon_name = ? WHERE id = ?",
                 new JSONArray().put(size).put(iconWritten == null ? JSONObject.NULL : iconWritten).put(ticket.fileId));
-        dbHelper.db_run("UPDATE file_watermark SET content_hash = ? WHERE file_id = ?",
-                new JSONArray().put(hash).put(ticket.fileId));
-
-        // 按视频真实关键帧重排水印时间轴：关键帧写全量快照，帧间只留变化（便于跳转时快速还原）
+        // 按关键帧重排时间轴 → 把水印 JSON 写进 .wmp4 文件尾部（数据库不再保存水印信息）
         try {
-            rebuildWatermarkTimeline(ticket.fileId, ticket.targetFile);
+            String wmJson = rebuildWatermarkTimeline(ticket.watermark, ticket.targetFile);
+            if (wmJson != null) {
+                WatermarkFileCodec.writeTrailer(ticket.targetFile, WatermarkFileCodec.withContentHash(ticket.targetFile, wmJson));
+            }
         } catch (Exception e) {
-            Log.e(TAG, "按关键帧重排水印时间轴失败", e);
+            Log.e(TAG, "写入 .wmp4 水印数据失败", e);
         }
+        size = ticket.targetFile.length();
 
         promote(ticket.fileId);
         return buildRecord(ticket.fileId, ticket.displayName, ticket.parentDirId, ticket.realFileName,
@@ -444,7 +445,6 @@ public class FileImporter {
         if (ticket == null) return;
         try {
             dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(ticket.fileId));
-            dbHelper.db_run("DELETE FROM file_watermark WHERE file_id = ?", new JSONArray().put(ticket.fileId));
         } catch (Exception e) {
             Log.e(TAG, "回滚录像记录失败", e);
         }
@@ -492,12 +492,11 @@ public class FileImporter {
      * 视频缩略图：**首帧先把水印合成上去**，再缩到 256px 存 PNG。
      * 合成失败/没有水印数据时退回无水印首帧，不阻塞入库。
      */
-    private byte[] watermarkThumbnail(String fileId, File videoFile) {
+    private byte[] watermarkThumbnail(JSONObject wm, File videoFile) {
         Bitmap frame = videoFirstFrame(videoFile);
         if (frame == null) return null;
         Bitmap composed = frame;
         try {
-            JSONObject wm = loadWatermarkJson(fileId);
             if (wm != null) {
                 composed = WatermarkBitmapRenderer.composeOnto(frame, wm);
             }
@@ -539,38 +538,20 @@ public class FileImporter {
         }
     }
 
-    /** 读取该视频的水印数据（没有/空数据返回 null）。 */
-    private JSONObject loadWatermarkJson(String fileId) {
-        try {
-            JSONArray rows = dbHelper.db_all("SELECT data FROM file_watermark WHERE file_id = ?",
-                    new JSONArray().put(fileId));
-            if (rows.length() == 0) return null;
-            String data = rows.getJSONObject(0).optString("data", "");
-            if (data == null || data.isEmpty() || "{}".equals(data)) return null;
-            return new JSONObject(data);
-        } catch (Exception e) {
-            return null;
-        }
-    }
     /**
      * 把录制期的水印时间轴重排为「只在关键帧上存完整快照」，帧间不留任何数据。
      *
      * <p>和字幕一个道理：播放/拖动到哪个位置，就用"上一个关键帧"那条完整快照；
      * 这样跳转播放永远有权威基准，不用从 0 逐条累加，也不会因为时间戳漂移而错位。
      */
-    private void rebuildWatermarkTimeline(String fileId, File videoFile) throws Exception {
-        JSONArray rows = dbHelper.db_all("SELECT data FROM file_watermark WHERE file_id = ?",
-                new JSONArray().put(fileId));
-        if (rows.length() == 0) return;
-        String data = rows.getJSONObject(0).optString("data", "");
-        if (data == null || data.isEmpty() || "{}".equals(data)) return;
-        JSONObject wm = new JSONObject(data);
-        if (wm.optBoolean("burned", false)) return;
+    private String rebuildWatermarkTimeline(JSONObject wm, File videoFile) throws Exception {
+        if (wm == null) return null;
+        if (wm.optBoolean("burned", false)) return null;
         JSONArray oldSegments = wm.optJSONArray("segments");
-        if (oldSegments == null || oldSegments.length() == 0) return;
+        if (oldSegments == null || oldSegments.length() == 0) return null;
 
         long[] keyFrames = readKeyFrameTimesMs(videoFile);
-        if (keyFrames == null || keyFrames.length == 0) return;
+        if (keyFrames == null || keyFrames.length == 0) return null;
 
         // 原始采样记录按时间排序（录制时是"首条全量 + 后续只记变化"）
         java.util.List<JSONObject> records = new java.util.ArrayList<>();
@@ -616,9 +597,7 @@ public class FileImporter {
         wm.put("keyframes", kf);
         wm.put("timeline", "keyframe");
 
-        dbHelper.db_run("UPDATE file_watermark SET data = ? WHERE file_id = ?",
-                new JSONArray().put(wm.toString()).put(fileId));
-        Log.i(TAG, "水印时间轴已重排为关键帧快照: " + keyFrames.length + " 条");
+        return wm.toString();
     }
 
     /** 读视频的关键帧时间（毫秒）。 */

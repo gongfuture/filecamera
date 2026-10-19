@@ -155,10 +155,12 @@ public class VideoPlayerActivity extends AppCompatActivity {
         }
 
         // 1) 读水印数据并做防篡改校验（指纹不一致就不叠印）
-        watermark = loadWatermark(fileId);
+        watermark = loadWatermark(fileId, videoFile);
         if (watermark != null) {
             String expect = watermark.optString("_content_hash", "");
-            String actual = sha256(videoFile);
+            String actual = WatermarkFileCodec.isWatermarkVideo(videoFile)
+                    ? WatermarkFileCodec.contentHash(videoFile)
+                    : sha256(videoFile);
             if (expect.isEmpty() || !expect.equalsIgnoreCase(actual)) {
                 Log.w(TAG, "水印数据与视频指纹不匹配，跳过叠印");
                 watermark = null;
@@ -524,7 +526,21 @@ public class VideoPlayerActivity extends AppCompatActivity {
     // region --- 水印数据 ---
 
     /** 读取 file_watermark；返回的 JSON 里额外带上 _content_hash 便于校验。 */
-    private JSONObject loadWatermark(String fileId) {
+    private JSONObject loadWatermark(String fileId, File videoFile) {
+        // .wmp4：水印数据只存在文件尾部（数据库不保存），直接读文件
+        if (WatermarkFileCodec.isWatermarkVideo(videoFile)) {
+            try {
+                String json = WatermarkFileCodec.readTrailer(videoFile);
+                if (json != null && !json.isEmpty()) {
+                    JSONObject wm = new JSONObject(json);
+                    wm.put("_content_hash", wm.optString("content_hash", ""));
+                    return wm;
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "读取 .wmp4 水印数据失败", e);
+            }
+            return null;
+        }
         if (fileId == null || fileId.isEmpty()) return null;
         try {
             JSONArray row = DatabaseHelper.getInstance(this).db_all(
