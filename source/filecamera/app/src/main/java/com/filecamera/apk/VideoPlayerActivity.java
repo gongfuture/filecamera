@@ -187,8 +187,9 @@ public class VideoPlayerActivity extends AppCompatActivity {
     // region --- 水印渲染 ---
 
     /**
-     * 按水印数据构建视图。结构与相机端一致：
-     * header（蓝底 + 图标 + 标题）/ body（半透明白底 + "名称：值" 行）/ foot（蓝底 + 行）。
+     * 按水印数据构建视图。**绘制方式与相机端保持一致**：
+     * 整块水印只裁剪一次圆角（四角半径来自配置 radius），header/body/foot 之间是直边；
+     * 各分区只负责自己的背景色和内边距，不再各自圆角。
      * 尺寸以「播放区宽度 / 360」为密度基准，和相机端 360dp 设计宽度对齐。
      */
     private void buildWatermarkViews(JSONObject wm) {
@@ -197,8 +198,12 @@ public class VideoPlayerActivity extends AppCompatActivity {
         float density = baseWidth / DESIGN_WIDTH;
         float scale = (float) wm.optDouble("scale", 0.75);
 
+        // 与相机一致：整块水印统一裁一次圆角（复用相机那边的 ClippingFrameLayout）
+        CameraActivity.ClippingFrameLayout clip = new CameraActivity.ClippingFrameLayout(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        clip.addView(root, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         JSONObject header = wm.optJSONObject("header");
         if (header != null) {
@@ -212,6 +217,14 @@ public class VideoPlayerActivity extends AppCompatActivity {
         if (foot != null) {
             root.addView(buildSection(foot, density, scale, false));
         }
+
+        // 四角半径：配置里是 [左上, 右上, 右下, 左下]，同一个值给 X/Y
+        JSONArray radiusArr = wm.optJSONArray("radius");
+        float rtl = (float) (radiusArr != null ? radiusArr.optDouble(0, 8) : 8) * density;
+        float rtr = (float) (radiusArr != null ? radiusArr.optDouble(1, 8) : 8) * density;
+        float rbr = (float) (radiusArr != null ? radiusArr.optDouble(2, 8) : 8) * density;
+        float rbl = (float) (radiusArr != null ? radiusArr.optDouble(3, 8) : 8) * density;
+        clip.setCornerRadiiPx(new float[]{rtl, rtl, rtr, rtr, rbr, rbr, rbl, rbl});
 
         // 位置：以 360dp 设计宽度为基准，换算成像素边距
         JSONObject pos = wm.optJSONObject("position");
@@ -239,19 +252,15 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 lp.topMargin = 0;
             }
         }
-        overlay.addView(root, lp);
+        overlay.addView(clip, lp);
     }
 
-    /** 构建一个水印分区（header/body/foot）。 */
+    /** 构建一个水印分区（header/body/foot）：只管背景色与内边距，圆角由外层统一裁剪。 */
     private LinearLayout buildSection(JSONObject section, float density, float scale, boolean isHeader) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(readColor(section, "background", isHeader ? 0xFF1B4493 : 0xAAF8FAFC));
-        float radius = Math.round(8 * density);
-        bg.setCornerRadius(radius);
-        box.setBackground(bg);
+        // 与相机一致：分区背景是纯色（不做圆角），整块圆角由 ClippingFrameLayout 负责
+        box.setBackgroundColor(readColor(section, "background", isHeader ? 0xFF1B4493 : 0xAAF8FAFC));
 
         int padH = Math.round(10 * density);
         int padV = Math.round(4 * density);
