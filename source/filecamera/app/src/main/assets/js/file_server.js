@@ -62,6 +62,10 @@ function createSvgBlobUrl(svgContent) {
 function isImageFile(filename) {
     return /\.(jpg|jpeg|png|gif|bmp|webp|svg)$/i.test(filename);
 }
+// 可播放的视频（点开进原生播放页，水印由同记录的 file_watermark 数据叠加）
+function isVideoFile(filename) {
+    return /\.(mp4|m4v|mov|3gp|mkv|webm)$/i.test(filename);
+}
 let dir_icon_text = '<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg class="icon" style="width: 5em; height: 5em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"><path d="M977.6 238.4c-9.6-9.6-21.6-14.4-33.6-14.4H472L366.4 118.4c-4-4-9.6-8-15.2-10.4-6.4-2.4-12-4-18.4-4H80c-12 0-24.8 4.8-33.6 14.4S32 140 32 152v280h960V272c0-12-4.8-24.8-14.4-33.6z" fill="#434a54" /><path d="M944 912H80c-26.4 0-48-21.6-48-48V352h960v512c0 26.4-21.6 48-48 48z" fill="#656d78" /> </svg>'
 let file_icon_text = '<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg class="icon" style="width: 5em; height: 5em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"><path d="M160 32c-12 0-24.8 4.8-33.6 14.4S112 68 112 80v864c0 12 4.8 24.8 14.4 33.6 9.6 9.6 21.6 14.4 33.6 14.4h704c12 0 24.8-4.8 33.6-14.4 9.6-9.6 14.4-21.6 14.4-33.6V304L640 32H160z" fill="#E5E5E5" /><path d="M912 304H688c-12 0-24.8-4.8-33.6-14.4-9.6-8.8-14.4-21.6-14.4-33.6V32l272 272z" fill="#CCCCCC" /></svg>'
 
@@ -1053,6 +1057,13 @@ async function open_dir_or_file(td){
 		}else{
 			if(isImageFile(td.dataset.name)){
 				await load_img(td.dataset.name)
+			}else if(isVideoFile(td.dataset.name)){
+				// 视频：交给原生播放页，水印由该记录的 file_watermark 数据在播放时叠加
+				await callAndroidMethod(window.FilePicker, 'openVideo', {
+					id: td.dataset.id,
+					name: td.dataset.name,
+					real_file_name: td.dataset.real_file_name
+				});
 			}
 		}
 	} catch (error) {

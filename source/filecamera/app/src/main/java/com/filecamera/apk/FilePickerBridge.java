@@ -209,6 +209,26 @@ public class FilePickerBridge {
         }).start();
     }
 
+    /**
+     * 打开视频播放页（播放干净视频，按 file_watermark 里的水印数据叠加水印）。
+     * 参数: { id: 文件id, name: 显示名, real_file_name: app_data 里的真实文件名 }
+     */
+    @JavascriptInterface
+    public void openVideo(String task_id, String json_data) {
+        try {
+            JSONObject params = new JSONObject(json_data);
+            Intent intent = new Intent(activity, VideoPlayerActivity.class);
+            intent.putExtra(VideoPlayerActivity.EXTRA_FILE_ID, params.optString("id", ""));
+            intent.putExtra(VideoPlayerActivity.EXTRA_FILE_NAME, params.optString("name", ""));
+            intent.putExtra(VideoPlayerActivity.EXTRA_REAL_FILE_NAME, params.optString("real_file_name", ""));
+            activity.startActivity(intent);
+            call_js_callback(task_id, true, new JSONObject(), null);
+        } catch (Exception e) {
+            Log.e(TAG, "Error in openVideo()", e);
+            call_js_callback(task_id, false, null, "打开视频失败: " + e.getMessage());
+        }
+    }
+
     @JavascriptInterface
     public void shareFile(String task_id, String json_data) {
         new Thread(() -> {
