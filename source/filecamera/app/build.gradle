@@ -66,6 +66,10 @@ dependencies {
     def media3_version = "1.4.1"
     implementation "androidx.media3:media3-exoplayer:${media3_version}"
     implementation "androidx.media3:media3-ui:${media3_version}"
+    // 烧录水印：离线转码 + 位图叠加
+    implementation "androidx.media3:media3-transformer:${media3_version}"
+    implementation "androidx.media3:media3-effect:${media3_version}"
+    implementation "androidx.media3:media3-common:${media3_version}"
 
     // 测试库 (版本已更新)
     testImplementation 'junit:junit:4.13.2'

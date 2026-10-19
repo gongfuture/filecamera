@@ -59,6 +59,17 @@ public final class WatermarkBitmapRenderer {
         return output;
     }
 
+    /**
+     * 生成"整帧透明水印层"：尺寸与视频帧一致，水印画在数据指定的位置。
+     * 烧录时把它作为位图叠加层合成到每一帧上。
+     */
+    public static Bitmap renderFullFrameOverlay(int width, int height, JSONObject wm) {
+        if (width <= 0 || height <= 0) return null;
+        Bitmap overlay = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(overlay);
+        drawWatermark(canvas, width, height, wm);
+        return overlay;
+    }
     /** 把水印按画面宽高画到已有画布上（画面尺寸用于换算密度与定位）。 */
     public static void drawWatermark(Canvas canvas, int pictureWidth, int pictureHeight, JSONObject wm) {
         if (canvas == null || wm == null || pictureWidth <= 0 || pictureHeight <= 0) return;

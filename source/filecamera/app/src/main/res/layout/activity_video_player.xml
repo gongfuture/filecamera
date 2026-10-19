@@ -152,6 +152,16 @@
                     android:textSize="12sp" />
 
                 <ImageButton
+                    android:id="@+id/btn_burn"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="4dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="烧录水印"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_player_burn" />
+
+                <ImageButton
                     android:id="@+id/btn_volume_toggle"
                     android:layout_width="36dp"
                     android:layout_height="36dp"
@@ -162,6 +172,33 @@
                     android:src="@drawable/ic_player_volume" />
             </LinearLayout>
         </LinearLayout>
+    </LinearLayout>
+
+    <!-- 烧录进度遮罩 -->
+    <LinearLayout
+        android:id="@+id/burn_mask"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#CC000000"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/burn_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:max="100" />
+
+        <TextView
+            android:id="@+id/burn_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="正在烧录水印…"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
     </LinearLayout>
 
 </FrameLayout>
