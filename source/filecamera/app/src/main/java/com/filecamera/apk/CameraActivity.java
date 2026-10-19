@@ -265,7 +265,7 @@ public class CameraActivity extends AppCompatActivity {
     private int targetAspectRatio = AspectRatio.RATIO_16_9;
     // 模式选择（普通/自拍）两个标签
     private TextView modeTabPhoto;
-    private TextView switchCameraButton;
+    private ImageButton switchCameraButton;
     private int currentLensFacing = CameraSelector.LENS_FACING_BACK; // 当前摄像头方向
 
     // [Refactored] 水印数据和视图的单一来源
@@ -539,7 +539,8 @@ public class CameraActivity extends AppCompatActivity {
             modeTabVideo.setTypeface(null, isVideoMode ? Typeface.BOLD : Typeface.NORMAL);
         }
         if (switchCameraButton != null) {
-            switchCameraButton.setText(isBack ? "后置" : "自拍");
+            // 前置(自拍)时图标金色，后置时白色，用来表示当前镜头
+            switchCameraButton.setColorFilter(isBack ? Color.WHITE : ContextCompat.getColor(this, R.color.icon_gold));
         }
     }
 
