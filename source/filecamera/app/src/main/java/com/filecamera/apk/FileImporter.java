@@ -426,6 +426,13 @@ public class FileImporter {
         dbHelper.db_run("UPDATE file_watermark SET content_hash = ? WHERE file_id = ?",
                 new JSONArray().put(hash).put(ticket.fileId));
 
+        // 按视频真实关键帧重排水印时间轴：关键帧写全量快照，帧间只留变化（便于跳转时快速还原）
+        try {
+            rebuildWatermarkTimeline(ticket.fileId, ticket.targetFile);
+        } catch (Exception e) {
+            Log.e(TAG, "按关键帧重排水印时间轴失败", e);
+        }
+
         promote(ticket.fileId);
         return buildRecord(ticket.fileId, ticket.displayName, ticket.parentDirId, ticket.realFileName,
                 iconWritten, System.currentTimeMillis(), getSeqNumberFromString(baseNameOf(ticket.displayName)),
@@ -545,6 +552,116 @@ public class FileImporter {
             return null;
         }
     }
+    /**
+     * 把录制期的水印时间轴重排为「只在关键帧上存完整快照」，帧间不留任何数据。
+     *
+     * <p>和字幕一个道理：播放/拖动到哪个位置，就用"上一个关键帧"那条完整快照；
+     * 这样跳转播放永远有权威基准，不用从 0 逐条累加，也不会因为时间戳漂移而错位。
+     */
+    private void rebuildWatermarkTimeline(String fileId, File videoFile) throws Exception {
+        JSONArray rows = dbHelper.db_all("SELECT data FROM file_watermark WHERE file_id = ?",
+                new JSONArray().put(fileId));
+        if (rows.length() == 0) return;
+        String data = rows.getJSONObject(0).optString("data", "");
+        if (data == null || data.isEmpty() || "{}".equals(data)) return;
+        JSONObject wm = new JSONObject(data);
+        if (wm.optBoolean("burned", false)) return;
+        JSONArray oldSegments = wm.optJSONArray("segments");
+        if (oldSegments == null || oldSegments.length() == 0) return;
+
+        long[] keyFrames = readKeyFrameTimesMs(videoFile);
+        if (keyFrames == null || keyFrames.length == 0) return;
+
+        // 原始采样记录按时间排序（录制时是"首条全量 + 后续只记变化"）
+        java.util.List<JSONObject> records = new java.util.ArrayList<>();
+        for (int i = 0; i < oldSegments.length(); i++) {
+            JSONObject seg = oldSegments.optJSONObject(i);
+            if (seg != null) records.add(seg);
+        }
+        records.sort((a, b) -> Long.compare(a.optLong("from_ms", 0), b.optLong("from_ms", 0)));
+
+        // 每个关键帧一条完整快照（把该时刻之前的变化折叠进来）
+        JSONArray rebuilt = new JSONArray();
+        java.util.LinkedHashMap<String, String> state = new java.util.LinkedHashMap<>();
+        String pos = wm.optString("pos", "");
+        int cursor = 0;
+        for (long keyTime : keyFrames) {
+            while (cursor < records.size() && records.get(cursor).optLong("from_ms", 0) <= keyTime) {
+                JSONObject seg = records.get(cursor);
+                JSONObject values = seg.optJSONObject("values");
+                if (values != null) {
+                    java.util.Iterator<String> keys = values.keys();
+                    while (keys.hasNext()) {
+                        String k = keys.next();
+                        state.put(k, values.optString(k, ""));
+                    }
+                }
+                if (seg.has("pos")) pos = seg.optString("pos", pos);
+                cursor++;
+            }
+            JSONObject key = new JSONObject();
+            key.put("from_ms", keyTime);
+            JSONObject snapshot = new JSONObject();
+            for (java.util.Map.Entry<String, String> e : state.entrySet()) {
+                snapshot.put(e.getKey(), e.getValue());
+            }
+            key.put("values", snapshot);
+            if (!pos.isEmpty()) key.put("pos", pos);
+            rebuilt.put(key);
+        }
+
+        wm.put("segments", rebuilt);
+        JSONArray kf = new JSONArray();
+        for (long keyTime : keyFrames) kf.put(keyTime);
+        wm.put("keyframes", kf);
+        wm.put("timeline", "keyframe");
+
+        dbHelper.db_run("UPDATE file_watermark SET data = ? WHERE file_id = ?",
+                new JSONArray().put(wm.toString()).put(fileId));
+        Log.i(TAG, "水印时间轴已重排为关键帧快照: " + keyFrames.length + " 条");
+    }
+
+    /** 读视频的关键帧时间（毫秒）。 */
+    static long[] readKeyFrameTimesMs(File videoFile) {
+        android.media.MediaExtractor extractor = new android.media.MediaExtractor();
+        try {
+            extractor.setDataSource(videoFile.getAbsolutePath());
+            int videoTrack = -1;
+            for (int i = 0; i < extractor.getTrackCount(); i++) {
+                android.media.MediaFormat format = extractor.getTrackFormat(i);
+                String mime = format.getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/")) {
+                    videoTrack = i;
+                    break;
+                }
+            }
+            if (videoTrack < 0) return null;
+            extractor.selectTrack(videoTrack);
+            java.util.List<Long> times = new java.util.ArrayList<>();
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(64 * 1024);
+            while (true) {
+                int size = extractor.readSampleData(buffer, 0);
+                if (size < 0) break;
+                long ptsUs = extractor.getSampleTime();
+                if ((extractor.getSampleFlags() & android.media.MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                    times.add(Math.max(0, ptsUs / 1000));
+                }
+                if (!extractor.advance()) break;
+            }
+            long[] result = new long[times.size()];
+            for (int i = 0; i < times.size(); i++) result[i] = times.get(i);
+            return result;
+        } catch (Exception e) {
+            Log.e(TAG, "读取关键帧失败", e);
+            return null;
+        } finally {
+            try {
+                extractor.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     /** 文件内容 SHA-256（播放前用它校验水印数据是否与视频匹配）。 */
     static String sha256(File file) {
         try (InputStream in = new FileInputStream(file)) {
