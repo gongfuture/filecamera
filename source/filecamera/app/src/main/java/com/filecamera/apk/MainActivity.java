@@ -113,77 +113,180 @@ public class MainActivity extends AppCompatActivity {
             finishImport("");
         }
     }
+    // 导入进度遮罩（原生侧自己显示/更新/隐藏，前端只管等结果）
+    private android.view.View importOverlay;
+    private android.widget.TextView importOverlayText;
+    private android.widget.ProgressBar importOverlayBar;
+    private long lastOverlayUpdateMs = 0;
 
+    private void ensureImportOverlay() {
+        if (importOverlay != null) return;
+        android.widget.FrameLayout root = new android.widget.FrameLayout(this);
+        root.setBackgroundColor(0xCC000000);
+        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+        box.setOrientation(android.widget.LinearLayout.VERTICAL);
+        box.setGravity(android.view.Gravity.CENTER);
+        android.widget.FrameLayout.LayoutParams boxLp = new android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        boxLp.gravity = android.view.Gravity.CENTER;
+        importOverlayText = new android.widget.TextView(this);
+        importOverlayText.setTextColor(0xFFFFFFFF);
+        importOverlayText.setTextSize(15);
+        importOverlayText.setGravity(android.view.Gravity.CENTER);
+        importOverlayBar = new android.widget.ProgressBar(this);
+        android.widget.LinearLayout.LayoutParams barLp = new android.widget.LinearLayout.LayoutParams(
+                Math.round(220 * getResources().getDisplayMetrics().density),
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        barLp.topMargin = Math.round(16 * getResources().getDisplayMetrics().density);
+        box.addView(importOverlayText);
+        box.addView(importOverlayBar, barLp);
+        root.addView(box, boxLp);
+        root.setClickable(true);   // 挡住所有操作
+        root.setVisibility(android.view.View.GONE);
+        addContentView(root, new android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT));
+        importOverlay = root;
+    }
+
+    private void showImportOverlay(String text) {
+        runOnUiThread(() -> {
+            ensureImportOverlay();
+            importOverlayText.setText(text);
+            importOverlayBar.setIndeterminate(true);
+            importOverlay.setVisibility(android.view.View.VISIBLE);
+        });
+    }
+
+    /** 进度按 1 秒节流刷新，避免高频 setText 拖慢导入。 */
+    private void updateImportOverlay(int done, int total, String name) {
+        long now = System.currentTimeMillis();
+        if (now - lastOverlayUpdateMs < 1000 && done != total) return;
+        lastOverlayUpdateMs = now;
+        runOnUiThread(() -> {
+            if (importOverlay == null) return;
+            importOverlayBar.setIndeterminate(false);
+            importOverlayBar.setMax(Math.max(1, total));
+            importOverlayBar.setProgress(done);
+            importOverlayText.setText("导入中 " + done + "/" + total + (name == null ? "" : "：" + name));
+        });
+    }
+
+    private void hideImportOverlay() {
+        runOnUiThread(() -> {
+            if (importOverlay != null) importOverlay.setVisibility(android.view.View.GONE);
+        });
+    }
+
+    /** 选完文件：后台线程导入（主线程只负责刷遮罩），完成后再回调前端。 */
     private void runImportFiles(java.util.List<android.net.Uri> uris) {
         if (uris == null || uris.isEmpty()) {
             finishImport("");
             return;
         }
-        org.json.JSONArray records = new org.json.JSONArray();
-        FileImporter importer = new FileImporter(this);
-        for (android.net.Uri uri : uris) {
-            try {
+        final java.util.List<android.net.Uri> list = new java.util.ArrayList<>(uris);
+        showImportOverlay("准备导入…");
+        new Thread(() -> {
+            org.json.JSONArray records = new org.json.JSONArray();
+            FileImporter importer = new FileImporter(this);
+            int total = list.size();
+            int done = 0;
+            for (android.net.Uri uri : list) {
                 String name = queryDisplayName(uri);
-                org.json.JSONObject record = importer.importFromContentUri(uri.toString(), pendingImportDirId, name);
-                if (record != null) records.put(record);
-            } catch (Exception e) {
-                android.util.Log.e("MainActivity", "导入文件失败: " + uri, e);
+                done++;
+                updateImportOverlay(done, total, name);
+                try {
+                    org.json.JSONObject record = importer.importFromContentUri(uri.toString(), pendingImportDirId, name);
+                    if (record != null) records.put(record);
+                } catch (Exception e) {
+                    android.util.Log.e("MainActivity", "导入文件失败: " + uri, e);
+                }
             }
-        }
-        finishImportWithRecords(records);
+            hideImportOverlay();
+            finishImportWithRecords(records);
+        }, "import-files").start();
     }
 
+    /** 选完目录：后台线程递归导入。 */
     private void runImportDir(android.net.Uri treeUri) {
         if (treeUri == null) {
             finishImport("");
             return;
         }
-        org.json.JSONArray records = new org.json.JSONArray();
         try {
             getContentResolver().takePersistableUriPermission(treeUri,
                     android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (Exception ignored) {
         }
-        try {
-            androidx.documentfile.provider.DocumentFile root =
-                    androidx.documentfile.provider.DocumentFile.fromTreeUri(this, treeUri);
-            if (root != null) {
-                importTree(root, pendingImportDirId, new FileImporter(this), records);
+        showImportOverlay("正在扫描文件夹…");
+        new Thread(() -> {
+            org.json.JSONArray records = new org.json.JSONArray();
+            try {
+                androidx.documentfile.provider.DocumentFile root =
+                        androidx.documentfile.provider.DocumentFile.fromTreeUri(this, treeUri);
+                if (root != null) {
+                    java.util.List<androidx.documentfile.provider.DocumentFile> files = new java.util.ArrayList<>();
+                    collectFiles(root, files);          // 先扫出所有文件，才能显示 n/N
+                    int total = files.size();
+                    int done = 0;
+                    java.util.Map<String, String> dirIdCache = new java.util.HashMap<>();
+                    FileImporter importer = new FileImporter(this);
+                    for (androidx.documentfile.provider.DocumentFile file : files) {
+                        done++;
+                        updateImportOverlay(done, total, file.getName());
+                        try {
+                            String parentId = ensureParentDir(file, pendingImportDirId, dirIdCache);
+                            org.json.JSONObject record = importer.importFromContentUri(
+                                    file.getUri().toString(), parentId, file.getName());
+                            if (record != null) records.put(record);
+                        } catch (Exception e) {
+                            android.util.Log.e("MainActivity", "导入文件失败: " + file.getName(), e);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                android.util.Log.e("MainActivity", "导入文件夹失败", e);
             }
-        } catch (Exception e) {
-            android.util.Log.e("MainActivity", "导入文件夹失败", e);
-        }
-        finishImportWithRecords(records);
+            hideImportOverlay();
+            finishImportWithRecords(records);
+        }, "import-dir").start();
     }
 
-    /** 递归导入：目录先建库记录，文件走 FileImporter。 */
-    private void importTree(androidx.documentfile.provider.DocumentFile node, String parentDirId,
-                            FileImporter importer, org.json.JSONArray records) {
+    /** 递归收集所有文件（跳过点开头的隐藏项）。 */
+    private void collectFiles(androidx.documentfile.provider.DocumentFile node,
+                              java.util.List<androidx.documentfile.provider.DocumentFile> out) {
         androidx.documentfile.provider.DocumentFile[] children = node.listFiles();
         if (children == null) return;
-        DatabaseHelper db = DatabaseHelper.getInstance(this);
         for (androidx.documentfile.provider.DocumentFile child : children) {
             String name = child.getName();
             if (name == null || name.startsWith(".")) continue;
             if (child.isDirectory()) {
-                String childId = IdGenerator.get_id_by_time();
-                try {
-                    db.db_run("INSERT INTO dir (id, name, parent_dir_id, type, createtime, filesortmode, dirsortmode, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            new org.json.JSONArray().put(childId).put(name).put(parentDirId)
-                                    .put("dir").put(System.currentTimeMillis()).put(2).put(2).put(0L));
-                    importTree(child, childId, importer, records);
-                } catch (Exception e) {
-                    android.util.Log.e("MainActivity", "创建目录失败: " + name, e);
-                }
+                collectFiles(child, out);
             } else {
-                try {
-                    org.json.JSONObject record = importer.importFromContentUri(child.getUri().toString(), parentDirId, name);
-                    if (record != null) records.put(record);
-                } catch (Exception e) {
-                    android.util.Log.e("MainActivity", "导入文件失败: " + name, e);
-                }
+                out.add(child);
             }
         }
+    }
+
+    /** 确保文件的父目录在库里存在，返回父目录 id。 */
+    private String ensureParentDir(androidx.documentfile.provider.DocumentFile file,
+                                   String rootDirId, java.util.Map<String, String> cache) throws Exception {
+        androidx.documentfile.provider.DocumentFile parent = file.getParentFile();
+        if (parent == null) return rootDirId;
+        String key = parent.getUri().toString();
+        String cached = cache.get(key);
+        if (cached != null) return cached;
+        String parentId = ensureParentDir(parent, rootDirId, cache);
+        String name = parent.getName();
+        if (name == null) name = "文件夹";
+        String dirId = IdGenerator.get_id_by_time();
+        DatabaseHelper.getInstance(this).db_run(
+                "INSERT INTO dir (id, name, parent_dir_id, type, createtime, filesortmode, dirsortmode, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                new org.json.JSONArray().put(dirId).put(name).put(parentId)
+                        .put("dir").put(System.currentTimeMillis()).put(2).put(2).put(0L));
+        cache.put(key, dirId);
+        return dirId;
     }
 
     /** 取文件显示名（拿不到就用 uri 末段）。 */
