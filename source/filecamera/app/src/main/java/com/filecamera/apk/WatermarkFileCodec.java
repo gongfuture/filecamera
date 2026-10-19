@@ -57,15 +57,30 @@ public final class WatermarkFileCodec {
         long size = file.length();
         if (size <= TAIL_SIZE) return null;
         try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
-            raf.seek(size - TAIL_SIZE);
-            byte[] tail = new byte[TAIL_SIZE];
-            raf.readFully(tail);
-            for (int i = 0; i < MAGIC.length; i++) {
-                if (tail[4 + i] != MAGIC[i]) return null;   // 不是 .wmp4 结构
+            // 从文件尾部往前搜魔术字：不假设它紧贴 EOF（录制/系统可能在校验后追加尾包）
+            int window = (int) Math.min(8 * 1024, size);
+            long windowStart = size - window;
+            byte[] buf = new byte[window];
+            raf.seek(windowStart);
+            raf.readFully(buf);
+            int magicPos = -1;
+            for (int i = buf.length - MAGIC.length; i >= 0; i--) {
+                boolean hit = true;
+                for (int k = 0; k < MAGIC.length; k++) {
+                    if (buf[i + k] != MAGIC[k]) {
+                        hit = false;
+                        break;
+                    }
+                }
+                if (hit) {
+                    magicPos = i;
+                    break;
+                }
             }
-            int length = bytesToInt(tail, 0);
-            if (length <= 0 || length > size - TAIL_SIZE) return null;
-            long payloadStart = size - TAIL_SIZE - length;
+            if (magicPos < 4) return null;
+            int length = bytesToInt(buf, magicPos - 4);
+            if (length <= 0) return null;
+            long payloadStart = windowStart + magicPos - 4 - length;
             if (payloadStart < 0) return null;
             raf.seek(payloadStart);
             byte[] payload = new byte[length];

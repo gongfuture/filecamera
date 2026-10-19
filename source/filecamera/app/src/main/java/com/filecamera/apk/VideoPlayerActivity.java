@@ -165,7 +165,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
                     ? WatermarkFileCodec.contentHash(videoFile)
                     : sha256(videoFile);
             if (expect.isEmpty() || !expect.equalsIgnoreCase(actual)) {
-                Log.w(TAG, "水印数据与视频指纹不匹配，跳过叠印");
+                Log.w(TAG, "水印指纹不匹配 expect=" + expect + " actual=" + actual);
                 watermark = null;
                 Toast.makeText(this, "该视频的水印信息与视频不匹配，无法显示水印", Toast.LENGTH_LONG).show();
             }
@@ -551,6 +551,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
         if (WatermarkFileCodec.isWatermarkVideo(videoFile)) {
             try {
                 String json = WatermarkFileCodec.readTrailer(videoFile);
+                Log.i(TAG, ".wmp4 尾部水印数据长度: " + (json == null ? -1 : json.length()));
                 if (json != null && !json.isEmpty()) {
                     JSONObject wm = new JSONObject(json);
                     wm.put("_content_hash", wm.optString("content_hash", ""));
@@ -641,6 +642,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
      */
     private void buildWatermarkViews(JSONObject wm) {
         overlay.removeAllViews();
+        Log.i(TAG, "构建水印视图 sections=" + (wm.has("header") ? "H" : "-") + (wm.has("body") ? "B" : "-") + (wm.has("foot") ? "F" : "-") + " segs=" + (wm.optJSONArray("segments") == null ? 0 : wm.optJSONArray("segments").length()));
         if (pictureWidth <= 0 || pictureHeight <= 0) return;
         float density = pictureWidth / DESIGN_WIDTH;
         float scale = (float) wm.optDouble("scale", 0.75);
