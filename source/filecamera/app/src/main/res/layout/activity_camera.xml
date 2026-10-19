@@ -3,9 +3,10 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="#000000"
     android:orientation="vertical">
 
-    <!-- 显示区域 -->
+    <!-- 取景区域：全宽、尽量占满 -->
     <RelativeLayout
         android:id="@+id/previewContainer"
         android:layout_width="match_parent"
@@ -18,7 +19,6 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <!-- 水印容器 -->
         <LinearLayout
             android:id="@+id/watermarkContainer"
             android:layout_width="wrap_content"
@@ -26,7 +26,6 @@
             android:orientation="vertical"
             android:visibility="gone" />
 
-        <!-- 录像计时：录像时显示在顶部中间 -->
         <TextView
             android:id="@+id/recordingTimer"
             android:layout_width="wrap_content"
@@ -44,17 +43,18 @@
 
     </RelativeLayout>
 
-    <!-- 模式选择区域：普通模式 / 变焦倍数 / 自拍模式 三等分 -->
+    <!-- 底部控制面板：模式、闪光灯/倍率、快门三层 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#DD000000"
-        android:orientation="vertical">
-    <!-- 模式选择区域：左边两个模式标签，变焦按钮居中 -->
-        <!-- 模式栏：三等分（和之前「普通模式 / 1x / 自拍模式」一致的比例） -->
+        android:background="#F20A0A0A"
+        android:orientation="vertical"
+        android:paddingBottom="8dp">
+
+        <!-- 第一层：照相 / 录像 -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="44dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
@@ -63,95 +63,123 @@
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
+                android:fontFamily="sans-serif-medium"
                 android:gravity="center"
-                android:text="照相模式"
-                android:textColor="@color/white"
-                android:textSize="14sp" />
+                android:letterSpacing="0.12"
+                android:text="照相"
+                android:textColor="#8A8A8A"
+                android:textSize="13sp" />
 
-            <TextView
-                android:id="@+id/zoomButton"
-                android:layout_width="0dp"
-                android:layout_height="32dp"
-                android:layout_weight="1"
-                android:layout_marginHorizontal="36dp"
-                android:background="@drawable/zoom_button_background"
-                android:gravity="center"
-                android:text="1x"
-                android:textColor="@color/white"
-                android:textSize="14sp"
-                android:visibility="gone" />
+            <View
+                android:layout_width="1dp"
+                android:layout_height="16dp"
+                android:background="#26FFFFFF" />
 
             <TextView
                 android:id="@+id/modeTabVideo"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
+                android:fontFamily="sans-serif-medium"
                 android:gravity="center"
-                android:text="录像模式"
-                android:textColor="@color/white"
-                android:textSize="14sp" />
+                android:letterSpacing="0.12"
+                android:text="录像"
+                android:textColor="#8A8A8A"
+                android:textSize="13sp" />
 
         </LinearLayout>
 
+        <!-- 第二层：居中双格控制条，等宽等高 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="240dp"
+                android:layout_height="match_parent"
+                android:background="@drawable/zoom_group_background"
+                android:gravity="center"
+                android:orientation="horizontal">
+
+                <ImageButton
+                    android:id="@+id/flashButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="?attr/selectableItemBackground"
+                    android:contentDescription="Flash Mode"
+                    android:padding="12dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_flash_off"
+                    android:visibility="gone"
+                    app:tint="@color/black" />
+
+                <View
+                    android:id="@+id/centerDivider"
+                    android:layout_width="1dp"
+                    android:layout_height="24dp"
+                    android:background="#33000000" />
+
+                <TextView
+                    android:id="@+id/zoomButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="?attr/selectableItemBackground"
+                    android:fontFamily="sans-serif-medium"
+                    android:gravity="center"
+                    android:letterSpacing="0.05"
+                    android:text="1x"
+                    android:textColor="@color/black"
+                    android:textSize="14sp"
+                    android:visibility="gone" />
+
+            </LinearLayout>
+
+        </LinearLayout>
+
+        <!-- 第三层：切换 / 快门 / 退出 -->
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="92dp"
+            android:paddingHorizontal="24dp">
+
+            <ImageButton
+                android:id="@+id/switchCameraButton"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:layout_alignParentStart="true"
+                android:layout_centerVertical="true"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="切换摄像头"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_camera_switch_arrows"
+                app:tint="@color/white" />
+
+            <ImageButton
+                android:id="@+id/captureButton"
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:layout_centerInParent="true"
+                android:background="@drawable/capture_button"
+                android:contentDescription="拍照" />
+
+            <ImageButton
+                android:id="@+id/exitButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_alignParentEnd="true"
+                android:layout_centerVertical="true"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="退出"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_close"
+                app:tint="@color/white" />
+
+        </RelativeLayout>
+
     </LinearLayout>
-
-    <!-- 控制区域 -->
-    <RelativeLayout
-        android:id="@+id/controlArea"
-        android:layout_width="match_parent"
-        android:layout_height="120dp"
-        android:background="#DD000000"
-        android:paddingHorizontal="24dp">
-        <ImageButton
-            android:id="@+id/switchCameraButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_alignParentStart="true"
-            android:layout_centerVertical="true"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="切换摄像头"
-            android:scaleType="center"
-            android:src="@drawable/ic_camera_switch"
-            app:tint="@color/white" />
-
-        <!-- 闪光灯按钮（在切换按钮右边） -->
-        <!-- 前/后摄像头切换（自拍 / 普通） -->
-        <ImageButton
-            android:id="@+id/flashButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_toEndOf="@id/switchCameraButton"
-            android:layout_marginStart="8dp"
-            android:layout_centerVertical="true"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Flash Mode"
-            android:scaleType="center"
-            android:src="@drawable/ic_flash_off"
-            android:visibility="gone"
-            app:tint="@color/icon_gold" />
-
-        <!-- 拍照按钮 -->
-        <ImageButton
-            android:id="@+id/captureButton"
-            android:layout_width="80dp"
-            android:layout_height="80dp"
-            android:layout_centerInParent="true"
-            android:background="@drawable/capture_button"
-            android:contentDescription="拍照" />
-
-        <!-- 退出按钮 -->
-        <ImageButton
-            android:id="@+id/exitButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_alignParentEnd="true"
-            android:layout_centerVertical="true"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="退出"
-            android:scaleType="center"
-            android:src="@drawable/ic_close"
-            app:tint="@color/white" />
-
-    </RelativeLayout>
 
 </LinearLayout>

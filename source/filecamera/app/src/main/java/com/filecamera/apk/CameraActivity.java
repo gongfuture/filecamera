@@ -106,6 +106,7 @@ public class CameraActivity extends AppCompatActivity {
     private ImageButton captureButton;
     private LinearLayout watermarkContainer;
     private ImageButton flashButton;
+    private View centerDivider;
     private ImageButton exitButton;
     // 变焦按钮（位于两个模式标签中间，显示当前倍数，点击弹出倍数选择框）
     private TextView zoomButton;
@@ -433,6 +434,7 @@ public class CameraActivity extends AppCompatActivity {
         previewContainer = findViewById(R.id.previewContainer);
         captureButton = findViewById(R.id.captureButton);
         flashButton = findViewById(R.id.flashButton);
+        centerDivider = findViewById(R.id.centerDivider);
         modeTabPhoto = findViewById(R.id.modeTabPhoto);
         switchCameraButton = findViewById(R.id.switchCameraButton);
         if (switchCameraButton != null) {
@@ -508,25 +510,27 @@ public class CameraActivity extends AppCompatActivity {
         setCaptureButtonAlphaForRecording(false);   // 切模式时同步快门外观（录像=红色内圆）
         updateModeTabHighlight();
         flashButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
+        syncCenterDivider();
         bindCameraUseCases();
     }
 
     /** 照相/录像标签高亮 + 切换按钮文案显示当前镜头。 */
     private void updateModeTabHighlight() {
         int selectedColor = ContextCompat.getColor(this, R.color.icon_gold);
+        int unselectedColor = Color.parseColor("#8A8A8A");
         boolean isBack = currentLensFacing == Camera2Controller.LENS_FACING_BACK;
 
         if (modeTabPhoto != null) {
-            modeTabPhoto.setTextColor(isVideoMode ? Color.WHITE : selectedColor);
+            modeTabPhoto.setTextColor(isVideoMode ? unselectedColor : selectedColor);
             modeTabPhoto.setTypeface(null, isVideoMode ? Typeface.NORMAL : Typeface.BOLD);
         }
         if (modeTabVideo != null) {
-            modeTabVideo.setTextColor(isVideoMode ? Color.parseColor("#FF5252") : Color.WHITE);
+            modeTabVideo.setTextColor(isVideoMode ? selectedColor : unselectedColor);
             modeTabVideo.setTypeface(null, isVideoMode ? Typeface.BOLD : Typeface.NORMAL);
         }
         if (switchCameraButton != null) {
-            // 前置(自拍)时图标金色，后置时白色，用来表示当前镜头
-            switchCameraButton.setColorFilter(isBack ? Color.WHITE : ContextCompat.getColor(this, R.color.icon_gold));
+            // 前置(自拍)时图标蓝色，后置时白色，用来表示当前镜头
+            switchCameraButton.setColorFilter(isBack ? Color.WHITE : selectedColor);
         }
     }
 
@@ -728,6 +732,7 @@ public class CameraActivity extends AppCompatActivity {
             setupZoomButton(minZoom, maxZoom);
             updateModeTabHighlight();
             flashButton.setVisibility(hasFlash && !isVideoMode ? View.VISIBLE : View.GONE);
+            syncCenterDivider();
             updateFlashMode();
         }
 
@@ -809,6 +814,14 @@ public class CameraActivity extends AppCompatActivity {
             camera2Controller.setVideoMode(isVideoMode);
         }
         flashButton.setVisibility(isVideoMode ? View.GONE : flashButton.getVisibility());
+        syncCenterDivider();
+    }
+
+    /** 闪光灯隐藏时，中间那条细分隔线也一起隐藏，保持双按钮组干净。 */
+    private void syncCenterDivider() {
+        if (centerDivider == null || flashButton == null) return;
+        centerDivider.setVisibility(
+                flashButton.getVisibility() == View.VISIBLE ? View.VISIBLE : View.GONE);
     }
 
     private void takePhoto() {
