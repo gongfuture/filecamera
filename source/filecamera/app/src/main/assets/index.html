@@ -400,82 +400,6 @@
 			justify-content: center;
 		}
 
-		/* 选中项里没有视频时，"烧录"置灰不可点 */
-		#hidecontron_child_div span.disabled {
-			opacity: 0.3;
-			pointer-events: none;
-		}
-
-		/* 更多操作：底部动作面板 */
-		#actionsheet {
-			position: fixed;
-			left: 0; right: 0; top: 0; bottom: 0;
-			display: none;
-			align-items: flex-end;
-			background: rgba(0, 0, 0, 0.35);
-			z-index: 60;
-		}
-		#actionsheet.show { display: flex; }
-		#actionsheet_panel {
-			width: 100%;
-			background: var(--secondary-bg);
-			border-top-left-radius: 14px;
-			border-top-right-radius: 14px;
-			box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.14);
-			padding: 8px 6px 6px;
-			animation: actionsheet_up 0.18s ease-out;
-		}
-		@keyframes actionsheet_up {
-			from { transform: translateY(100%); }
-			to { transform: translateY(0); }
-		}
-		#actionsheet_title {
-			text-align: center;
-			font-size: 13px;
-			color: var(--text-secondary);
-			padding: 6px 0 10px;
-			border-bottom: 1px solid var(--border-color);
-		}
-		#actionsheet_grid {
-			display: flex;
-			flex-wrap: wrap;
-			padding: 6px 0 2px;
-		}
-		.actionsheet_item {
-			display: flex;
-			flex-direction: column;
-			align-items: center;
-			justify-content: center;
-			width: 25%;
-			padding: 8px 0;
-		}
-		/* 面板里图标只取图形部分（裁掉 SVG 自带的微型标签），文字用下面的 i 标签 */
-		.actionsheet_item img {
-			width: 24px;
-			height: 27px;
-			object-fit: cover;
-			object-position: top center;
-		}
-		.actionsheet_item i {
-			font-style: normal;
-			font-size: 12px;
-			color: var(--text-secondary);
-			margin-top: 1px;
-		}
-		/* 不适用时置灰：例如多选状态下"重命名" */
-		.actionsheet_item.disabled {
-			opacity: 0.3;
-			pointer-events: none;
-		}
-		#actionsheet_cancel {
-			text-align: center;
-			padding: 11px 0;
-			margin-top: 2px;
-			border-top: 1px solid var(--border-color);
-			color: var(--danger-color);
-			font-size: 14px;
-		}
-
 		#comfirediv {
 			display: flex;
 			width: 100%;
@@ -1991,29 +1915,22 @@
 						<span id="detelebutton">
 							<img src ="dir/img/icon/delete_icon.svg" style='height:90%;pointer-events: none;'/>
 						</span>
+						<span id="renamebutton">
+							<img src ="dir/img/icon/rename_icon.svg" style='height:90%;pointer-events: none;'/>				
+						</span>
 						<span id="sharebutton">
-							<img src ="dir/img/icon/share_icon.svg" style='height:90%;pointer-events: none;'/>
+							<img src ="dir/img/icon/share_icon.svg" style='height:90%;pointer-events: none;'/>				
+						</span>					
+						<span id="movebutton">
+							<img src ="dir/img/icon/move_icon.svg" style='height:90%;pointer-events: none;'/>		
 						</span>
-						<span id="burnbutton" class="disabled">
-							<img src ="dir/img/icon/burn_icon.svg" style='height:90%;pointer-events: none;'/>
+						<span id="copybutton">
+							<img src ="dir/img/icon/copy_icon.svg" style='height:90%;pointer-events: none;'/>
 						</span>
-						<span id="morebutton">
-							<img src ="dir/img/icon/more_icon.svg" style='height:90%;pointer-events: none;'/>
-						</span>
+						<span id="outbutton">
+							<img src ="dir/img/icon/export_icon.svg" style='height:90%;pointer-events: none;'/>
+						</span>	
 					</div>
-			</div>
-			<!-- 更多操作：底部动作面板（重命名/移动/复制/导出） -->
-			<div id="actionsheet">
-				<div id="actionsheet_panel">
-					<div id="actionsheet_title">更多操作</div>
-					<div id="actionsheet_grid">
-						<span class="actionsheet_item" id="sheet_rename"><img src="dir/img/icon/rename_icon.svg"/><i>重命名</i></span>
-						<span class="actionsheet_item" id="sheet_move"><img src="dir/img/icon/move_icon.svg"/><i>移动</i></span>
-						<span class="actionsheet_item" id="sheet_copy"><img src="dir/img/icon/copy_icon.svg"/><i>复制</i></span>
-						<span class="actionsheet_item" id="sheet_out"><img src="dir/img/icon/export_icon.svg"/><i>导出</i></span>
-					</div>
-					<div id="actionsheet_cancel">取消</div>
-				</div>
 			</div>
 			<div id="bottom_controndiv">
 					<input type="file" id="camerainput" style="display: none;" accept="image/*,.for_webview_camera" capture="camera">

@@ -298,10 +298,13 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 			if(!document.getElementById("comfirediv").classList.contains("expanded")){
 				if(selectmap.size == 0){
 					close_opening_menu(hide_menu_set)
+				}else if(selectmap.size == 1){
+					expand_menu(document.getElementById("hidecontrondiv"),hide_menu_set)
+					document.getElementById("renamebutton").style.display = 'flex';
 				}else{
 					expand_menu(document.getElementById("hidecontrondiv"),hide_menu_set)
+					document.getElementById("renamebutton").style.display = 'none';		
 				}
-				refresh_selection_actions()
 			}
 			
 		}
@@ -310,42 +313,47 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 		select_all_click()
 		if(selectmap.size == 0){
 			close_opening_menu(hide_menu_set)
-			close_actionsheet()
+		}else if(selectmap.size == 1){
+			expand_menu(document.getElementById("hidecontrondiv"),hide_menu_set)
+			document.getElementById("renamebutton").style.display = 'flex';
 		}else{
 			expand_menu(document.getElementById("hidecontrondiv"),hide_menu_set)
+			document.getElementById("renamebutton").style.display = 'none';					
 		}	
-		refresh_selection_actions()
 	}else if(document.getElementById("hidecontrondiv").contains(event.target)){
 		close_opening_menu(menu_set)
 		close_opening_menu(hide_menu_set)
 		if(event.target.id == 'detelebutton'){
 			deleteByPaths(selectmap)
-		}else if(event.target.id == 'sharebutton'){
-			await share_selected_files()
-		}else if(event.target.id == 'burnbutton'){
-			await burn_watermark_selected()
-		}else if(event.target.id == 'morebutton'){
-			open_actionsheet()
-		}
-	}else if(document.getElementById("actionsheet").contains(event.target)){
-		const sheet_item = event.target.closest('.actionsheet_item');
-		if(sheet_item){
-			close_actionsheet();
-			if(sheet_item.id == 'sheet_rename'){
-				if(selectmap.size !== 1){
-					await alert_fix("重命名只能针对单个文件或文件夹");
-					return;
+		}else if(event.target.id == 'renamebutton'){
+			rename(当前文件夹路径_arr)
+		}else if(event.target.id =='sharebutton'){
+			let uri = "content://com.filecamera.apk.fileprovider/private_files/app_data/";
+			let uri_arr = [];
+			for(let [name,obj] of selectmap){
+				if(name&&obj.type === 'file'){
+					uri_arr.push({uri:uri+obj.real_file_name,name:name})
 				}
-				await rename(当前文件夹路径_arr)
-			}else if(sheet_item.id == 'sheet_move'){
-				setcomfiremode("move")
-			}else if(sheet_item.id == 'sheet_copy'){
-				setcomfiremode("copy")
-			}else if(sheet_item.id == 'sheet_out'){
-				await export_selected_files()
 			}
-		}else if(event.target.id == 'actionsheet_cancel' || event.target.id == 'actionsheet'){
-			close_actionsheet();
+			await nativeShareFile(uri_arr,true, 'all')
+		}else if(event.target.id == 'movebutton'){
+			setcomfiremode("move")
+		}else if(event.target.id == 'copybutton'){
+			setcomfiremode("copy")
+		}else if(event.target.id == 'outbutton'){
+			let id_set = new Set()
+			for(let [key,value ] of selectmap){
+				id_set.add(value.id)
+			}
+			let id_arr = Array.from(id_set)
+			
+			document.getElementById("loadingoverlay").style.display = "flex"
+			window.updata_load_info("文件导出中......")
+			window.Android.startwakelock()				
+			await exportItems(id_arr);
+			window.Android.endwakelock()
+			document.getElementById("loadingoverlay").style.display = "none";
+			window.updata_load_info("")
 		}
 	}else if(document.getElementById("comfirediv").contains(event.target)){
 		close_opening_menu(menu_set)
@@ -357,101 +365,6 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 		}
 	}
 });
-// ---- 选择操作栏：主操作 + 更多面板 ----
-
-// 选中项里属于"视频"的部分（用于烧录水印）
-function selected_videos(){
-	let list = []
-	for(let [name,obj] of selectmap){
-		if(obj && obj.type === 'file' && /\.(mp4|mov|m4v|3gp)$/i.test(name||'')){
-			list.push({name:name, obj:obj})
-		}
-	}
-	return list
-}
-
-// 按当前选中内容刷新操作栏按钮状态：没有视频时"烧录"置灰
-function refresh_selection_actions(){
-	const burn = document.getElementById('burnbutton');
-	if(!burn) return;
-	if(selected_videos().length > 0){
-		burn.classList.remove('disabled');
-	}else{
-		burn.classList.add('disabled');
-	}
-}
-
-function open_actionsheet(){
-	const sheet = document.getElementById('actionsheet');
-	if(!sheet) return;
-	refresh_selection_actions();
-	// 重命名只对单个条目有意义
-	const rename_item = document.getElementById('sheet_rename');
-	if(rename_item){
-		if(selectmap.size === 1){ rename_item.classList.remove('disabled'); }
-		else{ rename_item.classList.add('disabled'); }
-	}
-	sheet.classList.add('show');
-}
-
-function close_actionsheet(){
-	const sheet = document.getElementById('actionsheet');
-	if(sheet) sheet.classList.remove('show');
-}
-
-// 选中项分享（原操作栏里的分享逻辑）
-async function share_selected_files(){
-	let uri = "content://com.filecamera.apk.fileprovider/private_files/app_data/";
-	let uri_arr = [];
-	for(let [name,obj] of selectmap){
-		if(name && obj.type === 'file'){
-			uri_arr.push({uri:uri+obj.real_file_name, name:name})
-		}
-	}
-	if(uri_arr.length === 0){
-		await alert_fix("请先选择文件");
-		return;
-	}
-	await nativeShareFile(uri_arr, true, 'all')
-}
-
-// 选中项导出（原操作栏里的导出逻辑）
-async function export_selected_files(){
-	let id_set = new Set()
-	for(let [key,value] of selectmap){
-		id_set.add(value.id)
-	}
-	let id_arr = Array.from(id_set)
-	if(id_arr.length === 0){
-		await alert_fix("请先选择文件或文件夹");
-		return;
-	}
-	document.getElementById("loadingoverlay").style.display = "flex"
-	window.updata_load_info("文件导出中......")
-	window.Android.startwakelock()
-	await exportItems(id_arr);
-	window.Android.endwakelock()
-	document.getElementById("loadingoverlay").style.display = "none";
-	window.updata_load_info("")
-}
-
-/**
- * 烧录水印：把选中的视频导出为"带水印的副本"再分享/保存。
- * 水印本身来自同目录的 .wmd 伴生文件；烧录由 Java 层完成（Media3/Tranformer 离线烧，仅导出时发生）。
- * 目前先只做交互骨架，等原生接口就绪后把下面的占位替换为 callAndroidMethod 调用。
- */
-async function burn_watermark_selected(){
-	const videos = selected_videos();
-	if(videos.length === 0){
-		await alert_fix("请先选择视频文件");
-		return;
-	}
-	const ok = await confirm_fix(`将对选中的 ${videos.length} 个视频烧录水印，生成带水印的副本。确定继续？`);
-	if(!ok) return;
-	// TODO(烧录水印): 调用原生 burnWatermark(ids) → 进度 → 完成后刷新列表
-	await alert_fix("烧录水印功能正在接入（将生成带水印的新视频）");
-}
-
 function setcomfiremode(mode){
 	comfiremode = mode
 	source_arr = 当前文件夹路径_arr.slice();
@@ -464,7 +377,6 @@ function setcomfiremode(mode){
 }
 function cancework(){
 	close_opening_menu(comfire_menu_set)
-	close_actionsheet()
 	comfiremode = ""
 	source_arr = []
 	workselectmap.clear()
