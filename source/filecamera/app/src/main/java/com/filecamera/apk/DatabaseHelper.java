@@ -12,8 +12,8 @@ import org.json.JSONObject;
 public class DatabaseHelper extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "backserver.db";
     // v2：新增 pending_file（入库预备表，对现有表零侵入）
-    // v3：新增 file_watermark（视频的水印数据 + 视频内容哈希，用于播放时叠印与防篡改校验）
-    private static final int DATABASE_VERSION = 3;
+    // v4：删除 file_watermark（水印数据改存 .wmp4 文件尾部，数据库不再保存）
+    private static final int DATABASE_VERSION = 4;
 
     private static volatile DatabaseHelper instance;
 
@@ -50,12 +50,6 @@ public class DatabaseHelper extends SQLiteOpenHelper {
                     "tmp_icon_path TEXT)";
 
     /** 视频水印数据表：水印 JSON + 视频内容哈希（播放时叠印，哈希不匹配则不叠印） */
-    private static final String CREATE_FILE_WATERMARK =
-            "CREATE TABLE IF NOT EXISTS file_watermark (" +
-                    "file_id TEXT PRIMARY KEY," +
-                    "data TEXT," +
-                    "content_hash TEXT," +
-                    "created INTEGER)";
 
     @Override
     public void onCreate(SQLiteDatabase db) {
@@ -88,7 +82,6 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         // 入库预备表（v2 新增）
         db.execSQL(CREATE_PENDING_FILE);
         // 视频水印数据表（v3 新增）
-        db.execSQL(CREATE_FILE_WATERMARK);
         // 插入根目录
         db.execSQL("INSERT OR IGNORE INTO dir (id, name, parent_dir_id, type, dirsortmode, filesortmode, createtime) " +
                 "VALUES ('root', '', NULL, 'dir', 2, 2, " + System.currentTimeMillis() + ")");
@@ -100,11 +93,11 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         if (oldVersion < 2) {
             db.execSQL(CREATE_PENDING_FILE);
         }
-        if (oldVersion < 3) {
-            db.execSQL(CREATE_FILE_WATERMARK);
+        if (oldVersion < 4) {
+            // 水印数据改存 .wmp4 文件尾部，旧的水印表直接删掉
+            db.execSQL("DROP TABLE IF EXISTS file_watermark");
         }
     }
-
     // 通用数据库操作函数 - 类似Node.js的db_get
     public JSONObject db_get(String sql, JSONArray arr) throws JSONException {
         SQLiteDatabase db = getReadableDatabase();

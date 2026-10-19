@@ -170,11 +170,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 Toast.makeText(this, "该视频的水印信息与视频不匹配，无法显示水印", Toast.LENGTH_LONG).show();
             }
         }
-        // 烧录产物：水印已经烧进画面，这里不再叠印（数据行仍然保留，记录"已烧录"）
-        if (watermark != null && watermark.optBoolean("burned", false)) {
-            Log.i(TAG, "该视频已烧录水印，跳过叠印");
-            watermark = null;
-        }
         if (watermark != null) {
             segments = watermark.optJSONArray("segments") == null ? new JSONArray() : watermark.optJSONArray("segments");
         }
@@ -566,22 +561,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
             }
             return null;
         }
-        if (fileId == null || fileId.isEmpty()) return null;
-        try {
-            JSONArray row = DatabaseHelper.getInstance(this).db_all(
-                    "SELECT data, content_hash FROM file_watermark WHERE file_id = ?",
-                    new JSONArray().put(fileId));
-            if (row.length() == 0) return null;
-            JSONObject r = row.getJSONObject(0);
-            String data = r.isNull("data") ? null : r.optString("data", null);
-            if (data == null || data.isEmpty()) return null;
-            JSONObject json = new JSONObject(data);
-            json.put("_content_hash", r.optString("content_hash", ""));
-            return json;
-        } catch (Exception e) {
-            Log.e(TAG, "读取水印数据失败", e);
-            return null;
-        }
+        // 非 .wmp4（例如烧录出的普通 mp4）：文件里没有水印数据，不叠印
+        return null;
     }
 
     private static String sha256(File file) {
