@@ -426,12 +426,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
         int w = Math.max(1, Math.round(vw * fit));
         int fullH = Math.max(1, Math.round(vh * fit));
 
-        // 控制层可见时让出底部控制区高度（音量行展开时也会跟着变）
-        int inset = 0;
-        if (controlsVisible && controlsBottom != null && controlsBottom.getHeight() > 0) {
-            inset = Math.min(controlsBottom.getHeight(), fullH / 3);
-        }
-        int h = Math.max(1, fullH - inset);
+        // 水印层只按视频画面定位：控制层是独立图层，显/隐都不会改变水印的位置和尺寸
+        int h = fullH;
         if (w == pictureWidth && h == pictureHeight) return;
         pictureWidth = w;
         pictureHeight = h;

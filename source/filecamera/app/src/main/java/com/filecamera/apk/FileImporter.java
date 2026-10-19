@@ -415,7 +415,7 @@ public class FileImporter {
             //noinspection ResultOfMethodCallIgnored
             iconDir.mkdirs();
         }
-        byte[] thumb = videoThumbnail(ticket.targetFile);
+        byte[] thumb = watermarkThumbnail(ticket.fileId, ticket.targetFile);
         String iconName = ticket.fileId + "_icon.png";
         if (thumb != null && saveFile(thumb, new File(iconDir, iconName))) {
             iconWritten = iconName;
@@ -465,31 +465,12 @@ public class FileImporter {
         }
     }
 
-    /** 取视频首帧做 256px 缩略图（失败返回 null，不阻塞入库）。 */
-    static byte[] videoThumbnail(File file) {
+    /** 视频首帧（失败返回 null）。 */
+    static Bitmap videoFirstFrame(File file) {
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         try {
             retriever.setDataSource(file.getAbsolutePath());
-            Bitmap frame = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
-            if (frame == null) return null;
-            int w = frame.getWidth();
-            int h = frame.getHeight();
-            if (w <= 0 || h <= 0) return null;
-            float aspect = (float) w / (float) h;
-            int nw, nh;
-            if (w >= h) {
-                nw = 256;
-                nh = Math.round(256 / aspect);
-            } else {
-                nh = 256;
-                nw = Math.round(256 * aspect);
-            }
-            Bitmap scaled = Bitmap.createScaledBitmap(frame, nw, nh, true);
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            scaled.compress(Bitmap.CompressFormat.PNG, 100, out);
-            if (scaled != frame) frame.recycle();
-            scaled.recycle();
-            return out.toByteArray();
+            return retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
         } catch (Exception e) {
             return null;
         } finally {
@@ -500,6 +481,70 @@ public class FileImporter {
         }
     }
 
+    /**
+     * 视频缩略图：**首帧先把水印合成上去**，再缩到 256px 存 PNG。
+     * 合成失败/没有水印数据时退回无水印首帧，不阻塞入库。
+     */
+    private byte[] watermarkThumbnail(String fileId, File videoFile) {
+        Bitmap frame = videoFirstFrame(videoFile);
+        if (frame == null) return null;
+        Bitmap composed = frame;
+        try {
+            JSONObject wm = loadWatermarkJson(fileId);
+            if (wm != null) {
+                composed = WatermarkBitmapRenderer.composeOnto(frame, wm);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "首帧合成水印失败", e);
+            composed = frame;
+        }
+        byte[] bytes = scaleAndCompress(composed);
+        if (composed != frame && composed != null) composed.recycle();
+        if (frame != null && !frame.isRecycled()) frame.recycle();
+        return bytes;
+    }
+
+    /** 等比缩到长边 256 后压成 PNG。 */
+    private static byte[] scaleAndCompress(Bitmap source) {
+        if (source == null) return null;
+        int w = source.getWidth();
+        int h = source.getHeight();
+        if (w <= 0 || h <= 0) return null;
+        float aspect = (float) w / (float) h;
+        int nw, nh;
+        if (w >= h) {
+            nw = 256;
+            nh = Math.round(256 / aspect);
+        } else {
+            nh = 256;
+            nw = Math.round(256 * aspect);
+        }
+        Bitmap scaled = null;
+        try {
+            scaled = Bitmap.createScaledBitmap(source, nw, nh, true);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            scaled.compress(Bitmap.CompressFormat.PNG, 100, out);
+            return out.toByteArray();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (scaled != null && scaled != source && !scaled.isRecycled()) scaled.recycle();
+        }
+    }
+
+    /** 读取该视频的水印数据（没有/空数据返回 null）。 */
+    private JSONObject loadWatermarkJson(String fileId) {
+        try {
+            JSONArray rows = dbHelper.db_all("SELECT data FROM file_watermark WHERE file_id = ?",
+                    new JSONArray().put(fileId));
+            if (rows.length() == 0) return null;
+            String data = rows.getJSONObject(0).optString("data", "");
+            if (data == null || data.isEmpty() || "{}".equals(data)) return null;
+            return new JSONObject(data);
+        } catch (Exception e) {
+            return null;
+        }
+    }
     /** 文件内容 SHA-256（播放前用它校验水印数据是否与视频匹配）。 */
     static String sha256(File file) {
         try (InputStream in = new FileInputStream(file)) {
