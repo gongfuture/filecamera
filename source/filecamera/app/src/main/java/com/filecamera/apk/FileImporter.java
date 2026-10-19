@@ -80,7 +80,7 @@ public class FileImporter {
         if (bytes == null || bytes.length == 0) {
             throw new IOException("读取文件内容失败");
         }
-        File temp = new File(tempDirectory(), IdGenerator.getIdByTime() + ".tmp");
+        File temp = new File(tempDirectory(), IdGenerator.get_id_by_time() + ".tmp");
         if (!saveFile(bytes, temp)) {
             throw new IOException("临时文件写入失败");
         }
@@ -138,7 +138,7 @@ public class FileImporter {
         String finalName = dedupeName(targetDirId, displayName);
         String extension = extensionOf(finalName);
         String namePart = baseNameOf(finalName);
-        String fileId = IdGenerator.getIdByTime();
+        String fileId = IdGenerator.get_id_by_time();
         String realFileName = extension.isEmpty() ? fileId : fileId + "." + extension;
         boolean isImage = isImageFile(finalName);
         String realIconName = isImage ? fileId + "_icon.png" : "";
@@ -366,12 +366,12 @@ public class FileImporter {
             throw new Exception("文件夹不存在");
         }
         if (displayName == null || displayName.trim().isEmpty()) {
-            displayName = IdGenerator.getIdByTime() + ".mp4";
+            displayName = IdGenerator.get_id_by_time() + ".mp4";
         }
         String finalName = dedupeName(targetDirId, displayName);
         if (extensionOf(finalName).isEmpty()) finalName = finalName + ".mp4";
         String extension = extensionOf(finalName);
-        String fileId = IdGenerator.getIdByTime();
+        String fileId = IdGenerator.get_id_by_time();
         String realFileName = fileId + "." + extension;
         String realIconName = fileId + "_icon.png";
         File dataDir = dataDirectory();

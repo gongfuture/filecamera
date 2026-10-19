@@ -944,7 +944,7 @@ public class FilePickerBridge {
                 throw new IOException("无法创建照片缓存目录: " + storageDir.getAbsolutePath());
             }
         }
-        String fileName = IdGenerator.getIdByTime() + ".jpg";
+        String fileName = IdGenerator.get_id_by_time() + ".jpg";
         return new File(storageDir, fileName);
     }
 

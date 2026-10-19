@@ -71,7 +71,7 @@ public final class CameraSessionStore {
                 throw new IOException("无法创建拍照会话目录: " + root.getAbsolutePath());
             }
             long now = System.currentTimeMillis();
-            String sessionId = SESSION_DIR_PREFIX + now + "_" + Math.abs(IdGenerator.getIdByTime().hashCode());
+            String sessionId = SESSION_DIR_PREFIX + IdGenerator.get_id_by_time();
             File dir = new File(root, sessionId);
             if (!dir.exists() && !dir.mkdirs()) {
                 throw new IOException("无法创建拍照会话目录: " + dir.getAbsolutePath());
@@ -99,7 +99,7 @@ public final class CameraSessionStore {
         if (!dir.isDirectory() && !dir.mkdirs()) {
             throw new IOException("无法创建拍照会话目录: " + dir.getAbsolutePath());
         }
-        return new File(dir, IdGenerator.getIdByTime() + ".jpg");
+        return new File(dir, IdGenerator.get_id_by_time() + ".jpg");
     }
 
     /** 记录一条已入库的文件记录（水印图 / 无水印原图各算一条）。 */

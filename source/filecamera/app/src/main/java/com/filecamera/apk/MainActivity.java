@@ -297,7 +297,7 @@ public class MainActivity extends AppCompatActivity {
             rootArr.put("root").put("根目录").put(JSONObject.NULL).put("dir").put("{}").put("{}").put(2).put(2).put(System.currentTimeMillis()).put(0);
             dbHelper.db_run("INSERT OR IGNORE INTO dir (id, name, parent_dir_id, type, file_obj, dir_obj, dirsortmode, filesortmode, createtime, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rootArr);
 
-            String defaultId = IdGenerator.getIdByTime();
+            String defaultId = IdGenerator.get_id_by_time();
             JSONArray defaultArr = new JSONArray();
             defaultArr.put(defaultId).put("默认文件夹").put("root").put("dir").put("{}").put("{}").put(2).put(2).put(System.currentTimeMillis()).put(1);
             dbHelper.db_run("INSERT OR IGNORE INTO dir (id, name, parent_dir_id, type, file_obj, dir_obj, dirsortmode, filesortmode, createtime, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", defaultArr);
@@ -560,7 +560,7 @@ public class MainActivity extends AppCompatActivity {
      * 在应用的外部图片目录中创建一个临时的图片文件。
      */
     private File createImageFile() throws IOException {
-        String uniqueId = IdGenerator.getIdByTime();
+        String uniqueId = IdGenerator.get_id_by_time();
         String imageFileName = uniqueId + ".jpg";
         File storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
         return new File(storageDir, imageFileName);

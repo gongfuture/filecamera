@@ -489,7 +489,7 @@ public class BackServer {
                 }
 
 				long create_time = System.currentTimeMillis();
-				String dir_id = IdGenerator.getIdByTime();
+				String dir_id = IdGenerator.get_id_by_time();
 				long seq_number = FileImporter.getSeqNumberFromString(name);
 
 				JSONArray create_params = new JSONArray();
@@ -1057,7 +1057,7 @@ public class BackServer {
         }
 
         // 开始复制
-        String new_file_id = IdGenerator.getIdByTime();
+        String new_file_id = IdGenerator.get_id_by_time();
 
         // 复制物理文件
         String source_real_name = source_file_db.getString("real_file_name");
@@ -1129,7 +1129,7 @@ public class BackServer {
         if(target_dir_exist != null) { // 合并模式
             target_root_id = target_dir_exist.getString("id");
         } else { // 新建模式
-            target_root_id = IdGenerator.getIdByTime();
+            target_root_id = IdGenerator.get_id_by_time();
             JSONArray create_params = new JSONArray()
                 .put(target_root_id)
                 .put(dir_name)
@@ -1170,7 +1170,7 @@ public class BackServer {
                 if(sub_dir_exist_in_target != null) { // 已存在，使用现有ID
                     new_sub_dir_id = sub_dir_exist_in_target.getString("id");
                 } else { // 不存在，创建新目录
-                    new_sub_dir_id = IdGenerator.getIdByTime();
+                    new_sub_dir_id = IdGenerator.get_id_by_time();
                     JSONArray create_sub_params = new JSONArray()
                         .put(new_sub_dir_id)
                         .put(sub_dir_name)
@@ -1344,7 +1344,7 @@ public class BackServer {
 					} else {
 						// 目录不存在，创建新目录
 						long create_time = System.currentTimeMillis();
-						String new_dir_id = IdGenerator.getIdByTime();
+						String new_dir_id = IdGenerator.get_id_by_time();
 						long seq_number = FileImporter.getSeqNumberFromString(dir_name);
 
 						JSONArray create_dir_params = new JSONArray()
