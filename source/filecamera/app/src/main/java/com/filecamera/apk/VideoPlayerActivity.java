@@ -216,8 +216,13 @@ public class VideoPlayerActivity extends AppCompatActivity {
             if (player.isPlaying()) {
                 player.pause();
             } else {
+                // 播放结束后再点播放：必须先回到开头，否则 play() 是空操作
+                if (player.getPlaybackState() == androidx.media3.common.Player.STATE_ENDED) {
+                    player.seekTo(0);
+                }
                 player.play();
             }
+            updatePlayPauseIcon();
             scheduleHideControls();
         });
 
@@ -310,6 +315,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
         if (btnPlay == null) return;
         boolean isPlaying = player != null && player.isPlaying();
         btnPlay.setImageResource(isPlaying ? R.drawable.ic_player_pause : R.drawable.ic_player_play);
+        // 播放键是独立图层，且**常驻显示**：任何时候都能暂停/继续（控制条显隐不影响它）
+        btnPlay.setVisibility(View.VISIBLE);
     }
 
     private void updateVolumeIcon() {
@@ -352,6 +359,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
         if (controls != null) {
             controls.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
+        updatePlayPauseIcon();
         uiHandler.removeCallbacks(hideControlsRunnable);
         if (!visible && volumeRow != null) {
             volumeRow.setVisibility(View.GONE);

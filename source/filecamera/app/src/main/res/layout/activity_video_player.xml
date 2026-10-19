@@ -65,16 +65,6 @@
             android:layout_height="0dp"
             android:layout_weight="1">
 
-            <ImageButton
-                android:id="@+id/btn_play"
-                android:layout_width="72dp"
-                android:layout_height="72dp"
-                android:layout_gravity="center"
-                android:background="@drawable/bg_player_play"
-                android:contentDescription="播放/暂停"
-                android:padding="20dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_player_play" />
         </FrameLayout>
 
         <!-- 底部：音量行 + 进度行 -->
@@ -200,5 +190,17 @@
             android:textColor="#FFFFFF"
             android:textSize="14sp" />
     </LinearLayout>
+
+    <!-- 播放/暂停：独立图层，暂停/播完时始终显示（不受控制条显隐影响） -->
+    <ImageButton
+        android:id="@+id/btn_play"
+        android:layout_width="72dp"
+        android:layout_height="72dp"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_player_play"
+        android:contentDescription="播放/暂停"
+        android:padding="20dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_player_play" />
 
 </FrameLayout>
