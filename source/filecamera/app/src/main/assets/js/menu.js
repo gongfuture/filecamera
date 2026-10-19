@@ -138,23 +138,15 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 	}else if(event.target.id == 'cameraspan'){
 		close_opening_menu(menu_set);
 		//menu_camerainput()
+		// 相机支持连续拍摄：拍完不退出，退出时原生把本次新增图片的信息（content URI 清单）交给前端，
+		// 前端随后自动逐张拉取图片数据并入库（开启“保存无水印原图”时每张照片会附带其原图）
 		let uri_arr = await nativeOpenFilePicker(true,'customcamera')
 		if (!uri_arr ||uri_arr.length === 0) {
 			return;
 		}
-		// 开启“保存无水印原图”时会一次返回水印图和原图两张照片，逐张入库
-		let file_sort_mode  = open_dir.filesortmode
-		for (let file of uri_arr) {
-			if (!file) {
-				continue;
-			}
-			try {
-				let file_obj = await uploadfile(file.uri, open_dir.id, file.name);
-				insertobj(file_sort_mode, file_obj)
-			} catch (error) {
-				await updateTable(open_dir.id);
-				await alert_fix("图片上传失败：" + error);
-			}
+		const import_result = await import_camera_session(uri_arr);
+		if (import_result.failed > 0) {
+			await alert_fix(`导入完成：成功 ${import_result.ok} 张，失败 ${import_result.failed} 张`);
 		}
 	}else if(event.target.id == 'settingbutton'){
 		close_opening_menu(menu_set);

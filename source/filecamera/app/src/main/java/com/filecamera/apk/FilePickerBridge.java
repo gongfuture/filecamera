@@ -202,6 +202,25 @@ public class FilePickerBridge {
         }).start();
     }
 
+    /**
+     * 前端确认「本次拍照会话的图片已经全部拉取/入库完成」，原生侧随即清理会话目录。
+     * 参数: { session_id: String } —— 由相机退出时下发的文件对象携带。
+     * 即使前端未调用，未清理的会话目录也会在 24 小时后被自动回收。
+     */
+    @JavascriptInterface
+    public void confirmCameraSession(String task_id, String json_data) {
+        new Thread(() -> {
+            try {
+                JSONObject params = new JSONObject(json_data);
+                CameraSessionStore.discardSession(activity, params.optString("session_id", ""));
+                call_js_callback(task_id, true, new JSONObject(), null);
+            } catch (Exception e) {
+                Log.e(TAG, "Error in confirmCameraSession()", e);
+                call_js_callback(task_id, false, null, "清理拍照会话失败: " + e.getMessage());
+            }
+        }).start();
+    }
+
     @JavascriptInterface
     public void shareFile(String task_id, String json_data) {
         new Thread(() -> {
@@ -715,9 +734,21 @@ public class FilePickerBridge {
     }
 
     private JSONArray handleCustomCameraResult(Intent data) throws JSONException {
+        // 新版相机：退出时回传整份「拍照会话」清单（本次新增的全部图片信息），
+        // 前端拿到清单后再逐张按 content URI 拉取图片数据。
+        JSONObject session = CameraSessionStore.parseSession(data);
+        if (session == null) {
+            // 兜底：Activity result 丢失（进程重建等）时，从磁盘上最近一次尚未交付的会话清单恢复
+            session = CameraSessionStore.readPendingSession(activity);
+        }
+        JSONArray sessionFiles = CameraSessionStore.toFileObjects(session);
+        if (sessionFiles.length() > 0) {
+            return sessionFiles;
+        }
+
+        // 兼容旧格式（单张照片 + 可选原图，通过 ClipData 返回）
         JSONArray results = new JSONArray();
         if (data != null) {
-            // 开启“保存无水印原图”时，相机会通过 ClipData 同时返回水印图和原图
             if (data.getClipData() != null && data.getClipData().getItemCount() > 0) {
                 for (int i = 0; i < data.getClipData().getItemCount(); i++) {
                     Uri uri = data.getClipData().getItemAt(i).getUri();

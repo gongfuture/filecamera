@@ -82,6 +82,8 @@ public class MainActivity extends AppCompatActivity {
     private DatabaseHelper dbHelper;
     private RoadDatabaseHelper roadDatabaseHelper;
     private RoadApiHelper roadApiHelper;
+    // 崩溃兜底：启动后是否已尝试补偿交付上一次未交付的拍照会话
+    private boolean recoveryDelivered = false;
 
     // --- 现代化的 ActivityResult Launcher ---
 
@@ -322,6 +324,7 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 webView.evaluateJavascript("if(typeof onAndroidReady === 'function') { onAndroidReady(); }", null);
+                deliverRecoveredCameraSession();
             }
         });
 
@@ -363,6 +366,40 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
         });
+    }
+
+    /**
+     * 启动时兜底交付：若上一次拍照会话没能正常交付（相机里进程被系统回收 / 相机崩溃），
+     * 把残留会话中已经保存好的照片信息推给前端，由前端自动补导入。
+     * 已交付过的会话不会被重复推送（见 CameraSessionStore#readPendingSession）。
+     */
+    private void deliverRecoveredCameraSession() {
+        if (recoveryDelivered) return;
+        recoveryDelivered = true;
+        new Thread(() -> {
+            try {
+                JSONArray allFiles = new JSONArray();
+                String firstSessionId = "";
+                // 逐个取出未交付的会话（正常情况下最多只有一个），合并成一批交给前端
+                for (int guard = 0; guard < 20; guard++) {
+                    JSONObject session = CameraSessionStore.readPendingSession(this);
+                    if (session == null) break;
+                    if (firstSessionId.isEmpty()) firstSessionId = session.optString("session_id", "");
+                    JSONArray files = CameraSessionStore.toFileObjects(session);
+                    for (int i = 0; i < files.length(); i++) {
+                        allFiles.put(files.get(i));
+                    }
+                }
+                if (allFiles.length() == 0) return;
+                JSONObject payload = new JSONObject();
+                payload.put("session_id", firstSessionId);
+                payload.put("files", allFiles);
+                final String js = "if(window.onRecoveredCameraSession){window.onRecoveredCameraSession(" + payload + ");}";
+                runOnUiThread(() -> webView.evaluateJavascript(js, null));
+            } catch (Exception e) {
+                Log.e(TAG, "恢复未交付的拍照会话失败", e);
+            }
+        }).start();
     }
 
     /**

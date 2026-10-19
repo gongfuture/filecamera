@@ -1,11 +1,9 @@
 package com.filecamera.apk;
 
 import android.Manifest;
-import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -70,7 +68,6 @@ import androidx.camera.view.PreviewView;
 import androidx.lifecycle.LiveData;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.core.content.FileProvider;
 import androidx.exifinterface.media.ExifInterface;
 
 import com.google.common.util.concurrent.ListenableFuture;
@@ -134,6 +131,16 @@ public class CameraActivity extends AppCompatActivity {
     private static final float[] ZOOM_PRESETS = {0.6f, 1.0f, 2.0f, 3.0f, 5.0f};
     // 拍照提示音
     private MediaActionSound mediaActionSound;
+
+    // region --- 连续拍照会话 ---
+    // 是否有照片正在处理：期间禁用快门与退出，保证「已拍的照片一定不丢」
+    // （照片处理是同步的，这个标记同时挡住「点快门连击」和「处理中退出」两件事）
+    private volatile boolean isCaptureProcessing = false;
+    // 处理过程中用户已要求退出：等当前照片保存完成后自动带结果退出
+    private boolean pendingFinishAfterCapture = false;
+    // 本次会话是否已提示过 GPS 无效（避免每拍一张都弹一次挡住快门）
+    private boolean gpsWarningShown = false;
+    // endregion
 
     // CameraX 组件
     private ImageCapture imageCapture;
@@ -249,13 +256,14 @@ public class CameraActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_camera);
+        // 相机会话可能持续较久（连续拍摄），拍摄期间保持屏幕常亮（与主界面 wakelock 同一套机制）
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        // 1. 处理返回键逻辑
+        // 1. 处理返回键逻辑：与右上角退出按钮一致——退出即交付本次会话已拍照片
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
-                setResult(RESULT_CANCELED);
-                finish(); // 关闭当前 Activity
+                requestExit();
             }
         });
         
@@ -277,6 +285,13 @@ public class CameraActivity extends AppCompatActivity {
         
         // 解析读取到的配置
         parseConfig(configJson);
+
+        // 开启本次拍照会话：本次拍摄的所有照片都累积在同一个会话目录里，退出时统一交付给前端
+        try {
+            CameraSessionStore.beginSession(this);
+        } catch (IOException e) {
+            Log.e(TAG, "开启拍照会话失败", e);
+        }
         
         checkForWeatherItem();
         checkForAddressItem();
@@ -385,10 +400,7 @@ public class CameraActivity extends AppCompatActivity {
         zoomButton.setOnClickListener(v -> showZoomRatioDialog());
         captureButton.setOnClickListener(v -> takePhoto());
         flashButton.setOnClickListener(v -> cycleFlashMode());
-        exitButton.setOnClickListener(v -> {
-            setResult(RESULT_CANCELED);
-            finish();
-        });
+        exitButton.setOnClickListener(v -> requestExit());
         setupCameraModeSelector();
         watermarkContainer.setOnClickListener(v -> handleWatermarkClick());
         
@@ -758,6 +770,9 @@ public class CameraActivity extends AppCompatActivity {
 
     private void takePhoto() {
         if (imageCapture == null) return;
+        // 上一张还在保存时忽略重复点击，避免两张照片的处理任务互相踩踏
+        if (isCaptureProcessing) return;
+        isCaptureProcessing = true;
         setCaptureButtonEnabled(false);
 
         // 根据设置播放拍照提示音，便于用户确认拍摄已触发
@@ -772,7 +787,9 @@ public class CameraActivity extends AppCompatActivity {
             imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(this), new ImageCapture.OnImageSavedCallback() {
                 @Override
                 public void onImageSaved(@NonNull ImageCapture.OutputFileResults output) {
-                    processAndizeImage(photoFile);
+                    // 在快门瞬间抓取水印位图与 GPS，保证「所见即所得」（之后 GPS/时间继续变化也不影响这一张）
+                    CapturedState state = captureStateSnapshot();
+                    processCapturedImage(photoFile, state);
                 }
 
                 @Override
@@ -783,6 +800,30 @@ public class CameraActivity extends AppCompatActivity {
         } catch (IOException e) {
             handlePhotoError("创建文件失败", e);
         }
+    }
+
+    /**
+     * 拍下一张照片瞬间的状态快照：水印位图 + GPS + 配置 + 预览尺寸。
+     * 处理时只读这份快照，处理期间即使配置被重新加载、预览尺寸变化，也不会影响这一张的一致性。
+     * 水印位图必须在此刻（UI 线程）从水印 View 抓取，因为 View 只能在自己的 UI 线程上绘制。
+     */
+    private CapturedState captureStateSnapshot() {
+        CapturedState state = new CapturedState();
+        state.gpsValid = isLocationValid();
+        state.lat = lat;
+        state.lon = lon;
+        state.alt = alt;
+        state.showWatermark = showWatermark;
+        state.showQrCode = showQrCode;
+        state.watermarkConfig = watermarkConfig;
+        state.qrCodeConfig = qrCodeConfig;
+        state.previewWidth = previewView != null ? previewView.getWidth() : 0;
+        state.previewHeight = previewView != null ? previewView.getHeight() : 0;
+        state.watermarkDensity = watermarkDensity();
+        if (state.showWatermark && state.watermarkConfig != null) {
+            state.watermarkOverlay = createBitmapFromView(watermarkContainer);
+        }
+        return state;
     }
 
     private void performFocusOnPoint(float x, float y) {
@@ -894,49 +935,98 @@ public class CameraActivity extends AppCompatActivity {
     // endregion
 
     // region --- 图像和文件处理 ---
-    private void processAndizeImage(File photoFile) {
+    /**
+     * 处理一张刚拍摄的照片（同步，在 UI 线程上跑完）：
+     * 备份原图（可选）→ 旋转/水印/EXIF → 同步相册（可选）→ 记入拍照会话。
+     * 处理结束后相机保持打开，用户可以继续拍摄；照片信息在退出时统一交给前端。
+     *
+     * <p>这里刻意采用同步处理（与改造前一致）：处理期间界面会短暂停顿，
+     * 但「拍一张→存一张→恢复快门」是一串顺行流程，不会与下一张或退出动作交叉，时序最简单。
+     */
+    private void processCapturedImage(final File photoFile, final CapturedState state) {
+        final boolean syncAlbum = cameraConfig != null && cameraConfig.sync_album;
+        final boolean saveOriginal = cameraConfig != null && cameraConfig.save_original;
+
+        File originalFile = null;
         try {
             // 备份无水印原图：先复制原始捕获，再走与水印图完全相同的处理管线（旋转/EXIF/GPS），只是不叠加任何叠加层
-            File originalFile = null;
-            if (cameraConfig != null && cameraConfig.save_original) {
+            if (saveOriginal) {
                 originalFile = copyOriginalImage(photoFile);
-                processImageOverlays(originalFile.getAbsolutePath(), false);
+                processImageOverlays(originalFile.getAbsolutePath(), false, state);
             }
-            processImageOverlays(photoFile.getAbsolutePath(), true);
-            if (cameraConfig != null && cameraConfig.sync_album) {
-                final File originalToSync = originalFile;
-                new Thread(() -> {
-                    try {
-                        copyToDcim(photoFile, true);
-                        // 开启原图保存时，相册中会同时出现水印图和无水印原图两张照片
-                        if (originalToSync != null) {
-                            copyToDcim(originalToSync, false);
-                        }
-                    } catch (IOException e) {
-                        Log.e(TAG, "同步到相册失败", e);
-                        runOnUiThread(() -> Toast.makeText(CameraActivity.this, "同步相册失败", Toast.LENGTH_SHORT).show());
+            processImageOverlays(photoFile.getAbsolutePath(), true, state);
+
+            if (syncAlbum) {
+                try {
+                    copyToDcim(photoFile, false);
+                    // 开启原图保存时，相册中会同时出现水印图和无水印原图两张照片
+                    if (originalFile != null) {
+                        copyToDcim(originalFile, false);
                     }
-                }).start();
-            }else{
-                Toast.makeText(CameraActivity.this, "照片已保存", Toast.LENGTH_SHORT).show();
+                } catch (IOException e) {
+                    Log.e(TAG, "同步到相册失败", e);
+                    Toast.makeText(CameraActivity.this, "同步相册失败", Toast.LENGTH_SHORT).show();
+                }
             }
-            Uri savedUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", photoFile);
-            Intent resultIntent = new Intent();
-            resultIntent.setData(savedUri);
-            if (originalFile != null) {
-                // 通过 ClipData 把原图一并返回给调用方（第1项为水印图，第2项为原图）
-                Uri originalUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", originalFile);
-                ClipData clipData = ClipData.newUri(getContentResolver(), "photos", savedUri);
-                clipData.addItem(new ClipData.Item(originalUri));
-                resultIntent.setClipData(clipData);
-                resultIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-            setResult(RESULT_OK, resultIntent);
-            finish();
-        } catch (Exception e) {
+
+            // 记入本次拍照会话（并实时落盘），退出时整份清单交给前端
+            CameraSessionStore.addCapture(this, photoFile, originalFile);
+        } catch (Throwable e) {
+            // 连 OutOfMemoryError 也要接住，否则快门会一直停在「处理中」再也点不动
             handlePhotoError("处理照片失败", e);
+            return;
+        } finally {
+            if (state.watermarkOverlay != null && !state.watermarkOverlay.isRecycled()) {
+                state.watermarkOverlay.recycle();
+                state.watermarkOverlay = null;
+            }
+        }
+        onCaptureSaved();
+    }
+
+    /**
+     * 一张照片处理完成：恢复快门，必要时执行被推迟的退出。
+     * 不做任何 Toast / 角标提示 —— 底部 Toast 会盖住快门按钮。
+     */
+    private void onCaptureSaved() {
+        isCaptureProcessing = false;
+        setCaptureButtonEnabled(true);
+        if (pendingFinishAfterCapture) {
+            pendingFinishAfterCapture = false;
+            finishWithSession();
         }
     }
+
+    // region --- 会话退出：把本次新增图片信息交接给前端 ---
+
+    /** 退出入口（返回键 / 右上角关闭按钮）。正在保存照片时延迟到保存完成再退出，避免丢图。 */
+    private void requestExit() {
+        if (isCaptureProcessing) {
+            pendingFinishAfterCapture = true;
+            return;
+        }
+        finishWithSession();
+    }
+
+    /**
+     * 结束本次拍照会话：
+     * 有照片 → 以 RESULT_OK 回传整份会话清单（前端据此自动拉取图片数据）；
+     * 无照片 → RESULT_CANCELED（等同于用户取消）。
+     */
+    private void finishWithSession() {
+        int count = CameraSessionStore.getCaptureCount();
+        if (count <= 0) {
+            CameraSessionStore.clearCurrent(this);
+            setResult(RESULT_CANCELED);
+            finish();
+            return;
+        }
+        setResult(RESULT_OK, CameraSessionStore.buildResultIntent(this));
+        // 仅重置内存会话状态；会话目录保留给前端拉取，待前端确认导入完成后再删除
+        CameraSessionStore.closeSession();
+        finish();
+    }
+    // endregion
 
     /**
      * 将刚拍摄、尚未叠加水印的原始照片复制为同目录下的 "*_原图.jpg" 文件，
@@ -1011,9 +1101,12 @@ public class CameraActivity extends AppCompatActivity {
     }
     /**
      * 图片处理统一管线：按 EXIF 旋转像素、可选叠加水印/二维码、重写 EXIF（含 GPS）。
+     * 本方法在 UI 线程同步执行（处理期间界面会短暂停顿），绘制水印位图的工作由调用方在快门瞬间完成。
+     *
      * @param applyOverlays true=水印图（叠加水印和二维码）；false=无水印原图（其余处理完全一致）
+     * @param state         拍摄瞬间的快照（水印位图、GPS），保证同一张照片所用数据一致
      */
-    private void processImageOverlays(String imagePath, boolean applyOverlays) throws IOException {
+    private void processImageOverlays(String imagePath, boolean applyOverlays, CapturedState state) throws IOException {
         Bitmap originalBitmap = BitmapFactory.decodeFile(imagePath);
         if (originalBitmap == null) throw new IOException("无法解码图片文件");
 
@@ -1036,21 +1129,18 @@ public class CameraActivity extends AppCompatActivity {
             rotatedBitmap.recycle();
         }
 
-        if (applyOverlays && showWatermark && watermarkConfig != null) {
-            Bitmap watermarkBitmap = createBitmapFromView(watermarkContainer);
-            if (watermarkBitmap != null) {
-                finalBitmap = addOverlayToBitmap(finalBitmap, watermarkBitmap, watermarkConfig.position, watermarkConfig.scale);
-                watermarkBitmap.recycle();
-            }
+        if (applyOverlays && state.showWatermark && state.watermarkConfig != null && state.watermarkOverlay != null) {
+            finalBitmap = addOverlayToBitmap(finalBitmap, state.watermarkOverlay,
+                    state.watermarkConfig.position, state.watermarkConfig.scale, state);
         }
 
-        if (applyOverlays && showQrCode && qrCodeConfig != null && isLocationValid()) {
-            String qrContent = generateAmapUrl(lat, lon, "拍照位置");
+        if (applyOverlays && state.showQrCode && state.qrCodeConfig != null && state.gpsValid) {
+            String qrContent = generateAmapUrl(state.lat, state.lon, "拍照位置");
             int baseQrSizeDp = 128;
-            int finalQrSizePx = wmPx(baseQrSizeDp * qrCodeConfig.scale);
-            Bitmap qrCodeBitmap = generateQrCodeBitmap(qrContent, finalQrSizePx, finalQrSizePx, qrCodeConfig.padding, qrCodeConfig.radius);
+            int finalQrSizePx = Math.round(baseQrSizeDp * state.qrCodeConfig.scale * state.watermarkDensity);
+            Bitmap qrCodeBitmap = generateQrCodeBitmap(qrContent, finalQrSizePx, finalQrSizePx, state.qrCodeConfig.padding, state.qrCodeConfig.radius, state.watermarkDensity);
             if (qrCodeBitmap != null) {
-                finalBitmap = addOverlayToBitmap(finalBitmap, qrCodeBitmap, qrCodeConfig.position, 1.0f);
+                finalBitmap = addOverlayToBitmap(finalBitmap, qrCodeBitmap, state.qrCodeConfig.position, 1.0f, state);
                 qrCodeBitmap.recycle();
             }
         }
@@ -1073,18 +1163,19 @@ public class CameraActivity extends AppCompatActivity {
             newExif.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, currentTimestamp);
         }
 
-        if (isLocationValid()) {
-            Log.d(TAG, "正在写入最新的 (LocationManager) GPS 信息到 EXIF");
+        if (state.gpsValid) {
+            Log.d(TAG, "正在写入拍摄瞬间的 GPS 信息到 EXIF");
             Location location = new Location("");
-            location.setLatitude(lat);
-            location.setLongitude(lon);
-            location.setAltitude(alt);
+            location.setLatitude(state.lat);
+            location.setLongitude(state.lon);
+            location.setAltitude(state.alt);
             newExif.setGpsInfo(location);
         } else {
             Log.w(TAG, "最终未写入 GPS 信息。");
-            if (applyOverlays) {
-                // 仅处理水印图时提示一次，原图不重复提示
-                Toast.makeText(this, "GPS信号弱，未写入位置信息", Toast.LENGTH_LONG).show();
+            if (applyOverlays && !gpsWarningShown) {
+                // 每个会话只提示一次（连续拍照时不反复弹窗挡住快门），原图不重复提示
+                gpsWarningShown = true;
+                Toast.makeText(CameraActivity.this, "GPS信号弱，未写入位置信息", Toast.LENGTH_SHORT).show();
             }
         }
 
@@ -1124,24 +1215,20 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private File createImageFile() throws IOException {
-        File picturesDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
-        if (picturesDir == null) throw new IOException("无法获取外部私有存储目录。");
-        File storageDir = new File(picturesDir, "photo_cache");
-        if (storageDir.exists()) {
-            File[] files = storageDir.listFiles();
-            if (files != null) for (File f : files) f.delete();
-        } else {
-            if (!storageDir.mkdirs()) throw new IOException("无法创建照片缓存目录。");
-        }
-        String fileName = IdGenerator.getIdByTime() + ".jpg";
-        return new File(storageDir, fileName);
+        // 会话目录中的新文件；不再像旧实现那样清空目录，否则会删掉本次会话里已经拍好的照片
+        return CameraSessionStore.createPhotoFile(this);
     }
 
-    private void handlePhotoError(String message, Exception e) {
+    private void handlePhotoError(String message, Throwable e) {
         Log.e(TAG, message, e);
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        isCaptureProcessing = false;
         setCaptureButtonEnabled(true);
-        setResult(RESULT_CANCELED);
+        // 单张失败不再直接退出相机：用户的其它已拍照片还在会话里，可以继续拍或直接退出交付
+        if (pendingFinishAfterCapture) {
+            pendingFinishAfterCapture = false;
+            finishWithSession();
+        }
     }
     // endregion
 
@@ -1801,7 +1888,8 @@ public class CameraActivity extends AppCompatActivity {
         }
     }
 
-    private Bitmap generateQrCodeBitmap(String content, int width, int height, float[] padding, float[] radius) {
+    /** 生成二维码叠加层（含内边距与圆角）。density 由调用方传入，不依赖当前 View 尺寸。 */
+    private Bitmap generateQrCodeBitmap(String content, int width, int height, float[] padding, float[] radius, float density) {
         if (content.isEmpty()) return null;
         try {
             Map<EncodeHintType, Object> hints = new HashMap<>();
@@ -1810,15 +1898,16 @@ public class CameraActivity extends AppCompatActivity {
             Bitmap qrBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
             for (int x = 0; x < width; x++) for (int y = 0; y < height; y++)
                 qrBitmap.setPixel(x, y, bitMatrix.get(x, y) ? Color.BLACK : Color.TRANSPARENT);
-            int pL = wmPx(padding[0]), pT = wmPx(padding[1]);
-            int pR = wmPx(padding[2]), pB = wmPx(padding[3]);
+            int pL = Math.round(padding[0] * density), pT = Math.round(padding[1] * density);
+            int pR = Math.round(padding[2] * density), pB = Math.round(padding[3] * density);
             int finalW = width + pL + pR, finalH = height + pT + pB;
             Bitmap finalBitmap = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888);
             Canvas canvas = new Canvas(finalBitmap);
             Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             bgPaint.setColor(Color.WHITE);
             Path path = new Path();
-            float[] radii = {wmPx(radius[0]), wmPx(radius[0]), wmPx(radius[1]), wmPx(radius[1]), wmPx(radius[2]), wmPx(radius[2]), wmPx(radius[3]), wmPx(radius[3])};
+            float r0 = radius[0] * density, r1 = radius[1] * density, r2 = radius[2] * density, r3 = radius[3] * density;
+            float[] radii = {r0, r0, r1, r1, r2, r2, r3, r3};
             path.addRoundRect(new RectF(0, 0, finalW, finalH), radii, Path.Direction.CW);
             canvas.drawPath(path, bgPaint);
             canvas.drawBitmap(qrBitmap, pL, pT, null);
@@ -2262,30 +2351,31 @@ public class CameraActivity extends AppCompatActivity {
         return bitmap;
     }
 
-    private Bitmap addOverlayToBitmap(Bitmap photo, Bitmap overlay, Position position, float scale) {
+    /**
+     * 把叠加层（水印/二维码）画到照片上。
+     * 预览尺寸与密度都取自拍摄瞬间的快照（state），因此本方法不依赖当前 View 尺寸。
+     */
+    private Bitmap addOverlayToBitmap(Bitmap photo, Bitmap overlay, Position position, float scale, CapturedState state) {
         Bitmap result = photo.copy(Bitmap.Config.ARGB_8888, true);
         if (result != photo) {
             photo.recycle();
         }
         Canvas canvas = new Canvas(result);
-        float resolutionScale = calculateOverlayScale(result.getWidth(), result.getHeight());
+        float resolutionScale = calculateOverlayScale(result.getWidth(), result.getHeight(), state.previewWidth, state.previewHeight);
         Bitmap scaledOverlay = overlay;
         if (Math.abs(resolutionScale - 1.0f) > 0.01) {
             scaledOverlay = Bitmap.createScaledBitmap(overlay,
                     (int) (overlay.getWidth() * resolutionScale),
                     (int) (overlay.getHeight() * resolutionScale), true);
         }
-        float x = calculateOverlayX(result.getWidth(), scaledOverlay.getWidth(), position, resolutionScale);
-        float y = calculateOverlayY(result.getHeight(), scaledOverlay.getHeight(), position, resolutionScale);
+        float x = calculateOverlayX(result.getWidth(), scaledOverlay.getWidth(), position, resolutionScale, state.watermarkDensity);
+        float y = calculateOverlayY(result.getHeight(), scaledOverlay.getHeight(), position, resolutionScale, state.watermarkDensity);
         canvas.drawBitmap(scaledOverlay, x, y, null);
         if (scaledOverlay != overlay) scaledOverlay.recycle();
         return result;
     }
 
-    private float calculateOverlayScale(float photoWidth, float photoHeight) {
-        int previewWidth = previewView.getWidth();
-        int previewHeight = previewView.getHeight();
-
+    private float calculateOverlayScale(float photoWidth, float photoHeight, int previewWidth, int previewHeight) {
         if (previewWidth == 0 || previewHeight == 0) {
             return Math.min(photoWidth / 1080f, photoHeight / 1920f);
         }
@@ -2298,15 +2388,15 @@ public class CameraActivity extends AppCompatActivity {
         }
     }
 
-    private float calculateOverlayX(float photoWidth, float overlayWidth, Position pos, float scale) {
-        float margin = wmPx(10);
+    private float calculateOverlayX(float photoWidth, float overlayWidth, Position pos, float scale, float density) {
+        float margin = Math.round(10 * density);
         if (pos.left != null) return pos.left * scale + margin;
         if (pos.right != null) return photoWidth - overlayWidth - (pos.right * scale) - margin;
         return margin;
     }
 
-    private float calculateOverlayY(float photoHeight, float overlayHeight, Position pos, float scale) {
-        float margin = wmPx(10);
+    private float calculateOverlayY(float photoHeight, float overlayHeight, Position pos, float scale, float density) {
+        float margin = Math.round(10 * density);
         if (pos.top != null) return pos.top * scale + margin;
         if (pos.bottom != null) return photoHeight - overlayHeight - (pos.bottom * scale) - margin;
         return margin;
@@ -2362,6 +2452,23 @@ public class CameraActivity extends AppCompatActivity {
             super.dispatchDraw(canvas);
             canvas.restore();
         }
+    }
+
+    /**
+     * 一次快门的「拍摄瞬间状态」：水印位图 + GPS + 相关配置 + 预览尺寸/密度。
+     * 照片处理时只读这份快照，避免处理期间时间/位置/配置/尺寸变化带来不一致。
+     */
+    private static class CapturedState {
+        Bitmap watermarkOverlay = null;
+        boolean gpsValid = false;
+        double lat = 0, lon = 0, alt = 0;
+        boolean showWatermark = false;
+        boolean showQrCode = false;
+        WatermarkConfig watermarkConfig = null;
+        QrCodeConfig qrCodeConfig = null;
+        int previewWidth = 0;
+        int previewHeight = 0;
+        float watermarkDensity = 3.0f;
     }
 
     private static class CameraConfig {
