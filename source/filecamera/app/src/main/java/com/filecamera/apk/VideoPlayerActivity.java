@@ -58,7 +58,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
     /** 水印渲染的设计宽度（与相机端一致：360dp 基准） */
     private static final float DESIGN_WIDTH = 360f;
     /** 控制层自动隐藏时间 */
-    private static final long CONTROLS_HIDE_DELAY_MS = 3500;
+    private static final long CONTROLS_HIDE_DELAY_MS = 5000;
 
     private PlayerView playerView;
     private FrameLayout overlay;
@@ -332,7 +332,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
         btnVolumeToggle.setOnClickListener(volumeToggle);
 
         if (btnBurn != null) {
-            btnBurn.setOnClickListener(v -> startBurnFlow());
+            btnBurn.setOnClickListener(v -> {
+                scheduleHideControls();
+                startBurnFlow();
+            });
         }
         updatePlayPauseIcon();
         updateVolumeIcon();
@@ -367,7 +370,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
         }
         if (timeDur != null) timeDur.setText(formatDuration(duration));
         if (btnBurn != null) {
-            btnBurn.setOnClickListener(v -> startBurnFlow());
+            btnBurn.setOnClickListener(v -> {
+                scheduleHideControls();
+                startBurnFlow();
+            });
         }
         updatePlayPauseIcon();
         updateVolumeIcon();
