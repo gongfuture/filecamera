@@ -198,6 +198,21 @@ public class VideoPlayerActivity extends AppCompatActivity {
             }
 
             @Override
+            public void onPlaybackStateChanged(int state) {
+                if (state == androidx.media3.common.Player.STATE_ENDED) {
+                    // 容器的 duration 可能比真实可播内容略长（录制结束时写入的时长偏大），
+                    // 播放结束就把进度条顶到最右、时间显示为总时长，避免"没到顶就停了"的观感
+                    draggingSeek = false;
+                    long dur = Math.max(0, player == null ? 0 : player.getDuration());
+                    if (seekBar != null) {
+                        seekBar.setProgress((int) Math.min(Integer.MAX_VALUE, dur));
+                    }
+                    if (timePos != null) timePos.setText(formatDuration(dur));
+                    updatePlayPauseIcon();
+                }
+            }
+
+            @Override
             public void onVideoSizeChanged(androidx.media3.common.VideoSize videoSize) {
                 postOverlayUpdate();
             }
