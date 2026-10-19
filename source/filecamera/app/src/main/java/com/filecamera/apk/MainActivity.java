@@ -253,40 +253,56 @@ public class MainActivity extends AppCompatActivity {
         }, "import-dir").start();
     }
 
-    /** 递归收集所有文件（跳过点开头的隐藏项）。 */
-    private void collectFiles(androidx.documentfile.provider.DocumentFile node,
+    /** 收集所有文件：显式栈迭代（不用递归，避免深层目录爆栈），跳过点开头的隐藏项。 */
+    private void collectFiles(androidx.documentfile.provider.DocumentFile root,
                               java.util.List<androidx.documentfile.provider.DocumentFile> out) {
-        androidx.documentfile.provider.DocumentFile[] children = node.listFiles();
-        if (children == null) return;
-        for (androidx.documentfile.provider.DocumentFile child : children) {
-            String name = child.getName();
-            if (name == null || name.startsWith(".")) continue;
-            if (child.isDirectory()) {
-                collectFiles(child, out);
-            } else {
-                out.add(child);
+        java.util.ArrayDeque<androidx.documentfile.provider.DocumentFile> stack = new java.util.ArrayDeque<>();
+        stack.push(root);
+        while (!stack.isEmpty()) {
+            androidx.documentfile.provider.DocumentFile node = stack.pop();
+            androidx.documentfile.provider.DocumentFile[] children = node.listFiles();
+            if (children == null) continue;
+            for (androidx.documentfile.provider.DocumentFile child : children) {
+                String name = child.getName();
+                if (name == null || name.startsWith(".")) continue;
+                if (child.isDirectory()) {
+                    stack.push(child);          // 入栈继续展开
+                } else {
+                    out.add(child);
+                }
             }
         }
     }
 
-    /** 确保文件的父目录在库里存在，返回父目录 id。 */
+    /** 确保文件的父目录在库里存在：先把祖先链压栈，再自顶向下逐个建（迭代，无递归）。 */
     private String ensureParentDir(androidx.documentfile.provider.DocumentFile file,
                                    String rootDirId, java.util.Map<String, String> cache) throws Exception {
+        java.util.ArrayDeque<androidx.documentfile.provider.DocumentFile> chain = new java.util.ArrayDeque<>();
         androidx.documentfile.provider.DocumentFile parent = file.getParentFile();
-        if (parent == null) return rootDirId;
-        String key = parent.getUri().toString();
-        String cached = cache.get(key);
-        if (cached != null) return cached;
-        String parentId = ensureParentDir(parent, rootDirId, cache);
-        String name = parent.getName();
-        if (name == null) name = "文件夹";
-        String dirId = IdGenerator.get_id_by_time();
-        DatabaseHelper.getInstance(this).db_run(
-                "INSERT INTO dir (id, name, parent_dir_id, type, createtime, filesortmode, dirsortmode, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                new org.json.JSONArray().put(dirId).put(name).put(parentId)
-                        .put("dir").put(System.currentTimeMillis()).put(2).put(2).put(0L));
-        cache.put(key, dirId);
-        return dirId;
+        while (parent != null) {
+            chain.push(parent);                  // push 后 pop 就是自顶向下
+            parent = parent.getParentFile();
+        }
+        String parentId = rootDirId;
+        while (!chain.isEmpty()) {
+            androidx.documentfile.provider.DocumentFile dir = chain.pop();
+            String key = dir.getUri().toString();
+            String cached = cache.get(key);
+            if (cached != null) {
+                parentId = cached;                // 已经建过，直接复用
+                continue;
+            }
+            String name = dir.getName();
+            if (name == null) name = "文件夹";
+            String dirId = IdGenerator.get_id_by_time();
+            DatabaseHelper.getInstance(this).db_run(
+                    "INSERT INTO dir (id, name, parent_dir_id, type, createtime, filesortmode, dirsortmode, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    new org.json.JSONArray().put(dirId).put(name).put(parentId)
+                            .put("dir").put(System.currentTimeMillis()).put(2).put(2).put(0L));
+            cache.put(key, dirId);
+            parentId = dirId;
+        }
+        return parentId;
     }
 
     /** 取文件显示名（拿不到就用 uri 末段）。 */
