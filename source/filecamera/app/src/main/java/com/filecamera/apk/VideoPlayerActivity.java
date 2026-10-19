@@ -236,7 +236,19 @@ public class VideoPlayerActivity extends AppCompatActivity {
         });
 
         // 点画面：显隐控制层（水印层/播放器都挂上，保证黑边区域点也能响应）
-        View.OnClickListener toggle = v -> setControlsVisible(!controlsVisible);
+        // 点画面：播放中则暂停（暂停键随之出现），暂停中则继续播放；同时保证控制条可见
+        View.OnClickListener toggle = v -> {
+            if (player == null) return;
+            if (player.isPlaying()) {
+                player.pause();
+            } else {
+                if (player.getPlaybackState() == androidx.media3.common.Player.STATE_ENDED) {
+                    player.seekTo(0);
+                }
+                player.play();
+            }
+            setControlsVisible(true);
+        };
         playerView.setOnClickListener(toggle);
         overlay.setClickable(true);
         overlay.setOnClickListener(toggle);
@@ -330,7 +342,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
         if (btnPlay == null) return;
         boolean isPlaying = player != null && player.isPlaying();
         btnPlay.setImageResource(isPlaying ? R.drawable.ic_player_pause : R.drawable.ic_player_play);
-        // 按钮显隐跟随控制层（播放中自动隐藏、暂停时常驻），这里只管图标
+        btnPlay.setVisibility(isPlaying ? View.GONE : View.VISIBLE);
+        // 播放键与控制层解耦：播放中隐藏，暂停/结束时显示
     }
 
     private void updateVolumeIcon() {
@@ -372,10 +385,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
         controlsVisible = visible;
         if (controls != null) {
             controls.setVisibility(visible ? View.VISIBLE : View.GONE);
-        }
-        // 播放/暂停按钮属于控制层：控制层收起时一起收起，弹出时一起出现
-        if (btnPlay != null) {
-            btnPlay.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
         updatePlayPauseIcon();
         uiHandler.removeCallbacks(hideControlsRunnable);
