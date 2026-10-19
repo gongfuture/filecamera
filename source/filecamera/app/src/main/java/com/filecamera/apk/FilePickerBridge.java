@@ -71,6 +71,8 @@ public class FilePickerBridge {
     private String cameraPhotoPath;
     private Uri cameraPhotoUri;
     private String pendingTaskId;
+    /** 打开相机时前端指定的目标目录（照片由 Java 层直接入库到这个目录） */
+    private String pendingTargetDirId = "root";
 
     private LocationManager locationManager;
     private LocationListener locationListener;
@@ -174,6 +176,11 @@ public class FilePickerBridge {
 
                 JSONObject params = new JSONObject(json_data);
                 String type = params.optString("type", "file");
+                // 相机需要知道目标目录：照片由 Java 层直接入库到这个目录
+                this.pendingTargetDirId = params.optString("dirId", "root");
+                if (this.pendingTargetDirId == null || this.pendingTargetDirId.trim().isEmpty()) {
+                    this.pendingTargetDirId = "root";
+                }
                 this.pendingTaskId = task_id;
 
                 activity.runOnUiThread(() -> {
@@ -198,25 +205,6 @@ public class FilePickerBridge {
                 Log.e(TAG, "Error in open() preparation", e);
                 call_js_callback(task_id, false, null, "参数格式错误或准备失败: " + e.getMessage());
                 this.pendingTaskId = null;
-            }
-        }).start();
-    }
-
-    /**
-     * 前端确认「本次拍照会话的图片已经全部拉取/入库完成」，原生侧随即清理会话目录。
-     * 参数: { session_id: String } —— 由相机退出时下发的文件对象携带。
-     * 即使前端未调用，未清理的会话目录也会在 24 小时后被自动回收。
-     */
-    @JavascriptInterface
-    public void confirmCameraSession(String task_id, String json_data) {
-        new Thread(() -> {
-            try {
-                JSONObject params = new JSONObject(json_data);
-                CameraSessionStore.discardSession(activity, params.optString("session_id", ""));
-                call_js_callback(task_id, true, new JSONObject(), null);
-            } catch (Exception e) {
-                Log.e(TAG, "Error in confirmCameraSession()", e);
-                call_js_callback(task_id, false, null, "清理拍照会话失败: " + e.getMessage());
             }
         }).start();
     }
@@ -690,8 +678,9 @@ public class FilePickerBridge {
     }
 
     private void startCustomCamera() {
-        // 启动相机
+        // 启动相机，并把目标目录带进去：照片由 Java 层直接入库到该目录
         Intent intent = new Intent(activity, CameraActivity.class);
+        intent.putExtra(CameraActivity.EXTRA_TARGET_DIR_ID, pendingTargetDirId);
         customCameraLauncher.launch(intent);
     }
     // endregion
@@ -733,17 +722,15 @@ public class FilePickerBridge {
         return results;
     }
 
+    /**
+     * 相机结果：本次会话新增的「库记录」数组。
+     * 照片在拍照时就已由 Java 层入库（FileImporter），这里只把记录交给前端刷新列表，
+     * 前端用记录里的 real_icon_name 加载缩略图，不再需要拉取任何图片数据。
+     */
     private JSONArray handleCustomCameraResult(Intent data) throws JSONException {
-        // 新版相机：退出时回传整份「拍照会话」清单（本次新增的全部图片信息），
-        // 前端拿到清单后再逐张按 content URI 拉取图片数据。
-        JSONObject session = CameraSessionStore.parseSession(data);
-        if (session == null) {
-            // 兜底：Activity result 丢失（进程重建等）时，从磁盘上最近一次尚未交付的会话清单恢复
-            session = CameraSessionStore.readPendingSession(activity);
-        }
-        JSONArray sessionFiles = CameraSessionStore.toFileObjects(session);
-        if (sessionFiles.length() > 0) {
-            return sessionFiles;
+        JSONArray records = CameraSessionStore.parseRecords(data);
+        if (records.length() > 0) {
+            return records;
         }
 
         // 兼容旧格式（单张照片 + 可选原图，通过 ClipData 返回）

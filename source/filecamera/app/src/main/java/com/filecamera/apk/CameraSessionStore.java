@@ -2,11 +2,8 @@ package com.filecamera.apk;
 
 import android.content.Context;
 import android.content.Intent;
-import android.net.Uri;
 import android.os.Environment;
 import android.util.Log;
-
-import androidx.core.content.FileProvider;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -15,50 +12,45 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 拍照会话（Capture Session）存储与交接层。
+ * 拍照会话（Capture Session）。
  *
- * <p>架构说明：相机不再「拍一张就退出并回传一张」，而是：
+ * <p>职责已经收窄成两件事：
  * <ol>
- *     <li>进入相机时通过 {@link #beginSession(Context)} 开启一次会话，本次会话拍摄的所有照片都落在
- *         会话专属目录 {@code .../Pictures/photo_cache/session_xxx/} 下（互不覆盖、互不删除）；</li>
- *     <li>每拍完一张，{@link #addCapture(Context, File, File)} 把「新增图片信息」（文件名 / 路径 / content URI /
- *         大小 / 时间，以及可选的无水印原图）追加进会话清单，并实时落盘为 {@code session.json}；</li>
- *     <li>用户手动退出相机时，{@link #buildResultIntent(Context)} 把整份会话清单随 Activity result 回传，
- *         前端拿到清单后再自行「拉取」图片数据（逐张 content URI 上传入库）；</li>
- *     <li>前端导入完成后可调用 {@link #clearCurrent(Context)} 清理会话目录；未清理的会话由
- *         {@link #gcOldSessions(Context)} 按 24 小时 TTL 兜底回收。</li>
+ *     <li><b>临时目录</b>：为 CameraX 提供本次拍摄的落盘位置（合成在临时目录内原地完成）；</li>
+ *     <li><b>新增记录清单</b>：每张照片合成完后立刻由 {@link FileImporter} 入库，
+ *         入库返回的库记录（id/name/real_file_name/...）追加到清单，退出时整份交给前端，
+ *         前端据此刷新列表并加载缩略图。</li>
  * </ol>
  *
- * <p>清单同时落盘，因此即便 Activity result 丢失（进程被回收后重建等极端情况），
- * 前端仍可通过 {@link #readPendingSession(Context)} 找回本次新增图片的信息。
+ * <p>注意：照片的"是否已入库"不再由这里判断——入库在拍照当时就已经完成（SQLite 是唯一事实来源），
+ * 所以不存在"交付/确认/补交"这层状态；崩溃后由 {@link FileImporter#repairPendingImports()} 修复即可。
  */
 public final class CameraSessionStore {
 
-    /** Activity result 中携带会话清单的 key。 */
+    /** Activity result 中携带"本次新增记录"数组的 key。 */
     public static final String EXTRA_SESSION_JSON = "com.filecamera.apk.extra.CAMERA_SESSION_JSON";
 
     private static final String TAG = "CameraSessionStore";
 
-    /** 会话根目录（位于 getExternalFilesDir(Pictures) 下，已被 FileProvider 的 my_images 路径覆盖）。 */
+    /** 会话根目录（位于 getExternalFilesDir(Pictures) 下，仅作为拍摄中转）。 */
     private static final String SESSION_ROOT_DIR = "photo_cache";
     private static final String SESSION_DIR_PREFIX = "session_";
     private static final String MANIFEST_FILE_NAME = "session.json";
-    /** 未被前端确认清理的会话目录保留时长，超时由 GC 回收。 */
+    /** 未被清理的会话目录保留时长，超时由 GC 回收。 */
     private static final long SESSION_TTL_MS = 24L * 60 * 60 * 1000;
 
     private static final Object LOCK = new Object();
 
-    // 当前会话（进程内单例状态，Activity 重建时可延续；进程被杀后由磁盘清单兜底）
     private static String currentSessionId = null;
     private static File currentSessionDir = null;
     private static long currentCreatedAt = 0;
-    private static final JSONArray currentCaptures = new JSONArray();
+    /** 本次会话新增的库记录（FileImporter 的返回值） */
+    private static final JSONArray currentRecords = new JSONArray();
 
     private CameraSessionStore() {
     }
@@ -67,7 +59,7 @@ public final class CameraSessionStore {
 
     /**
      * 开启（或延续）一次拍照会话。
-     * 同一进程内若已存在未结束的会话则直接复用，避免 Activity 重建时丢失已拍照片。
+     * 同一进程内若已存在未结束的会话则直接复用，避免 Activity 重建时丢失已拍的记录。
      */
     public static File beginSession(Context context) throws IOException {
         synchronized (LOCK) {
@@ -87,7 +79,7 @@ public final class CameraSessionStore {
             currentSessionId = sessionId;
             currentSessionDir = dir;
             currentCreatedAt = now;
-            resetCapturesLocked();
+            resetRecordsLocked();
             persistManifestLocked();
             Log.i(TAG, "拍照会话已开启: " + dir.getAbsolutePath());
             gcOldSessionsAsync(context);
@@ -110,60 +102,33 @@ public final class CameraSessionStore {
         return new File(dir, IdGenerator.getIdByTime() + ".jpg");
     }
 
-    /**
-     * 记录一张已处理完成的新照片。
-     *
-     * @param photoFile    水印图文件
-     * @param originalFile 无水印原图文件，可为 null
-     */
-    public static void addCapture(Context context, File photoFile, File originalFile) {
-        if (photoFile == null || !photoFile.isFile()) return;
+    /** 记录一条已入库的文件记录（水印图 / 无水印原图各算一条）。 */
+    public static void addRecord(Context context, JSONObject record) {
+        if (record == null) return;
         synchronized (LOCK) {
-            try {
-                JSONObject capture = new JSONObject();
-                capture.put("index", currentCaptures.length());
-                capture.put("time", System.currentTimeMillis());
-                capture.put("name", photoFile.getName());
-                capture.put("path", photoFile.getAbsolutePath());
-                capture.put("uri", fileToUri(context, photoFile));
-                capture.put("size", photoFile.length());
-                if (originalFile != null && originalFile.isFile()) {
-                    JSONObject original = new JSONObject();
-                    original.put("name", originalFile.getName());
-                    original.put("path", originalFile.getAbsolutePath());
-                    original.put("uri", fileToUri(context, originalFile));
-                    original.put("size", originalFile.length());
-                    capture.put("original", original);
-                }
-                currentCaptures.put(capture);
-                persistManifestLocked();
-            } catch (JSONException e) {
-                Log.e(TAG, "记录新照片失败", e);
-            }
+            currentRecords.put(record);
+            persistManifestLocked();
         }
     }
 
-    /** 当前会话已保存的照片张数。 */
-    public static int getCaptureCount() {
+    /** 本次会话已入库的记录条数。 */
+    public static int getRecordCount() {
         synchronized (LOCK) {
-            return currentCaptures.length();
+            return currentRecords.length();
         }
     }
 
-    /**
-     * 结束内存中的会话状态（不删除文件）。
-     * 照片已在 {@link #buildResultIntent(Context)} 里交给前端，目录需保留到前端拉取完成。
-     */
+    /** 结束内存中的会话状态（不删除目录；目录里的中转文件已入库，交给 GC/退出清理）。 */
     public static void closeSession() {
         synchronized (LOCK) {
             currentSessionId = null;
             currentSessionDir = null;
             currentCreatedAt = 0;
-            resetCapturesLocked();
+            resetRecordsLocked();
         }
     }
 
-    /** 清空并删除当前会话（前端确认导入完成后调用，或本次会话没有任何照片时调用）。 */
+    /** 删除当前会话目录（本次没有任何照片、或正常退出后清理中转文件时调用）。 */
     public static void clearCurrent(Context context) {
         File dir;
         synchronized (LOCK) {
@@ -171,7 +136,7 @@ public final class CameraSessionStore {
             currentSessionId = null;
             currentSessionDir = null;
             currentCreatedAt = 0;
-            resetCapturesLocked();
+            resetRecordsLocked();
         }
         if (dir != null) {
             deleteRecursively(dir);
@@ -179,28 +144,9 @@ public final class CameraSessionStore {
         }
     }
 
-    /**
-     * 删除指定会话的目录（前端确认图片已全部拉取/入库完成后调用）。
-     * 正在拍摄中的会话不会被删除。
-     */
-    public static void discardSession(Context context, String sessionId) {
-        if (sessionId == null || sessionId.trim().isEmpty()) return;
-        // 防目录穿越
-        if (sessionId.contains("/") || sessionId.contains("\\") || sessionId.contains("..")) return;
-        File dir = new File(getSessionRoot(context), sessionId);
-        synchronized (LOCK) {
-            if (currentSessionDir != null && currentSessionDir.equals(dir)) {
-                return;
-            }
-        }
-        if (deleteRecursively(dir)) {
-            Log.i(TAG, "拍照会话目录已删除: " + dir.getAbsolutePath());
-        }
-    }
-
-    private static void resetCapturesLocked() {
-        while (currentCaptures.length() > 0) {
-            currentCaptures.remove(0);
+    private static void resetRecordsLocked() {
+        while (currentRecords.length() > 0) {
+            currentRecords.remove(0);
         }
     }
 
@@ -208,147 +154,38 @@ public final class CameraSessionStore {
 
     // region --- 交接给前端 ---
 
-    /** 生成完整的会话清单（新增图片信息），供前端按需拉取。 */
-    public static JSONObject snapshot(Context context) {
+    /** 本次会话新增的库记录（前端据此刷新列表、加载缩略图）。 */
+    public static JSONArray snapshotRecords() {
         synchronized (LOCK) {
-            JSONObject session = new JSONObject();
             try {
-                session.put("session_id", currentSessionId == null ? "" : currentSessionId);
-                session.put("created_at", currentCreatedAt);
-                session.put("count", currentCaptures.length());
-                session.put("captures", new JSONArray(currentCaptures.toString()));
+                return new JSONArray(currentRecords.toString());
             } catch (JSONException e) {
-                Log.e(TAG, "构建会话清单失败", e);
+                return new JSONArray();
             }
-            return session;
         }
     }
 
-    /** 把会话清单放进 Activity result，同时用 ClipData 携带所有图片 URI 以兼容旧的读取方式。 */
+    /**
+     * 把"本次新增的文件记录"放进 Activity result。
+     * 前端只需要这些记录（不是文件内容），图片数据早已在 Java 层入库。
+     */
     public static Intent buildResultIntent(Context context) {
-        JSONObject session = snapshot(context);
-        // 标记为「已交付」：若后续 result 丢失，兜底恢复逻辑不会把同一批照片重复交给前端
-        markDeliveredLocked(session);
         Intent intent = new Intent();
-        intent.putExtra(EXTRA_SESSION_JSON, session.toString());
-        try {
-            JSONArray captures = session.optJSONArray("captures");
-            Uri first = null;
-            android.content.ClipData clipData = null;
-            if (captures != null) {
-                for (int i = 0; i < captures.length(); i++) {
-                    JSONObject capture = captures.optJSONObject(i);
-                    if (capture == null) continue;
-                    Uri uri = Uri.parse(capture.optString("uri", ""));
-                    if (uri == null || uri.toString().isEmpty()) continue;
-                    if (first == null) {
-                        first = uri;
-                        clipData = android.content.ClipData.newRawUri("photos", uri);
-                    } else {
-                        clipData.addItem(new android.content.ClipData.Item(uri));
-                    }
-                    JSONObject original = capture.optJSONObject("original");
-                    if (original != null) {
-                        String originalUri = original.optString("uri", "");
-                        if (!originalUri.isEmpty()) {
-                            clipData.addItem(new android.content.ClipData.Item(Uri.parse(originalUri)));
-                        }
-                    }
-                }
-            }
-            if (first != null) {
-                intent.setData(first);
-                intent.setClipData(clipData);
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "构建会话 result 失败", e);
-        }
+        intent.putExtra(EXTRA_SESSION_JSON, snapshotRecords().toString());
         return intent;
     }
 
-    /** 从 Activity result 中解析会话清单，非本会话的 result 返回 null。 */
-    public static JSONObject parseSession(Intent data) {
-        if (data == null) return null;
+    /** 从 Activity result 中解析记录数组；不是本会话的 result 返回空数组。 */
+    public static JSONArray parseRecords(Intent data) {
+        if (data == null) return new JSONArray();
         String raw = data.getStringExtra(EXTRA_SESSION_JSON);
-        if (raw == null || raw.trim().isEmpty()) return null;
+        if (raw == null || raw.trim().isEmpty()) return new JSONArray();
         try {
-            return new JSONObject(raw);
+            return new JSONArray(raw);
         } catch (JSONException e) {
-            Log.e(TAG, "解析会话清单失败", e);
-            return null;
+            Log.e(TAG, "解析会话记录失败", e);
+            return new JSONArray();
         }
-    }
-
-    /**
-     * 把会话清单拍平为前端既有的文件对象数组：[{name, uri, type, capture_index}]。
-     * 顺序与拍照顺序一致，开启「保存无水印原图」时每张照片后紧跟其原图（与旧的 ClipData 顺序一致）。
-     */
-    public static JSONArray toFileObjects(JSONObject session) {
-        JSONArray result = new JSONArray();
-        if (session == null) return result;
-        String sessionId = session.optString("session_id", "");
-        JSONArray captures = session.optJSONArray("captures");
-        if (captures == null) return result;
-        for (int i = 0; i < captures.length(); i++) {
-            JSONObject capture = captures.optJSONObject(i);
-            if (capture == null) continue;
-            try {
-                JSONObject file = new JSONObject();
-                file.put("name", capture.optString("name", ""));
-                file.put("uri", capture.optString("uri", ""));
-                file.put("type", "file");
-                file.put("capture_index", capture.optInt("index", i));
-                file.put("size", capture.optLong("size", 0));
-                file.put("session_id", sessionId);
-                result.put(file);
-
-                JSONObject original = capture.optJSONObject("original");
-                if (original != null) {
-                    JSONObject originalFile = new JSONObject();
-                    originalFile.put("name", original.optString("name", ""));
-                    originalFile.put("uri", original.optString("uri", ""));
-                    originalFile.put("type", "file");
-                    originalFile.put("capture_index", capture.optInt("index", i));
-                    originalFile.put("size", original.optLong("size", 0));
-                    originalFile.put("is_original", true);
-                    originalFile.put("session_id", sessionId);
-                    result.put(originalFile);
-                }
-            } catch (JSONException e) {
-                Log.e(TAG, "构建文件对象失败", e);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * 兜底读取磁盘上最近一次「尚未交付」的会话清单，并标记为已交付。
-     * 用于两种场景：
-     * 1) Activity result 丢失（进程重建等）；
-     * 2) 拍照过程中进程被杀/崩溃，下次启动时由 MainActivity 主动补交给前端。
-     * 已交付过的会话不会被再次返回，避免同一批照片被重复导入。
-     */
-    public static JSONObject readPendingSession(Context context) {
-        File root = getSessionRoot(context);
-        File[] dirs = root.listFiles();
-        if (dirs == null) return null;
-        File latest = null;
-        long latestTime = -1;
-        for (File dir : dirs) {
-            if (!dir.isDirectory() || !dir.getName().startsWith(SESSION_DIR_PREFIX)) continue;
-            if (dir.lastModified() > latestTime) {
-                latestTime = dir.lastModified();
-                latest = dir;
-            }
-        }
-        if (latest == null) return null;
-        JSONObject manifest = readManifest(latest);
-        if (manifest == null) return null;
-        if (manifest.optInt("count", 0) <= 0) return null;
-        if (manifest.optBoolean("delivered", false)) return null;
-        markSessionDelivered(latest, manifest);
-        return manifest;
     }
 
     // endregion
@@ -358,7 +195,7 @@ public final class CameraSessionStore {
     private static File getSessionRoot(Context context) {
         File picturesDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
         if (picturesDir == null) {
-            picturesDir = new File(context.getFilesDir(), "photo_cache");
+            picturesDir = new File(context.getFilesDir(), SESSION_ROOT_DIR);
         }
         return new File(picturesDir, SESSION_ROOT_DIR);
     }
@@ -369,67 +206,24 @@ public final class CameraSessionStore {
             JSONObject manifest = new JSONObject();
             manifest.put("session_id", currentSessionId == null ? "" : currentSessionId);
             manifest.put("created_at", currentCreatedAt);
-            manifest.put("count", currentCaptures.length());
-            manifest.put("captures", new JSONArray(currentCaptures.toString()));
-            writeManifest(new File(currentSessionDir, MANIFEST_FILE_NAME), manifest);
+            manifest.put("count", currentRecords.length());
+            manifest.put("records", new JSONArray(currentRecords.toString()));
+            File target = new File(currentSessionDir, MANIFEST_FILE_NAME);
+            byte[] payload = manifest.toString().getBytes(StandardCharsets.UTF_8);
+            File temp = new File(currentSessionDir, MANIFEST_FILE_NAME + ".tmp");
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(temp)) {
+                out.write(payload);
+                out.flush();
+            }
+            if (!temp.renameTo(target)) {
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(target)) {
+                    out.write(payload);
+                }
+                //noinspection ResultOfMethodCallIgnored
+                temp.delete();
+            }
         } catch (Exception e) {
             Log.e(TAG, "写入会话清单失败", e);
-        }
-    }
-
-    /** 交付时在磁盘清单上打「已交付」标记，防止兜底恢复时重复交付。 */
-    private static void markDeliveredLocked(JSONObject session) {
-        File dir;
-        synchronized (LOCK) {
-            dir = currentSessionDir;
-        }
-        if (dir == null) return;
-        markSessionDelivered(dir, session);
-    }
-
-    /** 给指定会话目录的清单打「已交付」标记（同时更新传入的清单对象）。 */
-    private static void markSessionDelivered(File sessionDir, JSONObject session) {
-        if (sessionDir == null || session == null) return;
-        try {
-            session.put("delivered", true);
-            writeManifest(new File(sessionDir, MANIFEST_FILE_NAME), session);
-        } catch (Exception e) {
-            Log.e(TAG, "标记会话已交付失败", e);
-        }
-    }
-
-    private static void writeManifest(File target, JSONObject manifest) throws IOException {
-        byte[] payload = manifest.toString().getBytes(StandardCharsets.UTF_8);
-        File temp = new File(target.getParentFile(), target.getName() + ".tmp");
-        try (FileOutputStream out = new FileOutputStream(temp)) {
-            out.write(payload);
-            out.flush();
-        }
-        if (!temp.renameTo(target)) {
-            // 极少数文件系统不支持覆盖式 rename，退化为直接写
-            try (FileOutputStream out = new FileOutputStream(target)) {
-                out.write(payload);
-            }
-            //noinspection ResultOfMethodCallIgnored
-            temp.delete();
-        }
-    }
-
-    private static JSONObject readManifest(File sessionDir) {
-        if (sessionDir == null) return null;
-        File manifest = new File(sessionDir, MANIFEST_FILE_NAME);
-        if (!manifest.isFile()) return null;
-        try (InputStream in = new FileInputStream(manifest)) {
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            byte[] chunk = new byte[4096];
-            int read;
-            while ((read = in.read(chunk)) != -1) {
-                buffer.write(chunk, 0, read);
-            }
-            return new JSONObject(new String(buffer.toByteArray(), StandardCharsets.UTF_8));
-        } catch (Exception e) {
-            Log.e(TAG, "读取会话清单失败", e);
-            return null;
         }
     }
 
@@ -438,7 +232,12 @@ public final class CameraSessionStore {
         new Thread(() -> gcOldSessions(appContext)).start();
     }
 
-    /** 回收超过 TTL 的历史会话目录（当前会话除外）。前端导入完成后会主动清理，此处仅兜底。 */
+    /**
+     * 回收历史会话目录：
+     * - 空目录（一张没拍/已全部入库）超过 1 小时即删；
+     * - 其余超过 24 小时删除。
+     * 这里只清理"拍摄中转文件"，不影响任何已入库的照片（照片在 app_data 里）。
+     */
     public static void gcOldSessions(Context context) {
         File root = getSessionRoot(context);
         File[] dirs = root.listFiles();
@@ -449,9 +248,13 @@ public final class CameraSessionStore {
             synchronized (LOCK) {
                 if (currentSessionDir != null && currentSessionDir.equals(dir)) continue;
             }
-            if (now - dir.lastModified() < SESSION_TTL_MS) continue;
+            File[] children = dir.listFiles();
+            boolean onlyManifest = children == null || children.length == 0
+                    || (children.length == 1 && MANIFEST_FILE_NAME.equals(children[0].getName()));
+            long ttl = onlyManifest ? 60L * 60 * 1000 : SESSION_TTL_MS;
+            if (now - dir.lastModified() < ttl) continue;
             if (deleteRecursively(dir)) {
-                Log.i(TAG, "已回收过期拍照会话目录: " + dir.getAbsolutePath());
+                Log.i(TAG, "已回收拍照会话目录: " + dir.getAbsolutePath());
             }
         }
     }
@@ -467,11 +270,6 @@ public final class CameraSessionStore {
             }
         }
         return target.delete();
-    }
-
-    private static String fileToUri(Context context, File file) {
-        Uri uri = FileProvider.getUriForFile(context, context.getPackageName() + ".fileprovider", file);
-        return uri.toString();
     }
 
     // endregion

@@ -1,10 +1,12 @@
 
-function nativeOpenFilePicker(multiple = false, type = 'file', accept = '*/*') {
+function nativeOpenFilePicker(multiple = false, type = 'file', accept = '*/*', dirId = '') {
     // 准备发送给原生端的数据包
     const params = {
         multiple: multiple,
         type: type,
-        acceptTypes: accept.split(',').map(t => t.trim()).filter(Boolean)
+        acceptTypes: accept.split(',').map(t => t.trim()).filter(Boolean),
+        // 相机需要目标目录：照片由 Java 层直接入库到该目录
+        dirId: dirId
     };
     return callAndroidMethod(window.FilePicker, 'open', params);
 }

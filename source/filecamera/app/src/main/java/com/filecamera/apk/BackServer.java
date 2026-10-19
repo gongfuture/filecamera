@@ -64,7 +64,7 @@ public class BackServer {
     public BackServer(WebView webView, Context context) {
         this.webView = webView;
         this.context = context;
-        this.db_helper = new DatabaseHelper(context);
+        this.db_helper = DatabaseHelper.getInstance(context);
 
         // 初始化时创建必要的目录
         initDirectories();
@@ -154,6 +154,11 @@ public class BackServer {
             }
         });
     }
+    /**
+     * 「导入文件 / 导入文件夹」：读取 content URI 的内容并入库。
+     * 入库逻辑（查重重命名、seqnumber、缩略图、落 app_data、写 file 表）统一由 FileImporter 负责，
+     * 与相机拍摄走同一条路径（含 pending_file 两阶段提交与崩溃修复）。
+     */
     @JavascriptInterface
     public void upload_file(String task_id, String json_data) {
         new Thread(() -> {
@@ -163,117 +168,15 @@ public class BackServer {
                 String dir_id = data.getString("dirId");
                 String file_name = data.getString("fileName");
 
-                // 检查目录是否存在
-                JSONArray check_arr = new JSONArray().put(dir_id);
-                JSONObject dir = db_helper.db_get("SELECT id FROM dir WHERE id = ?", check_arr);
-
-                if (dir == null) {
-                    call_js_callback(task_id, false, null, "文件夹不存在");
-                    return;
-                }
-
-                // 解析文件名获取扩展名
-                String[] extension_arr = file_name.split("\\.");
-                String extension = extension_arr.length > 1 ? extension_arr[extension_arr.length - 1] : "";
-                String name_part = (extension_arr.length > 1) ? file_name.substring(0, file_name.lastIndexOf('.')) : file_name;
-
-                // ==================== 修复Bug：检查同名文件并自动重命名 ====================
-                int counter = 1;
-                String original_name_part = name_part;
-                while (true) {
-                    JSONArray check_file_arr = new JSONArray().put(dir_id).put(file_name);
-                    JSONObject existing_file = db_helper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", check_file_arr);
-                    if (existing_file == null) {
-                        break; // 没有同名文件，跳出循环，使用当前的 file_name
-                    }
-                    // 存在同名文件，生成新的文件名，例如：文件(1).jpg
-                    name_part = original_name_part + "(" + counter + ")";
-                    file_name = name_part + (extension.isEmpty() ? "" : "." + extension);
-                    counter++;
-                }
-                // ===========================================================================
-
-                String file_id = IdGenerator.getIdByTime();
-
-                // 从content URI复制文件数据
-                byte[] file_data = copy_file_from_uri(content_uri);
-                
-                long seq_number = getSeqNumberFromString(name_part);
-                long create_time = System.currentTimeMillis();
-                long file_size = file_data.length;
-
-                // 创建存储目录
-                File data_dir = createDataDirectory();
-                File icon_dir = createIconDirectory();
-
-                if (data_dir == null || icon_dir == null) {
-                    call_js_callback(task_id, false, null, "无法创建数据或图标存储目录");
-                    return;
-                }
-
-                // 生成文件名
-                String real_file_name = file_id + (extension.isEmpty() ? "" : "." + extension);
-                String real_icon_name = file_id + "_icon.png";
-
-                // 保存原文件到data目录
-                File target_file = new File(data_dir, real_file_name);
-                if (!saveFile(file_data, target_file)) {
-                    call_js_callback(task_id, false, null, "文件保存失败");
-                    return;
-                }
-                
-                // 如果是图片文件，生成并保存图标
-                if (is_image_file(file_name)) {
-                    byte[] icon_data = icon_make(file_data, file_name);
-                    if (icon_data != null) {
-                        File icon_file = new File(icon_dir, real_icon_name);
-
-                        if (!saveFile(icon_data, icon_file)) {
-                            real_icon_name = null;
-                        }
-                    }
-                } else {
-                    real_icon_name = null;
-                }
-                
-                // 在数据库中保存文件信息
-                JSONArray file_arr = new JSONArray();
-                file_arr.put(file_id);
-                file_arr.put(file_name); // 此处的 file_name 已经是经过查重重命名后的安全名称
-                file_arr.put(dir_id);
-                file_arr.put("file");
-                file_arr.put(real_file_name); 
-                file_arr.put(create_time);
-                file_arr.put(seq_number);
-                file_arr.put(file_size);
-                file_arr.put(extension);
-                file_arr.put(real_icon_name);
-                db_helper.db_run(
-                    "INSERT INTO file (id, name, parent_dir_id, type, real_file_name, createtime, seqnumber, size, extension, real_icon_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    file_arr
-                );
-
-                // 创建要返回给前端的文件信息对象
-                JSONObject result_data = new JSONObject();
-                result_data.put("type", "file");
-                result_data.put("id", file_id);
-                result_data.put("name", file_name); // 返回重命名后的文件名给前端
-                result_data.put("size", file_size);
-                result_data.put("createtime", create_time);
-                result_data.put("extension", extension);
-                result_data.put("real_file_name", real_file_name);
-                result_data.put("real_icon_name", real_icon_name);
-                result_data.put("seqnumber", seq_number);
-                result_data.put("parent_dir_id", dir_id);
-
+                JSONObject result_data = new FileImporter(context)
+                        .importFromContentUri(content_uri, dir_id, file_name);
                 call_js_callback(task_id, true, result_data, null);
-
             } catch (Exception e) {
                 showToast("上传文件时发生错误: " + e.getMessage());
                 call_js_callback(task_id, false, null, e.getMessage());
             }
         }).start();
-    }	
+    }
 	@JavascriptInterface
 	public void getFileData(String task_id, String json_data) {
 		new Thread(() -> {
@@ -545,7 +448,7 @@ public class BackServer {
 
 				long create_time = System.currentTimeMillis();
 				String dir_id = IdGenerator.getIdByTime();
-				long seq_number = getSeqNumberFromString(name);
+				long seq_number = FileImporter.getSeqNumberFromString(name);
 
 				JSONArray create_params = new JSONArray();
 				create_params.put(dir_id);
@@ -823,7 +726,7 @@ public class BackServer {
 					}
 
 					String dirId = dirToRename.getString("id");
-					long new_seq_number = getSeqNumberFromString(newName);
+					long new_seq_number = FileImporter.getSeqNumberFromString(newName);
 
 					// 执行重命名
 					JSONArray updateParams = new JSONArray().put(newName).put(new_seq_number).put(dirId);
@@ -854,7 +757,7 @@ public class BackServer {
 						extension = newName.substring(lastDotIndex + 1);
 					}
 					String name_part = lastDotIndex > 0 ? newName.substring(0, lastDotIndex) : newName;
-					long seq_number = getSeqNumberFromString(name_part);
+					long seq_number = FileImporter.getSeqNumberFromString(name_part);
 					JSONArray updateFileParams = new JSONArray()
 						.put(newName)
 						.put(extension)
@@ -1259,7 +1162,7 @@ public class BackServer {
 			}
 
             File target_file = new File(target_dir, target_name);
-			return saveFile(file_data, target_file);
+			return FileImporter.saveFile(file_data, target_file);
 
 		} catch (Exception e) {
 			android.util.Log.e("CopyPhysicalFile", "物理文件复制时发生异常", e);
@@ -1400,7 +1303,7 @@ public class BackServer {
 						// 目录不存在，创建新目录
 						long create_time = System.currentTimeMillis();
 						String new_dir_id = IdGenerator.getIdByTime();
-						long seq_number = getSeqNumberFromString(dir_name);
+						long seq_number = FileImporter.getSeqNumberFromString(dir_name);
 
 						JSONArray create_dir_params = new JSONArray()
                             .put(new_dir_id)
@@ -1855,135 +1758,6 @@ public class BackServer {
 			db_helper.db_run(sql.toString(), params);
 		}
 	}
-
-    // 工具方法
-	private boolean saveFile(byte[] data, File targetFile) {
-		File parentDir = targetFile.getParentFile();
-		if (parentDir != null && !parentDir.exists()) {
-			if (!parentDir.mkdirs()) return false;
-		}
-		try (FileOutputStream fos = new FileOutputStream(targetFile)) {
-			fos.write(data);
-			return true;
-		} catch (IOException e) {
-			return false;
-		}
-	}
-	private byte[] copy_file_from_uri(String content_uri) throws IOException {
-        Uri uri = Uri.parse(content_uri);
-        try (InputStream input_stream = context.getContentResolver().openInputStream(uri);
-             ByteArrayOutputStream output_stream = new ByteArrayOutputStream()) {
-
-            byte[] buffer = new byte[8192];
-            int bytes_read;
-            while ((bytes_read = input_stream.read(buffer)) != -1) {
-                output_stream.write(buffer, 0, bytes_read);
-            }
-            return output_stream.toByteArray();
-        }
-    }
-
-    private boolean is_image_file(String filename) {
-        return filename.toLowerCase().matches(".*\\.(jpg|jpeg|png|gif|bmp|webp|svg)$");
-    }
-
-	private byte[] icon_make(byte[] file_data, String filename) {
-		try {
-			if (!is_image_file(filename)) {
-				return null;
-			}
-
-			// 先只解码边界获取尺寸，再按比例降采样解码，
-			// 避免全尺寸解码（如 50MP 照片约占用 200MB 内存）把后台的主 Activity 挤死
-			BitmapFactory.Options boundsOptions = new BitmapFactory.Options();
-			boundsOptions.inJustDecodeBounds = true;
-			BitmapFactory.decodeByteArray(file_data, 0, file_data.length, boundsOptions);
-			int srcWidth = boundsOptions.outWidth;
-			int srcHeight = boundsOptions.outHeight;
-			if (srcWidth <= 0 || srcHeight <= 0) {
-				return null;
-			}
-
-			BitmapFactory.Options decodeOptions = new BitmapFactory.Options();
-			decodeOptions.inSampleSize = Math.max(1, Math.min(srcWidth, srcHeight) / 512);
-			Bitmap decoded_bitmap = BitmapFactory.decodeByteArray(file_data, 0, file_data.length, decodeOptions);
-			if (decoded_bitmap == null) {
-				return null;
-			}
-
-			// 按 EXIF 方向旋转：相机直出的原图像素未旋转，方向记录在 EXIF 中，
-			// 不处理会导致缩略图方向错误
-			int orientation = ExifInterface.ORIENTATION_NORMAL;
-			try (ByteArrayInputStream exif_stream = new ByteArrayInputStream(file_data)) {
-				orientation = new ExifInterface(exif_stream)
-						.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-			} catch (Exception ignored) {
-			}
-			Matrix matrix = new Matrix();
-			switch (orientation) {
-				case ExifInterface.ORIENTATION_ROTATE_90: matrix.postRotate(90); break;
-				case ExifInterface.ORIENTATION_ROTATE_180: matrix.postRotate(180); break;
-				case ExifInterface.ORIENTATION_ROTATE_270: matrix.postRotate(270); break;
-			}
-			Bitmap original_bitmap = decoded_bitmap;
-			if (!matrix.isIdentity()) {
-				original_bitmap = Bitmap.createBitmap(decoded_bitmap, 0, 0,
-						decoded_bitmap.getWidth(), decoded_bitmap.getHeight(), matrix, true);
-				if (original_bitmap != decoded_bitmap) {
-					decoded_bitmap.recycle();
-				}
-			}
-
-			int original_width = original_bitmap.getWidth();
-			int original_height = original_bitmap.getHeight();
-			float aspect_ratio = (float) original_width / (float) original_height;
-
-			int new_width;
-			int new_height;
-			if (original_width >= original_height) {
-				new_width = 256;
-				new_height = Math.round(256 / aspect_ratio);
-			} else {
-				new_height = 256;
-				new_width = Math.round(256 * aspect_ratio);
-			}
-
-			Bitmap scaled_bitmap = Bitmap.createScaledBitmap(original_bitmap, new_width, new_height, true);
-
-			ByteArrayOutputStream output_stream = new ByteArrayOutputStream();
-			scaled_bitmap.compress(Bitmap.CompressFormat.PNG, 100, output_stream);
-
-			original_bitmap.recycle();
-			scaled_bitmap.recycle();
-
-			return output_stream.toByteArray();
-		} catch (Exception e) {
-			return null;
-		}
-	}
-
-    private long getSeqNumberFromString(String input) {
-        if (input == null || input.isEmpty()) return 0L;
-
-        StringBuilder numberBuilder = new StringBuilder();
-        for (char c : input.toCharArray()) {
-            if (Character.isDigit(c)) {
-                numberBuilder.append(c);
-            }
-        }
-        String numberResult = numberBuilder.toString();
-        if (numberResult.length() > 18) {
-            numberResult = numberResult.substring(numberResult.length() - 18);
-        }
-
-        if (numberResult.isEmpty()) return 0L;
-
-        try {
-            return Long.parseLong(numberResult);
-        } catch (NumberFormatException e) {
-            return 0L;
-        }
-    }
 	
 	@JavascriptInterface
 	public void saveIconToCache(String task_id, String json_data) {

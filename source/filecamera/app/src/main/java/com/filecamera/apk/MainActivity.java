@@ -82,8 +82,8 @@ public class MainActivity extends AppCompatActivity {
     private DatabaseHelper dbHelper;
     private RoadDatabaseHelper roadDatabaseHelper;
     private RoadApiHelper roadApiHelper;
-    // 崩溃兜底：启动后是否已尝试补偿交付上一次未交付的拍照会话
-    private boolean recoveryDelivered = false;
+    // 启动修复：是否已触发过（每次启动只跑一次）
+    private boolean repairStarted = false;
 
     // --- 现代化的 ActivityResult Launcher ---
 
@@ -241,7 +241,7 @@ public class MainActivity extends AppCompatActivity {
      * 设置数据库助手和后端服务的 JS 接口。
      */
     private void initDatabaseAndBackend() {
-        dbHelper = new DatabaseHelper(this);
+        dbHelper = DatabaseHelper.getInstance(this);
         roadDatabaseHelper = new RoadDatabaseHelper(this) ;
         backServer = new BackServer(webView, this);
         roadApiHelper = new RoadApiHelper(this, webView);
@@ -324,7 +324,7 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 webView.evaluateJavascript("if(typeof onAndroidReady === 'function') { onAndroidReady(); }", null);
-                deliverRecoveredCameraSession();
+                repairPendingImports();
             }
         });
 
@@ -369,35 +369,20 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 启动时兜底交付：若上一次拍照会话没能正常交付（相机里进程被系统回收 / 相机崩溃），
-     * 把残留会话中已经保存好的照片信息推给前端，由前端自动补导入。
-     * 已交付过的会话不会被重复推送（见 CameraSessionStore#readPendingSession）。
+     * 启动时修复未完成的入库（拍照/导入时进程被杀留下的 pending_file 记录）：
+     * 主图缺失的丢弃、缩略图缺失的重建、文件齐的补提交。照片早已入库的不会重复处理。
      */
-    private void deliverRecoveredCameraSession() {
-        if (recoveryDelivered) return;
-        recoveryDelivered = true;
+    private void repairPendingImports() {
+        if (repairStarted) return;
+        repairStarted = true;
         new Thread(() -> {
             try {
-                JSONArray allFiles = new JSONArray();
-                String firstSessionId = "";
-                // 逐个取出未交付的会话（正常情况下最多只有一个），合并成一批交给前端
-                for (int guard = 0; guard < 20; guard++) {
-                    JSONObject session = CameraSessionStore.readPendingSession(this);
-                    if (session == null) break;
-                    if (firstSessionId.isEmpty()) firstSessionId = session.optString("session_id", "");
-                    JSONArray files = CameraSessionStore.toFileObjects(session);
-                    for (int i = 0; i < files.length(); i++) {
-                        allFiles.put(files.get(i));
-                    }
+                int repaired = new FileImporter(this).repairPendingImports();
+                if (repaired > 0) {
+                    Log.i(TAG, "启动修复完成，处理了 " + repaired + " 条未完成的入库记录");
                 }
-                if (allFiles.length() == 0) return;
-                JSONObject payload = new JSONObject();
-                payload.put("session_id", firstSessionId);
-                payload.put("files", allFiles);
-                final String js = "if(window.onRecoveredCameraSession){window.onRecoveredCameraSession(" + payload + ");}";
-                runOnUiThread(() -> webView.evaluateJavascript(js, null));
             } catch (Exception e) {
-                Log.e(TAG, "恢复未交付的拍照会话失败", e);
+                Log.e(TAG, "启动修复未完成的入库记录失败", e);
             }
         }).start();
     }

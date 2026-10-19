@@ -11,11 +11,42 @@ import org.json.JSONObject;
 
 public class DatabaseHelper extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "backserver.db";
-    private static final int DATABASE_VERSION = 1;
+    // v2：新增 pending_file（入库预备表，对现有表零侵入）
+    private static final int DATABASE_VERSION = 2;
+
+    private static volatile DatabaseHelper instance;
 
     public DatabaseHelper(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
     }
+
+    /** 全局唯一的数据库连接，避免相机入库与 Web 桥各开一个连接互相锁 */
+    public static DatabaseHelper getInstance(Context context) {
+        if (instance == null) {
+            synchronized (DatabaseHelper.class) {
+                if (instance == null) {
+                    instance = new DatabaseHelper(context.getApplicationContext());
+                }
+            }
+        }
+        return instance;
+    }
+
+    /** 入库预备表：先写这里（对外不可见），文件落位后再用事务搬进 file 表 */
+    private static final String CREATE_PENDING_FILE =
+            "CREATE TABLE IF NOT EXISTS pending_file (" +
+                    "id TEXT PRIMARY KEY," +
+                    "name TEXT NOT NULL," +
+                    "parent_dir_id TEXT NOT NULL," +
+                    "type TEXT DEFAULT 'file'," +
+                    "real_file_name TEXT," +
+                    "real_icon_name TEXT," +
+                    "createtime INTEGER," +
+                    "seqnumber INTEGER DEFAULT 0," +
+                    "size INTEGER," +
+                    "extension TEXT," +
+                    "tmp_photo_path TEXT," +
+                    "tmp_icon_path TEXT)";
 
     @Override
     public void onCreate(SQLiteDatabase db) {
@@ -45,6 +76,8 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 		db.execSQL("CREATE INDEX idx_dir_parent_dir_id ON dir (parent_dir_id)");
 		db.execSQL("CREATE INDEX idx_file_parent_dir_id ON file (parent_dir_id)");
 		db.execSQL("CREATE INDEX idx_file_seqnumber ON file (seqnumber)");
+        // 入库预备表（v2 新增）
+        db.execSQL(CREATE_PENDING_FILE);
         // 插入根目录
         db.execSQL("INSERT OR IGNORE INTO dir (id, name, parent_dir_id, type, dirsortmode, filesortmode, createtime) " +
                 "VALUES ('root', '', NULL, 'dir', 2, 2, " + System.currentTimeMillis() + ")");
@@ -52,6 +85,10 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        // 只做增量建表/加列，不改老表结构，升级不会与现有数据冲突
+        if (oldVersion < 2) {
+            db.execSQL(CREATE_PENDING_FILE);
+        }
     }
 
     // 通用数据库操作函数 - 类似Node.js的db_get

@@ -133,6 +133,11 @@ public class CameraActivity extends AppCompatActivity {
     private MediaActionSound mediaActionSound;
 
     // region --- 连续拍照会话 ---
+    /** 打开相机时由前端传入的目标目录 id（照片直接入库到这个目录） */
+    public static final String EXTRA_TARGET_DIR_ID = "com.filecamera.apk.extra.TARGET_DIR_ID";
+    /** 入库器：合成完成后立刻把照片写进库（SQLite 是唯一事实来源） */
+    private FileImporter fileImporter;
+    private String targetDirId = "root";
     // 是否有照片正在处理：期间禁用快门与退出，保证「已拍的照片一定不丢」
     // （照片处理是同步的，这个标记同时挡住「点快门连击」和「处理中退出」两件事）
     private volatile boolean isCaptureProcessing = false;
@@ -258,6 +263,13 @@ public class CameraActivity extends AppCompatActivity {
         setContentView(R.layout.activity_camera);
         // 相机会话可能持续较久（连续拍摄），拍摄期间保持屏幕常亮（与主界面 wakelock 同一套机制）
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        // 0. 前端传入的目标目录（照片直接入库到这个目录）
+        String extraDirId = getIntent().getStringExtra(EXTRA_TARGET_DIR_ID);
+        if (extraDirId != null && !extraDirId.trim().isEmpty()) {
+            targetDirId = extraDirId;
+        }
+        fileImporter = new FileImporter(this);
 
         // 1. 处理返回键逻辑：与右上角退出按钮一致——退出即交付本次会话已拍照片
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
@@ -969,11 +981,17 @@ public class CameraActivity extends AppCompatActivity {
                 }
             }
 
-            // 记入本次拍照会话（并实时落盘），退出时整份清单交给前端
-            CameraSessionStore.addCapture(this, photoFile, originalFile);
+            // 合成完成 → 立刻在 Java 层入库（FileImporter 负责查重命名/缩略图/落盘/写库），
+            // 入库成功才把记录放进本次会话清单；照片文件此时已被移入 app_data。
+            JSONObject watermarkedRecord = fileImporter.importLocalFile(photoFile, targetDirId, photoFile.getName());
+            CameraSessionStore.addRecord(this, watermarkedRecord);
+            if (originalFile != null) {
+                JSONObject originalRecord = fileImporter.importLocalFile(originalFile, targetDirId, originalFile.getName());
+                CameraSessionStore.addRecord(this, originalRecord);
+            }
         } catch (Throwable e) {
             // 连 OutOfMemoryError 也要接住，否则快门会一直停在「处理中」再也点不动
-            handlePhotoError("处理照片失败", e);
+            handlePhotoError("照片保存失败", e);
             return;
         } finally {
             if (state.watermarkOverlay != null && !state.watermarkOverlay.isRecycled()) {
@@ -1038,11 +1056,11 @@ public class CameraActivity extends AppCompatActivity {
 
     /**
      * 结束本次拍照会话：
-     * 有照片 → 以 RESULT_OK 回传整份会话清单（前端据此自动拉取图片数据）；
+     * 有照片 → 以 RESULT_OK 回传「本次新增的库记录」（照片早已入库，前端只负责刷新列表）；
      * 无照片 → RESULT_CANCELED（等同于用户取消）。
      */
     private void finishWithSession() {
-        int count = CameraSessionStore.getCaptureCount();
+        int count = CameraSessionStore.getRecordCount();
         if (count <= 0) {
             CameraSessionStore.clearCurrent(this);
             setResult(RESULT_CANCELED);
@@ -1050,7 +1068,7 @@ public class CameraActivity extends AppCompatActivity {
             return;
         }
         setResult(RESULT_OK, CameraSessionStore.buildResultIntent(this));
-        // 仅重置内存会话状态；会话目录保留给前端拉取，待前端确认导入完成后再删除
+        // 重置内存会话状态；中转目录只剩余空目录/已入库文件，交由 GC 回收
         CameraSessionStore.closeSession();
         finish();
     }

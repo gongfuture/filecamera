@@ -203,66 +203,6 @@ function menu_upload_file(){
 function menu_camerainput(){
 	document.getElementById("camerainput").click();
 }
-/**
- * 拉取一次拍照会话新增的图片并入库。
- * 相机端支持连续拍摄，退出时才把「本次新增图片信息」（content URI 清单）交给前端；
- * 这里负责逐张拉取图片数据（uploadfile 读 content URI 复制进 app_data）并写入当前目录。
- *
- * 入库契约与「菜单 → 导入文件」（inputbutton）完全一致：
- *   1. 逐张 uploadfile()（后端负责查重重命名、seqnumber、缩略图、DB 记录）
- *   2. 全部上传完成后 updateTable() 重新拉取索引，由后端按目录的 filesortmode 排序
- * 这里刻意不做 insertobj() 的"就地插入"：那是一套只按单一字段比较的近似排序，
- * 无法复现 SQL 的次级排序（seqnumber+name / extension+name），会造成落库排序与界面顺序短暂不一致。
- *
- * @param {Array} files - [{name, uri, size, session_id, ...}]
- * @returns {Promise<{ok:number, failed:number}>}
- */
-async function import_camera_session(files) {
-	const list = Array.isArray(files) ? files.filter(item => item && item.uri) : [];
-	if (list.length === 0) {
-		return { ok: 0, failed: 0 };
-	}
-
-	const session_ids = [...new Set(list.map(item => item.session_id).filter(Boolean))];
-	const target_dir_id = open_dir.id;
-	const overlay = document.getElementById("loadingoverlay");
-	const message = document.getElementById("loadingmessage");
-	let ok = 0;
-	let failed = 0;
-
-	window.Android.startwakelock();
-	if (overlay) overlay.style.display = "flex";
-	try {
-		for (let i = 0; i < list.length; i++) {
-			const file = list[i];
-			if (message) message.innerText = `正在导入 ${i + 1}/${list.length} …`;
-			try {
-				await uploadfile(file.uri, target_dir_id, file.name);
-				ok++;
-			} catch (error) {
-				failed++;
-				console.error("导入相机照片失败:", file.name, error);
-			}
-		}
-		// 交给 updateTable 统一重排：最终顺序 = 后端按 filesortmode 的 ORDER BY
-		await updateTable(target_dir_id);
-	} finally {
-		if (overlay) overlay.style.display = "none";
-		window.Android.endwakelock();
-		// 全部成功才通知原生清理临时会话目录；有失败则保留，便于重试或人工取回
-		if (failed === 0 && session_ids.length > 0) {
-			for (const session_id of session_ids) {
-				try {
-					await callAndroidMethod(window.FilePicker, 'confirmCameraSession', { session_id: session_id });
-				} catch (error) {
-					console.warn("清理拍照会话失败:", error);
-				}
-			}
-		}
-	}
-
-	return { ok: ok, failed: failed };
-}
 // 获取文件数据
 async function getFileData(parentpath_arr, name, table) {
     try {

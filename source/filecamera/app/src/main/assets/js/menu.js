@@ -137,17 +137,13 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 		back()
 	}else if(event.target.id == 'cameraspan'){
 		close_opening_menu(menu_set);
-		//menu_camerainput()
-		// 相机支持连续拍摄：拍完不退出，退出时原生把本次新增图片的信息（content URI 清单）交给前端，
-		// 前端随后自动逐张拉取图片数据并入库（开启“保存无水印原图”时每张照片会附带其原图）
-		let uri_arr = await nativeOpenFilePicker(true,'customcamera')
-		if (!uri_arr ||uri_arr.length === 0) {
+		// 相机支持连续拍摄：照片在拍完那一刻就已经由 Java 层入库（含缩略图、记录），
+		// 这里只把「本次新增的库记录」拿回来刷新列表，不再需要逐张拉取/上传图片数据。
+		let new_records = await nativeOpenFilePicker(true,'customcamera','*/*', open_dir.id)
+		if (!new_records || new_records.length === 0) {
 			return;
 		}
-		const import_result = await import_camera_session(uri_arr);
-		if (import_result.failed > 0) {
-			await alert_fix(`导入完成：成功 ${import_result.ok} 张，失败 ${import_result.failed} 张`);
-		}
+		await updateTable(open_dir.id);
 	}else if(event.target.id == 'settingbutton'){
 		close_opening_menu(menu_set);
 		open_setting_page()

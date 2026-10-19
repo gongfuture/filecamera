@@ -2086,36 +2086,6 @@
 			}
 		}
 		await updateTable("root")
-		// 目录就绪后，补导入上次因崩溃/进程回收而未交付的相机照片
-		camera_session_dir_ready = true
-		await flush_recovered_camera_sessions()
-	}
-
-	// 相机拍照会话崩溃兜底：原生在启动时把上次未交付的会话清单推过来，
-	// 这里先缓存，等目录列表加载完成后再自动拉取并入库。
-	let pending_camera_sessions = []
-	let camera_session_dir_ready = false
-	window.onRecoveredCameraSession = function (payload) {
-		if (payload && payload.files && payload.files.length > 0) {
-			pending_camera_sessions.push(payload)
-			// 目录已就绪（推送晚于初始化）时立即处理，否则等 get_config 里触发
-			if (camera_session_dir_ready) {
-				flush_recovered_camera_sessions()
-			}
-		}
-	}
-	async function flush_recovered_camera_sessions() {
-		if (typeof import_camera_session !== 'function') {
-			return
-		}
-		while (pending_camera_sessions.length > 0) {
-			const payload = pending_camera_sessions.shift()
-			try {
-				await import_camera_session(payload.files)
-			} catch (error) {
-				console.warn('补导入未交付的相机照片失败:', error)
-			}
-		}
 	}
 	document.getElementById("fileinput").value = 当前文件夹路径_arr.join('/')+'/'
 	get_config()
