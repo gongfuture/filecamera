@@ -37,8 +37,8 @@ public final class CameraSessionStore {
 
     private static final String TAG = "CameraSessionStore";
 
-    /** 会话根目录（位于 getExternalFilesDir(Pictures) 下，仅作为拍摄中转）。 */
-    private static final String SESSION_ROOT_DIR = "photo_cache";
+    /** 会话根目录（内部分区，与 app_data/icons 同一分区，搬移才能用原子 rename）。 */
+    private static final String SESSION_ROOT_DIR = "photo_tmp";
     private static final String SESSION_DIR_PREFIX = "session_";
     private static final String MANIFEST_FILE_NAME = "session.json";
     /** 未被清理的会话目录保留时长，超时由 GC 回收。 */
@@ -193,11 +193,8 @@ public final class CameraSessionStore {
     // region --- 磁盘清单与回收 ---
 
     private static File getSessionRoot(Context context) {
-        File picturesDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
-        if (picturesDir == null) {
-            picturesDir = new File(context.getFilesDir(), SESSION_ROOT_DIR);
-        }
-        return new File(picturesDir, SESSION_ROOT_DIR);
+        // 内部分区：与 files/app_data、files/icons 同分区，成品搬移是原子 rename（不是跨分区复制）
+        return new File(context.getFilesDir(), SESSION_ROOT_DIR);
     }
 
     private static void persistManifestLocked() {
