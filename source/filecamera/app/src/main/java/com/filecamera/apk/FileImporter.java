@@ -5,7 +5,10 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.util.Log;
@@ -510,7 +513,7 @@ public class FileImporter {
     }
 
     /**
-     * 视频缩略图：首帧画面里已经烧好水印，直接缩放存 PNG，不再二次合成。
+     * 视频缩略图：首帧画面里已经烧好水印，缩放后直接合成播放三角，存 PNG。
      */
     private byte[] videoThumbnail(File videoFile) {
         Bitmap frame = videoFirstFrame(videoFile);
@@ -520,7 +523,7 @@ public class FileImporter {
         return bytes;
     }
 
-    /** 等比缩到长边 256 后压成 PNG。 */
+    /** 等比缩到长边 256，并在中心合成明显的半透明播放三角，再压成 PNG。 */
     private static byte[] scaleAndCompress(Bitmap source) {
         if (source == null) return null;
         int w = source.getWidth();
@@ -538,6 +541,12 @@ public class FileImporter {
         Bitmap scaled = null;
         try {
             scaled = Bitmap.createScaledBitmap(source, nw, nh, true);
+            Bitmap annotated = scaled.copy(Bitmap.Config.ARGB_8888, true);
+            if (annotated != null) {
+                drawPlayTriangle(annotated);
+                if (scaled != source) scaled.recycle();
+                scaled = annotated;
+            }
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             scaled.compress(Bitmap.CompressFormat.PNG, 100, out);
             return out.toByteArray();
@@ -546,6 +555,37 @@ public class FileImporter {
         } finally {
             if (scaled != null && scaled != source && !scaled.isRecycled()) scaled.recycle();
         }
+    }
+
+    /** 在缩略图中心画半透明白色播放三角，带深色描边保证亮/暗画面都明显。 */
+    private static void drawPlayTriangle(Bitmap bitmap) {
+        if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) return;
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        float shortSide = Math.min(width, height);
+        float triangleHeight = shortSide * 0.44f;
+        float triangleWidth = triangleHeight * 0.82f;
+        float cx = width / 2f;
+        float cy = height / 2f;
+        float left = cx - triangleWidth * 0.38f;
+
+        Path path = new Path();
+        path.moveTo(left, cy - triangleHeight / 2f);
+        path.lineTo(left, cy + triangleHeight / 2f);
+        path.lineTo(left + triangleWidth, cy);
+        path.close();
+
+        Canvas canvas = new Canvas(bitmap);
+        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        fill.setColor(0xCCFFFFFF);
+        fill.setStyle(Paint.Style.FILL);
+        canvas.drawPath(path, fill);
+
+        Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+        stroke.setColor(0x66000000);
+        stroke.setStyle(Paint.Style.STROKE);
+        stroke.setStrokeWidth(Math.max(2f, shortSide * 0.014f));
+        canvas.drawPath(path, stroke);
     }
 
     // endregion
