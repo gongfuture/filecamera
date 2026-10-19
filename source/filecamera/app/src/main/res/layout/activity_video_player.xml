@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- 视频播放（干净视频，水印在播放时叠加） -->
+    <!-- 视频播放（干净视频，水印在播放时叠加）；-5s/+15s 按钮在代码里关掉 -->
     <androidx.media3.ui.PlayerView
         android:id="@+id/player_view"
         android:layout_width="match_parent"

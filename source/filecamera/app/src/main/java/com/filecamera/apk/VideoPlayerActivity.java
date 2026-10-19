@@ -120,6 +120,15 @@ public class VideoPlayerActivity extends AppCompatActivity {
         // 2) 播放
         player = new ExoPlayer.Builder(this).build();
         playerView.setPlayer(player);
+        // 去掉播放器自带的 -5s / +15s 两个快捷快进快退按钮
+        androidx.media3.ui.PlayerControlView controlView = findPlayerControlView(playerView);
+        if (controlView != null) {
+            controlView.setShowRewindButton(false);
+            controlView.setShowFastForwardButton(false);
+            // 单视频播放：上一个/下一个也没意义，一起去掉
+            controlView.setShowPreviousButton(false);
+            controlView.setShowNextButton(false);
+        }
         player.setMediaItem(MediaItem.fromUri(Uri.fromFile(videoFile)));
         player.prepare();
         player.addListener(new androidx.media3.common.Player.Listener() {
@@ -196,6 +205,20 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
     // endregion
 
+    /** 在 PlayerView 里递归找到 PlayerControlView（播放控制器是懒加载的，setPlayer 之后才存在）。 */
+    private static androidx.media3.ui.PlayerControlView findPlayerControlView(View root) {
+        if (root instanceof androidx.media3.ui.PlayerControlView) {
+            return (androidx.media3.ui.PlayerControlView) root;
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                androidx.media3.ui.PlayerControlView found = findPlayerControlView(group.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
     // region --- 水印渲染 ---
 
     /**
