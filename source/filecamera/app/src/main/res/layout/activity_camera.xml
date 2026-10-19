@@ -51,51 +51,47 @@
         android:background="#DD000000"
         android:orientation="vertical">
     <!-- 模式选择区域：左边两个模式标签，变焦按钮居中 -->
-        <RelativeLayout
+        <!-- 模式栏：三等分（和之前「普通模式 / 1x / 自拍模式」一致的比例） -->
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="48dp">
+            android:layout_height="48dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-            <!-- 左：照相模式 -->
             <TextView
                 android:id="@+id/modeTabPhoto"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="match_parent"
-                android:layout_alignParentStart="true"
-                android:layout_centerVertical="true"
-                android:layout_marginStart="20dp"
+                android:layout_weight="1"
                 android:gravity="center"
                 android:text="照相模式"
                 android:textColor="@color/white"
                 android:textSize="14sp" />
 
-            <!-- 中：变焦按钮（正中） -->
             <TextView
                 android:id="@+id/zoomButton"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="32dp"
-                android:layout_centerInParent="true"
+                android:layout_weight="1"
+                android:layout_marginHorizontal="36dp"
                 android:background="@drawable/zoom_button_background"
                 android:gravity="center"
-                android:minWidth="64dp"
                 android:text="1x"
                 android:textColor="@color/white"
                 android:textSize="14sp"
                 android:visibility="gone" />
 
-            <!-- 右：录像模式 -->
             <TextView
                 android:id="@+id/modeTabVideo"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="match_parent"
-                android:layout_alignParentEnd="true"
-                android:layout_centerVertical="true"
-                android:layout_marginEnd="20dp"
+                android:layout_weight="1"
                 android:gravity="center"
                 android:text="录像模式"
                 android:textColor="@color/white"
                 android:textSize="14sp" />
 
-        </RelativeLayout>
+        </LinearLayout>
 
     </LinearLayout>
 
