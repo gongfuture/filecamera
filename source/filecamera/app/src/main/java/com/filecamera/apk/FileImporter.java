@@ -340,18 +340,21 @@ public class FileImporter {
     public static final class VideoTicket {
         public final String fileId;
         public final String realFileName;
-        public final File targetFile;
+        public File targetFile;
         public final String displayName;
         /** 本次录像的水印数据（只写进 .wmp4 文件尾部，不存数据库） */
         public final JSONObject watermark;
+        /** 水印资源旁文件（录制中持续落盘，收尾后删除） */
+        public final File watermarkSidecar;
         public final String parentDirId;
 
-        VideoTicket(String fileId, String realFileName, File targetFile, String displayName, String parentDirId, JSONObject watermark) {
+        VideoTicket(String fileId, String realFileName, File targetFile, String displayName, String parentDirId, JSONObject watermark, File watermarkSidecar) {
             this.fileId = fileId;
             this.realFileName = realFileName;
             this.targetFile = targetFile;
             this.displayName = displayName;
             this.watermark = watermark;
+            this.watermarkSidecar = watermarkSidecar;
             this.parentDirId = parentDirId;
         }
     }
@@ -377,21 +380,22 @@ public class FileImporter {
         String fileId = IdGenerator.get_id_by_time();
         String realFileName = fileId + "." + extension;
         String realIconName = fileId + "_icon.png";
-        File dataDir = dataDirectory();
-        if (!dataDir.isDirectory()) {
-            //noinspection ResultOfMethodCallIgnored
-            dataDir.mkdirs();
-        }
-        File target = new File(dataDir, realFileName);
+        // 录制期间只写临时目录（草稿纸），收尾成功才搬进 app_data：
+        // 保证 app_data 里永远只有"完整已提交"的文件，列表也不会看到半成品
+        File tmpDir = videoTempDir();
+        File part = new File(tmpDir, realFileName + ".part");
+        File sidecar = new File(tmpDir, fileId + ".json");
 
         dbHelper.db_run("INSERT INTO pending_file (" + COLUMNS + ",tmp_photo_path,tmp_icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 new JSONArray()
                         .put(fileId).put(finalName).put(targetDirId).put("file")
                         .put(realFileName).put(realIconName).put(System.currentTimeMillis())
                         .put(getSeqNumberFromString(baseNameOf(finalName))).put(0L).put(extension)
-                        .put("").put(""));
+                        .put(part.getAbsolutePath()).put(sidecar.getAbsolutePath()));
         // .wmp4 专用格式：水印数据只写进文件尾部，数据库不保存任何水印信息
-        return new VideoTicket(fileId, realFileName, target, finalName, targetDirId, watermarkJson);
+        // 水印资源旁文件：录制中每秒落盘，收尾时再写进 .wmp4 尾部
+        persistVideoWatermark(fileId, watermarkJson, sidecar);
+        return new VideoTicket(fileId, realFileName, part, finalName, targetDirId, watermarkJson, sidecar);
     }
 
     /**
@@ -406,6 +410,33 @@ public class FileImporter {
             throw new IOException("录像文件无法播放（可能未正常结束）");
         }
         long size = ticket.targetFile.length();
+        // 先折叠关键帧时间轴并把水印数据写进临时文件尾部，再整体搬进 app_data
+        try {
+            JSONObject wm = ticket.watermark;
+            if (wm == null) wm = readVideoWatermarkSidecar(ticket.fileId, ticket.watermarkSidecar);
+            String wmJson = rebuildWatermarkTimeline(wm, ticket.targetFile);
+            if (wmJson != null) {
+                WatermarkFileCodec.writeTrailer(ticket.targetFile, WatermarkFileCodec.withContentHash(ticket.targetFile, wmJson));
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "写入 .wmp4 水印数据失败", e);
+        }
+        // 草稿 → 正式目录（同分区 rename，原子）
+        File dataDir = dataDirectory();
+        if (!dataDir.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            dataDir.mkdirs();
+        }
+        File finalFile = new File(dataDir, ticket.realFileName);
+        if (finalFile.isFile()) {
+            //noinspection ResultOfMethodCallIgnored
+            finalFile.delete();
+        }
+        if (!moveFile(ticket.targetFile, finalFile)) {
+            throw new IOException("录像文件搬入正式目录失败");
+        }
+        ticket.targetFile = finalFile;
+        deleteQuietly(ticket.watermarkSidecar);
         String hash = sha256(ticket.targetFile);
 
         // 缩略图（首帧）；失败不阻塞入库
@@ -423,17 +454,7 @@ public class FileImporter {
 
         dbHelper.db_run("UPDATE pending_file SET size = ?, real_icon_name = ? WHERE id = ?",
                 new JSONArray().put(size).put(iconWritten == null ? JSONObject.NULL : iconWritten).put(ticket.fileId));
-        // 按关键帧重排时间轴 → 把水印 JSON 写进 .wmp4 文件尾部（数据库不再保存水印信息）
-        try {
-            String wmJson = rebuildWatermarkTimeline(ticket.watermark, ticket.targetFile);
-            if (wmJson != null) {
-                WatermarkFileCodec.writeTrailer(ticket.targetFile, WatermarkFileCodec.withContentHash(ticket.targetFile, wmJson));
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "写入 .wmp4 水印数据失败", e);
-        }
         size = ticket.targetFile.length();
-
         promote(ticket.fileId);
         return buildRecord(ticket.fileId, ticket.displayName, ticket.parentDirId, ticket.realFileName,
                 iconWritten, System.currentTimeMillis(), getSeqNumberFromString(baseNameOf(ticket.displayName)),
@@ -453,6 +474,7 @@ public class FileImporter {
             ticket.targetFile.delete();
         }
         deleteQuietly(new File(iconDirectory(), ticket.fileId + "_icon.png"));
+        if (ticket.watermarkSidecar != null) deleteQuietly(ticket.watermarkSidecar);
     }
 
     /** 探测文件是否是可播放的视频（未 finalize 的 MP4 会打不开）。 */
@@ -786,6 +808,53 @@ public class FileImporter {
         return buildRecord(fileId, finalName, targetDirId, realFileName, iconWritten,
                 System.currentTimeMillis(), getSeqNumberFromString(baseNameOf(finalName)),
                 size, extension);
+    }
+
+    // endregion
+    // region --- 录像临时目录 + 水印旁文件 ---
+
+    /** 录像临时目录：录制期间只写这里，收尾成功才搬进 app_data。 */
+    private File videoTempDir() {
+        File dir = new File(context.getFilesDir(), "video_tmp");
+        if (!dir.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    /** 录制中把水印时间轴落到旁文件（几 KB，每秒一次），崩溃后也只是草稿。 */
+    public void persistVideoWatermark(String fileId, JSONObject watermarkJson, File sidecar) {
+        if (watermarkJson == null || sidecar == null) return;
+        try {
+            saveFile(watermarkJson.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8), sidecar);
+        } catch (Exception e) {
+            Log.e(TAG, "写水印旁文件失败: " + fileId, e);
+        }
+    }
+
+    /** 读水印旁文件（收尾时如果内存里没有水印数据就用它）。 */
+    private JSONObject readVideoWatermarkSidecar(String fileId, File sidecar) {
+        if (sidecar == null || !sidecar.isFile()) return null;
+        try {
+            return new JSONObject(new String(readAll(sidecar), java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            Log.e(TAG, "读水印旁文件失败: " + fileId, e);
+            return null;
+        }
+    }
+
+    /** 启动清理录像临时目录：草稿纸无条件清空（数据纯洁优先）。 */
+    public void cleanVideoTemp() {
+        File dir = new File(context.getFilesDir(), "video_tmp");
+        if (!dir.isDirectory()) return;
+        File[] children = dir.listFiles();
+        if (children == null) return;
+        int removed = 0;
+        for (File child : children) {
+            if (child.delete()) removed++;
+        }
+        if (removed > 0) Log.i(TAG, "启动清理录像临时文件: " + removed + " 个");
     }
 
     // endregion

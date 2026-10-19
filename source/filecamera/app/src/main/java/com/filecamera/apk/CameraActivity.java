@@ -1129,6 +1129,10 @@ public class CameraActivity extends AppCompatActivity {
             String anchor = currentAnchor();
             boolean anchorChanged = !anchor.equals(lastWatermarkAnchor);
 
+            // 每次（每秒）都把当前时间轴落到临时目录的旁文件：崩溃最多丢草稿，app_data 不受影响
+            if (videoTicket != null && videoWatermarkJson != null) {
+                fileImporter.persistVideoWatermark(videoTicket.fileId, videoWatermarkJson, videoTicket.watermarkSidecar);
+            }
             if (valuesDelta.length() > 0 || anchorChanged) {
                 JSONObject seg = new JSONObject();
                 seg.put("from_ms", elapsed);
