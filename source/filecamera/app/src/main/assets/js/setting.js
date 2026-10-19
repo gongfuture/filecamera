@@ -3,7 +3,7 @@ let DEFAULT_CONFIG = {
     camera:{
 		proportion:"16:9",
 		sync_album:false,
-		shutter_sound:false,
+		shutter_sound:true,
 		save_original:false
 	},
     watermark: {

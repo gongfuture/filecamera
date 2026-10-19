@@ -981,19 +981,47 @@ public class CameraActivity extends AppCompatActivity {
                 state.watermarkOverlay = null;
             }
         }
-        onCaptureSaved();
+        onCaptureSaved(syncAlbum);
     }
 
     /**
      * 一张照片处理完成：恢复快门，必要时执行被推迟的退出。
-     * 不做任何 Toast / 角标提示 —— 底部 Toast 会盖住快门按钮。
+     * 保存反馈放在屏幕上部（见 {@link #showTopToast}），不遮挡底部操作区。
      */
-    private void onCaptureSaved() {
+    private void onCaptureSaved(boolean syncedToAlbum) {
         isCaptureProcessing = false;
         setCaptureButtonEnabled(true);
+        showTopToast(syncedToAlbum ? "照片已保存并同步相册" : "照片已保存");
         if (pendingFinishAfterCapture) {
             pendingFinishAfterCapture = false;
             finishWithSession();
+        }
+    }
+
+    /**
+     * 屏幕上部居中显示的轻提示。
+     * 用自定义视图而不是普通文本 Toast：普通 Toast 在部分系统版本上会被强制到底部，
+     * 那正好盖住快门/闪光灯/退出所在的操作区；自定义视图的 {setGravity} 才稳定生效。
+     */
+    private void showTopToast(String message) {
+        try {
+            Toast toast = new Toast(this);
+            TextView view = new TextView(this);
+            view.setText(message);
+            view.setTextColor(Color.WHITE);
+            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(0xCC000000);
+            background.setCornerRadius(dpToPx(18));
+            view.setBackground(background);
+            view.setPadding(dpToPx(16), dpToPx(9), dpToPx(16), dpToPx(9));
+            toast.setView(view);
+            toast.setDuration(Toast.LENGTH_SHORT);
+            // 顶部居中：避开底部 120dp 的操作区，也避开左下水印预览
+            toast.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, dpToPx(72));
+            toast.show();
+        } catch (Exception e) {
+            Log.w(TAG, "显示提示失败", e);
         }
     }
 
@@ -1175,7 +1203,7 @@ public class CameraActivity extends AppCompatActivity {
             if (applyOverlays && !gpsWarningShown) {
                 // 每个会话只提示一次（连续拍照时不反复弹窗挡住快门），原图不重复提示
                 gpsWarningShown = true;
-                Toast.makeText(CameraActivity.this, "GPS信号弱，未写入位置信息", Toast.LENGTH_SHORT).show();
+                showTopToast("GPS信号弱，未写入位置信息");
             }
         }
 
@@ -1939,7 +1967,8 @@ public class CameraActivity extends AppCompatActivity {
             cameraConfig.proportion = json.optString("proportion", "16:9");
             cameraConfig.sync_album = json.optBoolean("sync_album", false);
             // 旧配置无此字段时默认关闭提示音、不保存原图
-            cameraConfig.shutter_sound = json.optBoolean("shutter_sound", false);
+            // 拍照声音默认开启；旧配置里没有该字段时也按开启处理
+            cameraConfig.shutter_sound = json.optBoolean("shutter_sound", true);
             cameraConfig.save_original = json.optBoolean("save_original", false);
             if ("4:3".equals(cameraConfig.proportion)) {
                 targetAspectRatio = AspectRatio.RATIO_4_3;
@@ -2474,7 +2503,7 @@ public class CameraActivity extends AppCompatActivity {
     private static class CameraConfig {
         String proportion = "16:9";
         boolean sync_album = false;
-        boolean shutter_sound = false;
+        boolean shutter_sound = true;
         boolean save_original = false;
     }
 

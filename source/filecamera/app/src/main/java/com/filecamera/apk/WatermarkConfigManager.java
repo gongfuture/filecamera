@@ -17,6 +17,8 @@ public class WatermarkConfigManager {
     private static final String TAG = "WatermarkConfigManager";
     private static final String PREFERENCES_NAME = "watermark_settings";
     private static final String WATERMARK_CONFIG_KEY = "watermark_config_json";
+    /** 拍照声音默认值从「关」改为「开」的一次性迁移标记 */
+    private static final String KEY_SOUND_DEFAULT_APPLIED = "shutter_sound_default_on_applied";
 
     private static WatermarkConfigManager instance;
     private final SharedPreferences sharedPreferences;
@@ -51,8 +53,8 @@ public class WatermarkConfigManager {
             try {
                 // 校验 JSON 格式是否有效
                 new JSONObject(savedConfig);
-                this.cachedConfig = savedConfig;
-                return savedConfig;
+                this.cachedConfig = migrateShutterSoundDefault(savedConfig);
+                return this.cachedConfig;
             } catch (JSONException e) {
                 Log.w(TAG, "本地存储的配置格式无效，将使用默认配置");
             }
@@ -63,6 +65,32 @@ public class WatermarkConfigManager {
         // 自动保存默认配置到本地，以便下次读取
         saveConfig(defaultConfig); 
         return defaultConfig;
+    }
+
+    /**
+     * 一次性迁移：早期版本「拍照声音」默认关闭，配置里会存下 "shutter_sound": false。
+     * 新版本默认开启，这里对老配置纠正一次；之后用户在设置里的开关会被正常尊重（迁移只跑一次）。
+     */
+    private String migrateShutterSoundDefault(String json) {
+        if (sharedPreferences.getBoolean(KEY_SOUND_DEFAULT_APPLIED, false)) {
+            return json;
+        }
+        sharedPreferences.edit().putBoolean(KEY_SOUND_DEFAULT_APPLIED, true).apply();
+        try {
+            JSONObject root = new JSONObject(json);
+            JSONObject camera = root.optJSONObject("camera");
+            if (camera == null) {
+                return json;
+            }
+            camera.put("shutter_sound", true);
+            String migrated = root.toString();
+            saveConfig(migrated);
+            Log.i(TAG, "已将拍照声音默认值迁移为开启");
+            return migrated;
+        } catch (JSONException e) {
+            Log.w(TAG, "拍照声音默认值迁移失败", e);
+            return json;
+        }
     }
 
     /**
@@ -101,7 +129,7 @@ public class WatermarkConfigManager {
             JSONObject camera = new JSONObject()
                     .put("proportion", "16:9")
                     .put("sync_album", false)
-                    .put("shutter_sound", false)
+                    .put("shutter_sound", true)
                     .put("save_original", false);
             rootConfig.put("camera", camera);
 
