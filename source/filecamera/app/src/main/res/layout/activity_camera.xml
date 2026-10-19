@@ -55,37 +55,20 @@
             android:layout_width="match_parent"
             android:layout_height="48dp">
 
-            <LinearLayout
+            <!-- 左：照相模式 -->
+            <TextView
+                android:id="@+id/modeTabPhoto"
                 android:layout_width="wrap_content"
                 android:layout_height="match_parent"
                 android:layout_alignParentStart="true"
                 android:layout_centerVertical="true"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:layout_marginStart="20dp"
+                android:gravity="center"
+                android:text="照相模式"
+                android:textColor="@color/white"
+                android:textSize="14sp" />
 
-                <TextView
-                    android:id="@+id/modeTabPhoto"
-                    android:layout_width="wrap_content"
-                    android:layout_height="match_parent"
-                    android:gravity="center"
-                    android:minWidth="80dp"
-                    android:text="照相模式"
-                    android:textColor="@color/white"
-                    android:textSize="14sp" />
-
-                <TextView
-                    android:id="@+id/modeTabVideo"
-                    android:layout_width="wrap_content"
-                    android:layout_height="match_parent"
-                    android:layout_marginStart="12dp"
-                    android:gravity="center"
-                    android:minWidth="80dp"
-                    android:text="录像模式"
-                    android:textColor="@color/white"
-                    android:textSize="14sp" />
-            </LinearLayout>
-
-            <!-- 变焦按钮：居中显示当前倍数，点击弹出倍数选择框 -->
+            <!-- 中：变焦按钮（正中） -->
             <TextView
                 android:id="@+id/zoomButton"
                 android:layout_width="wrap_content"
@@ -98,6 +81,19 @@
                 android:textColor="@color/white"
                 android:textSize="14sp"
                 android:visibility="gone" />
+
+            <!-- 右：录像模式 -->
+            <TextView
+                android:id="@+id/modeTabVideo"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:layout_alignParentEnd="true"
+                android:layout_centerVertical="true"
+                android:layout_marginEnd="20dp"
+                android:gravity="center"
+                android:text="录像模式"
+                android:textColor="@color/white"
+                android:textSize="14sp" />
 
         </RelativeLayout>
 
