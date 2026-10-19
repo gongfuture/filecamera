@@ -7,6 +7,8 @@
  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 摄像头权限 -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 录像音频 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- 文件读写权限（在Android 10以下的设备需要）-->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />

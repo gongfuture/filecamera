@@ -21,7 +21,7 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>职责已经收窄成两件事：
  * <ol>
- *     <li><b>临时目录</b>：为 CameraX 提供本次拍摄的落盘位置（合成在临时目录内原地完成）；</li>
+ *     <li><b>临时目录</b>：为照片提供本次拍摄的落盘位置（合成在临时目录内原地完成）；</li>
  *     <li><b>新增记录清单</b>：每张照片合成完后立刻由 {@link FileImporter} 入库，
  *         入库返回的库记录（id/name/real_file_name/...）追加到清单，退出时整份交给前端，
  *         前端据此刷新列表并加载缩略图。</li>

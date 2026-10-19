@@ -2,23 +2,15 @@ package com.filecamera.apk;
 
 import android.util.Log;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /**
- * .wmp4 专用视频文件的"水印数据区"读写。
+ * 旧版 .wmp4 文件的“水印数据区”只读兼容。
  *
- * <p>文件结构（标准 MP4 + 尾部追加，不影响任何播放器解析前面的 moov/mdat）：
- * <pre>
- * [ 标准 MP4 ][ 水印 JSON 字节 ][ 4 字节 JSON 长度 ][ 4 字节魔术字 'WMP4' ]
- * </pre>
- *
- * <p>水印数据只存在文件里，数据库不再保存；JSON 内含 content_hash（尾部之前全部字节的
- * SHA-256），播放前重算比对，可发现"把别的水印数据塞进别的视频"这类篡改。
+ * <p>新录像已经是边录边烧、直接输出标准 .mp4，不再写尾部水印数据；
+ * 这里保留读取能力，只是为了让历史 .wmp4 记录仍然能叠印播放。
  */
 public final class WatermarkFileCodec {
 
@@ -26,29 +18,12 @@ public final class WatermarkFileCodec {
     private static final byte[] MAGIC = new byte[]{'W', 'M', 'P', '4'};
     private static final int TAIL_SIZE = 8; // 4 字节长度 + 4 字节魔术字
 
-    /** 专用视频后缀 */
-    public static final String EXTENSION = "wmp4";
-
     private WatermarkFileCodec() {
     }
 
     public static boolean isWatermarkVideo(File file) {
         return file != null && file.isFile()
-                && file.getName().toLowerCase().endsWith("." + EXTENSION);
-    }
-
-    /** 把水印 JSON 追加到文件尾部；返回写入后的文件大小。 */
-    public static long writeTrailer(File file, String json) throws IOException {
-        if (file == null || !file.isFile()) throw new IOException("文件不存在");
-        byte[] payload = (json == null ? "{}" : json).getBytes(StandardCharsets.UTF_8);
-        try (FileOutputStream out = new FileOutputStream(file, true)) {
-            out.write(payload);
-            out.write(intToBytes(payload.length));
-            out.write(MAGIC);
-            out.flush();
-            out.getFD().sync();
-        }
-        return file.length();
+                && file.getName().toLowerCase().endsWith(".wmp4");
     }
 
     /** 读取尾部水印 JSON；没有/损坏返回 null。 */
@@ -129,23 +104,6 @@ public final class WatermarkFileCodec {
             Log.e(TAG, "计算内容哈希失败", e);
             return "";
         }
-    }
-
-    /** 给 JSON 补上 content_hash（写入前调用）。 */
-    public static String withContentHash(File file, String json) {
-        String hash = contentHash(file);
-        try {
-            org.json.JSONObject obj = new org.json.JSONObject(json == null ? "{}" : json);
-            obj.put("content_hash", hash);
-            return obj.toString();
-        } catch (Exception e) {
-            return json;
-        }
-    }
-
-    private static byte[] intToBytes(int value) {
-        return new byte[]{
-                (byte) (value >>> 24), (byte) (value >>> 16), (byte) (value >>> 8), (byte) value};
     }
 
     private static int bytesToInt(byte[] data, int offset) {

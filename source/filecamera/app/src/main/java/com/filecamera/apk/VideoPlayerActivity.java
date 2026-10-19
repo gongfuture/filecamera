@@ -14,8 +14,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-import android.widget.ProgressBar;
-import android.app.AlertDialog;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -70,16 +68,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private LinearLayout volumeRow;
     private ImageButton btnPlay;
     private ImageButton btnVolume;
-    private ImageButton btnVolumeToggle;    private TextView btnBurn;
-    private LinearLayout burnMask;
-    private ProgressBar burnBar;
-    private TextView burnText;
-    private TextView burnStop;
+    private ImageButton btnVolumeToggle;
     private File sourceVideoFile;
-    private String sourceFileId;
-    private String sourceDisplayName;
-    private boolean burning = false;
-    private VideoWatermarkBurner.Handle burnHandle;
     private SeekBar volumeBar;
     private SeekBar seekBar;
     private TextView timePos;
@@ -130,11 +120,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
         volumeRow = findViewById(R.id.volume_row);
         btnPlay = findViewById(R.id.btn_play);
         btnVolume = findViewById(R.id.btn_volume);
-        btnVolumeToggle = findViewById(R.id.btn_volume_toggle);        btnBurn = findViewById(R.id.btn_burn);
-        burnMask = findViewById(R.id.burn_mask);
-        burnBar = findViewById(R.id.burn_bar);
-        burnText = findViewById(R.id.burn_text);
-        burnStop = findViewById(R.id.burn_stop);
+        btnVolumeToggle = findViewById(R.id.btn_volume_toggle);
         volumeBar = findViewById(R.id.volume_bar);
         seekBar = findViewById(R.id.seek_bar);
         timePos = findViewById(R.id.time_pos);
@@ -149,8 +135,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
         File videoFile = new File(new File(getFilesDir(), "app_data"), realFileName == null ? "" : realFileName);
         sourceVideoFile = videoFile;
-        sourceFileId = fileId;
-        sourceDisplayName = displayName;
         if (!videoFile.isFile()) {
             Toast.makeText(this, "视频文件不存在", Toast.LENGTH_SHORT).show();
             finish();
@@ -346,12 +330,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
         btnVolume.setOnClickListener(volumeToggle);
         btnVolumeToggle.setOnClickListener(volumeToggle);
 
-        if (btnBurn != null) {
-            btnBurn.setOnClickListener(v -> {
-                scheduleHideControls();
-                startBurnFlow();
-            });
-        }
         updatePlayPauseIcon();
         updateVolumeIcon();
     }
@@ -384,12 +362,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
             }
         }
         if (timeDur != null) timeDur.setText(formatDuration(duration));
-        if (btnBurn != null) {
-            btnBurn.setOnClickListener(v -> {
-                scheduleHideControls();
-                startBurnFlow();
-            });
-        }
         updatePlayPauseIcon();
         updateVolumeIcon();
     }
@@ -428,117 +400,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
         if (player != null && player.isPlaying()) {
             uiHandler.postDelayed(hideControlsRunnable, CONTROLS_HIDE_DELAY_MS);
         }
-    }
-
-    // endregion
-
-    // region --- 烧录水印（导出带印副本） ---
-
-    /** 点烧录按钮：先弹确认框，确认后才开始。 */
-    private void startBurnFlow() {
-        if (burning) return;
-        if (watermark == null) {
-            Toast.makeText(this, "该视频没有水印数据，无法烧录", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("烧录水印")
-                .setMessage("将把水印直接合成进画面，生成一个带水印的副本（原视频保留）。是否开始烧录？")
-                .setPositiveButton("开始烧录", (dialog, which) -> doBurn())
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    /** 真正开始烧录：新记录先占位（pending），烧到它的最终路径，成功后提交入库。 */
-    private void doBurn() {
-        if (burning || sourceVideoFile == null || watermark == null) return;
-        String dirId = queryDirId(sourceFileId);
-        String baseName = sourceDisplayName == null || sourceDisplayName.isEmpty() ? "video" : sourceDisplayName;
-        int dot = baseName.lastIndexOf('.');
-        String outName = (dot > 0 ? baseName.substring(0, dot) : baseName) + "_带水印.mp4";
-
-        final FileImporter importer = new FileImporter(this);
-        // 先烧到临时文件；只有烧录成功后才走入库流程把它搬进 app_data
-        final File tempFile = importer.newBurnTempFile("burn.mp4");
-        final String targetDirId = dirId;
-        final String targetName = outName;
-
-        burning = true;
-        if (burnStop != null) {
-            burnStop.setOnClickListener(v -> {
-                if (burnHandle != null) {
-                    burnHandle.cancel();
-                    Toast.makeText(this, "已停止烧录，正在清理…", Toast.LENGTH_SHORT).show();
-                }
-            });
-        }
-        burnMask.setVisibility(View.VISIBLE);
-        burnBar.setProgress(0);
-        burnText.setText("正在烧录水印… 0%");
-
-        burnHandle = VideoWatermarkBurner.burn(this, sourceVideoFile, tempFile, watermark,
-                new VideoWatermarkBurner.Callback() {
-                    @Override
-                    public void onProgress(int percent) {
-                        burnBar.setProgress(percent);
-                        burnText.setText("正在烧录水印… " + percent + "%");
-                    }
-
-                    @Override
-                    public void onDone(File output) {
-                        try {
-                            importer.importBurnedVideo(tempFile, targetDirId, targetName);   // 烧录成功才入库（从临时文件搬走）
-                            burning = false;
-                            burnHandle = null;
-                            burnMask.setVisibility(View.GONE);
-                            Toast.makeText(VideoPlayerActivity.this, "烧录完成，已保存到当前文件夹", Toast.LENGTH_LONG).show();
-                        } catch (Exception e) {
-                            Log.e(TAG, "烧录入库失败", e);
-                            if (tempFile != null && tempFile.isFile()) {
-                                //noinspection ResultOfMethodCallIgnored
-                                tempFile.delete();
-                            }
-                            burning = false;
-                            burnMask.setVisibility(View.GONE);
-                            Toast.makeText(VideoPlayerActivity.this, "烧录完成但保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
-                        }
-                    }
-
-                    @Override
-                    public void onError(Throwable error) {
-                        // 中途停止/失败：直接删掉临时文件，绝不留半成品
-                        if (tempFile != null && tempFile.isFile()) {
-                            //noinspection ResultOfMethodCallIgnored
-                            tempFile.delete();
-                        }
-                        burning = false;
-                        burnHandle = null;
-                        burnMask.setVisibility(View.GONE);
-                        String msg = error == null ? "未知错误" : error.getMessage();
-                        Toast.makeText(VideoPlayerActivity.this, "烧录失败：" + msg, Toast.LENGTH_LONG).show();
-                    }
-                });
-    }
-
-    /** 取这条视频所在的文件夹，烧录结果放回同一个目录。 */
-    private String queryDirId(String fileId) {
-        try {
-            JSONArray rows = DatabaseHelper.getInstance(this).db_all(
-                    "SELECT parent_dir_id FROM file WHERE id = ?",
-                    new JSONArray().put(fileId == null ? "" : fileId));
-            if (rows.length() > 0) return rows.getJSONObject(0).optString("parent_dir_id", "root");
-        } catch (Exception ignored) {
-        }
-        return "root";
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (burning) {
-            Toast.makeText(this, "正在烧录，请稍候…", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        super.onBackPressed();
     }
 
     // endregion

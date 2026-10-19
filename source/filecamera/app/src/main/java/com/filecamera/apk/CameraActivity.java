@@ -33,6 +33,7 @@ import android.view.MotionEvent;
 import android.view.OrientationEventListener;
 import android.view.ScaleGestureDetector;
 import android.view.Surface;
+import android.view.TextureView;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
@@ -51,34 +52,10 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.camera.core.AspectRatio;
-import androidx.camera.core.Camera;
-import androidx.camera.core.CameraControl;
-import androidx.camera.core.CameraSelector;
-import androidx.camera.core.FocusMeteringAction;
-import androidx.camera.core.ImageCapture;
-import androidx.camera.core.ImageCaptureException;
-import androidx.camera.core.MeteringPoint;
-import androidx.camera.core.Preview;
-import androidx.camera.core.ZoomState;
-import androidx.camera.core.resolutionselector.AspectRatioStrategy;
-import androidx.camera.core.resolutionselector.ResolutionSelector;
-import androidx.camera.lifecycle.ProcessCameraProvider;
-import androidx.camera.video.FileOutputOptions;
-import androidx.camera.video.FallbackStrategy;
-import androidx.camera.video.Quality;
-import androidx.camera.video.QualitySelector;
-import androidx.camera.video.Recorder;
-import androidx.camera.video.Recording;
-import androidx.camera.video.VideoCapture;
-import androidx.camera.video.VideoRecordEvent;
-import androidx.camera.view.PreviewView;
-import androidx.lifecycle.LiveData;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.exifinterface.media.ExifInterface;
 
-import com.google.common.util.concurrent.ListenableFuture;
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.EncodeHintType;
 import com.google.zxing.WriterException;
@@ -105,8 +82,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
 public class CameraActivity extends AppCompatActivity {
 
@@ -120,12 +95,13 @@ public class CameraActivity extends AppCompatActivity {
     private static final int MAX_WATERMARK_LINE_WIDTH_DP = 260;
     private static final String[] REQUIRED_PERMISSIONS = {
             Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO,
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
     };
     private volatile boolean isActivityResumed = false;
     // 视图控件
-    private PreviewView previewView;
+    private TextureView previewView;
     private ImageButton captureButton;
     private LinearLayout watermarkContainer;
     private ImageButton flashButton;
@@ -133,8 +109,6 @@ public class CameraActivity extends AppCompatActivity {
     // 变焦按钮（位于两个模式标签中间，显示当前倍数，点击弹出倍数选择框）
     private TextView zoomButton;
     private final List<Float> availableZoomRatios = new ArrayList<>();
-    // 当前正在观察的 ZoomState LiveData，切换摄像头时需移除旧观察者
-    private LiveData<ZoomState> observedZoomState;
     // 预设变焦倍数，仅展示设备支持范围内的档位
     private static final float[] ZOOM_PRESETS = {0.6f, 1.0f, 2.0f, 3.0f, 5.0f};
     // 拍照提示音
@@ -155,20 +129,15 @@ public class CameraActivity extends AppCompatActivity {
     private boolean gpsWarningShown = false;
     // endregion
 
-    // region --- 录像（视频不烧水印：水印数据随视频入库，播放/导出时再叠）---
+    // region --- 录像（边录边烧：水印直接合成进 MP4）---
     private TextView modeTabVideo;
     private TextView recordingTimer;
-    private VideoCapture<Recorder> videoCapture;
-    private Recording currentRecording;
     private volatile boolean isRecording = false;
     private boolean isVideoMode = false;
     private long recordStartMs = 0;
     private FileImporter.VideoTicket videoTicket;
-    /** 本次录像的水印数据（首行全量 + 变化回填） */
-    private JSONObject videoWatermarkJson;
-    /** 上一次的水印字段快照，用于只记录变化 */
-    private final java.util.Map<String, String> lastWatermarkValues = new java.util.HashMap<>();
-    private String lastWatermarkAnchor = "";
+    /** 录制中暂停/退出时，等收尾完成后关闭相机 */
+    private boolean pausedWhileRecording = false;
     private final Handler recordTimerHandler = new Handler(Looper.getMainLooper());
     private final Runnable recordTimerRunnable = new Runnable() {
         @Override
@@ -181,11 +150,10 @@ public class CameraActivity extends AppCompatActivity {
     };
     // endregion
 
-    // CameraX 组件
-    private ImageCapture imageCapture;
-    private Camera camera;
-    private CameraControl cameraControl;
-    private ProcessCameraProvider cameraProvider;
+    // Camera2 控制器
+    private Camera2Controller camera2Controller;
+    /** 快门瞬间抓拍的水印快照，等照片真正落盘后继续处理 */
+    private CapturedState pendingCapturedState;
 
     // 手势和方向
     private ScaleGestureDetector scaleGestureDetector;
@@ -214,7 +182,7 @@ public class CameraActivity extends AppCompatActivity {
     private long lastMatchRequestTime = 0;
     private RoadDatabaseHelper roadDatabaseHelper;
     private volatile RoadDatabaseHelper.RoadLocationMatch currentRoadMatch = null; // [Data]
-    private int currentFlashMode = ImageCapture.FLASH_MODE_OFF; // 闪光灯状态
+    private int currentFlashMode = Camera2Controller.FLASH_OFF; // 闪光灯状态
 
     // UI更新循环
     private final Handler uiUpdateHandler = new Handler(Looper.getMainLooper());
@@ -247,9 +215,9 @@ public class CameraActivity extends AppCompatActivity {
                 // 自动模式GPS未就绪时保持当前显示（"获取中..."），等待下一秒轮询
             }
             
-            // 4. 录像中：把"变化的水印字段/位置"追加成 delta 记录
-            if (isRecording) {
-                recordWatermarkDelta();
+            // 4. 录像中：把当前水印重新画进视频帧（每秒一次，时间/GPS 变化都能跟上）
+            if (isRecording && camera2Controller != null) {
+                camera2Controller.updateLiveWatermark(buildVideoWatermarkJson(System.currentTimeMillis()));
             }
 
             uiUpdateHandler.postDelayed(this, 1000); // 1秒更新一次
@@ -262,11 +230,11 @@ public class CameraActivity extends AppCompatActivity {
     private QrCodeConfig qrCodeConfig;
     private boolean showWatermark = false;
     private boolean showQrCode = false;
-    private int targetAspectRatio = AspectRatio.RATIO_16_9;
+    private float targetAspectRatio = 16f / 9f;
     // 模式选择（普通/自拍）两个标签
     private TextView modeTabPhoto;
     private ImageButton switchCameraButton;
-    private int currentLensFacing = CameraSelector.LENS_FACING_BACK; // 当前摄像头方向
+    private int currentLensFacing = Camera2Controller.LENS_FACING_BACK; // 当前摄像头方向
 
     // [Refactored] 水印数据和视图的单一来源
     // 1. 数据存储 (单一数据源)
@@ -326,6 +294,7 @@ public class CameraActivity extends AppCompatActivity {
         roadDatabaseHelper = new RoadDatabaseHelper(this);
 
         initViews();
+        camera2Controller = new Camera2Controller(this, previewView, cameraListener);
         initGestureDetectors();
         initLocationServices(); // 仅初始化服务，不请求更新
         initOrientationListener();
@@ -355,8 +324,10 @@ public class CameraActivity extends AppCompatActivity {
             setupWatermarkPreview(); 
         }
 
-        if (!allPermissionsGranted()) {
-            ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_PERMISSIONS);
+        if (!allPermissionsGranted() || (!audioPermissionGranted()
+                && !getSharedPreferences("camera", MODE_PRIVATE)
+                .getBoolean("audio_permission_asked", false))) {
+            requestPermissionsIfNeeded();
         }
     }
 
@@ -372,8 +343,12 @@ public class CameraActivity extends AppCompatActivity {
         if (showWatermark && watermarkLayoutListener != null) {
             watermarkContainer.getViewTreeObserver().removeOnGlobalLayoutListener(watermarkLayoutListener);
         }
-        if (cameraProvider != null) {
-            cameraProvider.unbindAll();
+        if (isRecording) {
+            // 先让控制器收尾（编码器 EOS → fMP4 落盘），收尾完成后回调里再关相机
+            pausedWhileRecording = true;
+            stopRecording();
+        } else if (camera2Controller != null) {
+            camera2Controller.stop();
         }
     }
 
@@ -416,6 +391,9 @@ public class CameraActivity extends AppCompatActivity {
             watermarkContainer.getViewTreeObserver().addOnGlobalLayoutListener(watermarkLayoutListener);
         }        
         if (allPermissionsGranted()) {
+            if (camera2Controller != null) {
+                camera2Controller.setTargetRotation(currentRotation);
+            }
             startCamera();
             startLocationUpdates(); // 开始位置更新
             uiUpdateHandler.post(uiUpdateRunnable); // 启动UI更新循环
@@ -428,13 +406,14 @@ public class CameraActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // 录像中直接销毁：先停录（Finalize 会把已录部分入库），再解绑相机
+        // 录像中直接销毁：先停录，收尾会把已录分片入库
         if (isRecording) {
             stopRecording();
         }
         recordTimerHandler.removeCallbacksAndMessages(null);
-        if (cameraProvider != null) {
-            cameraProvider.unbindAll(); // 作为最后保障
+        if (camera2Controller != null) {
+            camera2Controller.release();
+            camera2Controller = null;
         }
         if (mediaActionSound != null) {
             mediaActionSound.release();
@@ -490,7 +469,6 @@ public class CameraActivity extends AppCompatActivity {
     }
     
     /**
-    /**
      * 模式选择：照相模式 / 录像模式（前/后摄像头由底部切换按钮负责）
      */
     private void setupCameraModeSelector() {
@@ -509,11 +487,11 @@ public class CameraActivity extends AppCompatActivity {
             Toast.makeText(this, "正在录像，请先停止", Toast.LENGTH_SHORT).show();
             return;
         }
-        switchCamera(currentLensFacing == CameraSelector.LENS_FACING_BACK
-                ? CameraSelector.LENS_FACING_FRONT
-                : CameraSelector.LENS_FACING_BACK);
+        switchCamera(currentLensFacing == Camera2Controller.LENS_FACING_BACK
+                ? Camera2Controller.LENS_FACING_FRONT
+                : Camera2Controller.LENS_FACING_BACK);
     }
-    /** 切换 拍照/录像 模式：重新绑定 use case，并更新标签高亮。 */
+    /** 切换 拍照/录像 模式：让控制器重建会话，并更新标签高亮。 */
     private void switchVideoMode(boolean videoMode) {
         if (isVideoMode == videoMode) return;
         if (isRecording) {
@@ -523,13 +501,14 @@ public class CameraActivity extends AppCompatActivity {
         isVideoMode = videoMode;
         setCaptureButtonAlphaForRecording(false);   // 切模式时同步快门外观（录像=红色内圆）
         updateModeTabHighlight();
+        flashButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         bindCameraUseCases();
     }
 
     /** 照相/录像标签高亮 + 切换按钮文案显示当前镜头。 */
     private void updateModeTabHighlight() {
         int selectedColor = ContextCompat.getColor(this, R.color.icon_gold);
-        boolean isBack = currentLensFacing == CameraSelector.LENS_FACING_BACK;
+        boolean isBack = currentLensFacing == Camera2Controller.LENS_FACING_BACK;
 
         if (modeTabPhoto != null) {
             modeTabPhoto.setTextColor(isVideoMode ? Color.WHITE : selectedColor);
@@ -553,10 +532,10 @@ public class CameraActivity extends AppCompatActivity {
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
             public boolean onScale(ScaleGestureDetector detector) {
-                if (camera == null) return false;
-                float currentZoom = camera.getCameraInfo().getZoomState().getValue().getZoomRatio();
-                float newZoom = currentZoom * detector.getScaleFactor();
-                cameraControl.setZoomRatio(newZoom);
+                if (camera2Controller == null) return false;
+                float newZoom = camera2Controller.getZoomRatio() * detector.getScaleFactor();
+                camera2Controller.setZoomRatio(newZoom);
+                updateZoomButtonText();
                 pinchScaled[0] = true;
                 return true;
             }
@@ -725,8 +704,8 @@ public class CameraActivity extends AppCompatActivity {
                 if (rotation != currentRotation) {
                     currentRotation = rotation;
                     updateUiRotation(currentRotation);
-                    if (imageCapture != null) {
-                        imageCapture.setTargetRotation(currentRotation);
+                    if (camera2Controller != null) {
+                        camera2Controller.setTargetRotation(currentRotation);
                     }
                 }
             }
@@ -735,159 +714,95 @@ public class CameraActivity extends AppCompatActivity {
     // endregion
 
     // region --- 相机核心逻辑 ---
+
+    private final Camera2Controller.Listener cameraListener = new Camera2Controller.Listener() {
+        @Override
+        public void onCameraReady(int lensFacing, boolean hasFlash, float minZoom, float maxZoom) {
+            currentLensFacing = lensFacing;
+            setupZoomButton(minZoom, maxZoom);
+            updateModeTabHighlight();
+            flashButton.setVisibility(hasFlash && !isVideoMode ? View.VISIBLE : View.GONE);
+            updateFlashMode();
+        }
+
+        @Override
+        public void onCameraError(String message) {
+            showTopToast(message);
+        }
+
+        @Override
+        public void onPhotoReady(File photoFile) {
+            CapturedState state = pendingCapturedState;
+            pendingCapturedState = null;
+            if (state == null) state = captureStateSnapshot();
+            processCapturedImage(photoFile, state);
+        }
+
+        @Override
+        public void onPhotoError(String message) {
+            pendingCapturedState = null;
+            handlePhotoError(message, new Exception(message));
+        }
+
+        @Override
+        public void onRecordingFinished(File file, int rotation, Throwable error) {
+            handleRecordingFinished(file, error);
+        }
+    };
+
     private void cycleFlashMode() {
         switch (currentFlashMode) {
-            case ImageCapture.FLASH_MODE_OFF:
-                currentFlashMode = ImageCapture.FLASH_MODE_ON;
+            case Camera2Controller.FLASH_OFF:
+                currentFlashMode = Camera2Controller.FLASH_ON;
                 break;
-            case ImageCapture.FLASH_MODE_ON:
-                currentFlashMode = ImageCapture.FLASH_MODE_AUTO;
+            case Camera2Controller.FLASH_ON:
+                currentFlashMode = Camera2Controller.FLASH_AUTO;
                 break;
-            case ImageCapture.FLASH_MODE_AUTO:
-                currentFlashMode = ImageCapture.FLASH_MODE_OFF;
+            case Camera2Controller.FLASH_AUTO:
+                currentFlashMode = Camera2Controller.FLASH_OFF;
                 break;
         }
         updateFlashMode();
     }
 
     private void switchCamera(int targetLensFacing) {
+        if (camera2Controller == null) return;
         currentLensFacing = targetLensFacing;
-        currentFlashMode = ImageCapture.FLASH_MODE_OFF; // 重置闪光灯
-        bindCameraUseCases(); // 重新绑定
+        currentFlashMode = Camera2Controller.FLASH_OFF; // 重置闪光灯
+        updateFlashMode();
+        camera2Controller.switchCamera(targetLensFacing);
     }
 
     private void updateFlashMode() {
-        if (imageCapture == null || camera == null) return;
-
+        if (flashButton == null) return;
         switch (currentFlashMode) {
-            case ImageCapture.FLASH_MODE_OFF:
+            case Camera2Controller.FLASH_OFF:
                 flashButton.setImageResource(R.drawable.ic_flash_off);
-                imageCapture.setFlashMode(ImageCapture.FLASH_MODE_OFF);
-                camera.getCameraControl().enableTorch(false);
                 break;
-            case ImageCapture.FLASH_MODE_ON:
+            case Camera2Controller.FLASH_ON:
                 flashButton.setImageResource(R.drawable.ic_flash_on);
-                imageCapture.setFlashMode(ImageCapture.FLASH_MODE_ON);
                 break;
-            case ImageCapture.FLASH_MODE_AUTO:
+            case Camera2Controller.FLASH_AUTO:
                 flashButton.setImageResource(R.drawable.ic_flash_auto);
-                imageCapture.setFlashMode(ImageCapture.FLASH_MODE_AUTO);
-                camera.getCameraControl().enableTorch(false);
                 break;
+        }
+        if (camera2Controller != null) {
+            camera2Controller.setFlashMode(currentFlashMode);
         }
     }
 
     private void startCamera() {
-        ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
-        cameraProviderFuture.addListener(() -> {
-            try {
-                cameraProvider = cameraProviderFuture.get();
-                bindCameraUseCases();
-            } catch (ExecutionException | InterruptedException e) {
-                Log.e(TAG, "相机初始化失败", e);
-                Toast.makeText(this, "相机初始化失败", Toast.LENGTH_SHORT).show();
-            }
-        }, ContextCompat.getMainExecutor(this));
+        if (camera2Controller != null) {
+            camera2Controller.start();
+        }
     }
 
+    /** 切换拍照/录像模式后，让控制器重建会话（拍照模式带 JPEG ImageReader，录像模式只留预览）。 */
     private void bindCameraUseCases() {
-        if (cameraProvider == null) {
-            Log.e(TAG, "Camera Provider is not available.");
-            return;
+        if (camera2Controller != null) {
+            camera2Controller.setVideoMode(isVideoMode);
         }
-
-        AspectRatioStrategy aspectRatioStrategy = new AspectRatioStrategy(
-                targetAspectRatio,
-                AspectRatioStrategy.FALLBACK_RULE_AUTO
-        );
-        ResolutionSelector resolutionSelector = new ResolutionSelector.Builder()
-                .setAspectRatioStrategy(aspectRatioStrategy)
-                .build();
-
-        Preview preview = new Preview.Builder()
-                .setResolutionSelector(resolutionSelector)
-                .build();
-
-        CameraSelector cameraSelector = new CameraSelector.Builder()
-                .requireLensFacing(currentLensFacing)
-                .build();
-
-        try {
-            if (!cameraProvider.hasCamera(cameraSelector)) {
-                String cameraType = currentLensFacing == CameraSelector.LENS_FACING_FRONT ? "前置" : "后置";
-                Log.e(TAG, "设备上没有可用的" + cameraType + "摄像头");
-                Toast.makeText(this, "未找到" + cameraType + "摄像头", Toast.LENGTH_LONG).show();
-                
-                if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) {
-                    currentLensFacing = CameraSelector.LENS_FACING_BACK;
-                } else {
-                    currentLensFacing = CameraSelector.LENS_FACING_FRONT;
-                }
-                return;
-            }
-        } catch (androidx.camera.core.CameraInfoUnavailableException e) {
-            Log.e(TAG, "无法检查相机可用性", e);
-            Toast.makeText(this, "无法获取相机信息", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        // 录像模式：VideoCapture + Recorder（画面上不烧水印，水印数据随视频入库）
-        if (isVideoMode) {
-            // 画质从高到低退让，避免个别机型只支持低分辨率视频时直接绑定失败
-            QualitySelector qualitySelector = QualitySelector.fromOrderedList(
-                    java.util.Arrays.asList(Quality.FHD, Quality.HD, Quality.SD),
-                    FallbackStrategy.lowerQualityOrHigherThan(Quality.SD));
-            Recorder recorder = new Recorder.Builder()
-                    .setQualitySelector(qualitySelector)
-                    .build();
-            videoCapture = VideoCapture.withOutput(recorder);
-            imageCapture = null;
-            try {
-                cameraProvider.unbindAll();
-                camera = cameraProvider.bindToLifecycle(this, cameraSelector, preview, videoCapture);
-                cameraControl = camera.getCameraControl();
-                preview.setSurfaceProvider(previewView.getSurfaceProvider());
-                previewView.setScaleType(PreviewView.ScaleType.FILL_CENTER);
-                setupZoomButton();
-                updateModeTabHighlight();
-                flashButton.setVisibility(View.GONE);
-            } catch (Exception e) {
-                Log.e(TAG, "录像用例绑定失败", e);
-                videoCapture = null;
-                isVideoMode = false;
-                updateModeTabHighlight();
-                Toast.makeText(this, "本机不支持录像，已切回拍照模式", Toast.LENGTH_LONG).show();
-                // 失败后回到拍照绑定
-                bindCameraUseCases();
-            }
-            return;
-        }
-
-        imageCapture = new ImageCapture.Builder()
-                .setResolutionSelector(resolutionSelector)
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                .setTargetRotation(currentRotation)
-                .build();
-
-        try {
-            cameraProvider.unbindAll();
-            camera = cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageCapture);
-            cameraControl = camera.getCameraControl();
-            preview.setSurfaceProvider(previewView.getSurfaceProvider());
-            previewView.setScaleType(PreviewView.ScaleType.FILL_CENTER);
-            setupZoomButton();
-            updateModeTabHighlight();
-            
-            if (camera.getCameraInfo().hasFlashUnit()) {
-                flashButton.setVisibility(View.VISIBLE);
-                updateFlashMode();
-            } else {
-                flashButton.setVisibility(View.GONE);
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "相机绑定失败", e);
-            Toast.makeText(this, "相机绑定失败，请重启应用", Toast.LENGTH_SHORT).show();
-        }
+        flashButton.setVisibility(isVideoMode ? View.GONE : flashButton.getVisibility());
     }
 
     private void takePhoto() {
@@ -900,7 +815,7 @@ public class CameraActivity extends AppCompatActivity {
             }
             return;
         }
-        if (imageCapture == null) return;
+        if (camera2Controller == null) return;
         // 上一张还在保存时忽略重复点击，避免两张照片的处理任务互相踩踏
         if (isCaptureProcessing) return;
         isCaptureProcessing = true;
@@ -913,49 +828,29 @@ public class CameraActivity extends AppCompatActivity {
 
         try {
             File photoFile = createImageFile();
-            ImageCapture.OutputFileOptions outputOptions = new ImageCapture.OutputFileOptions.Builder(photoFile).build();
-
-            imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(this), new ImageCapture.OnImageSavedCallback() {
-                @Override
-                public void onImageSaved(@NonNull ImageCapture.OutputFileResults output) {
-                    // 在快门瞬间抓取水印位图与 GPS，保证「所见即所得」（之后 GPS/时间继续变化也不影响这一张）
-                    CapturedState state = captureStateSnapshot();
-                    processCapturedImage(photoFile, state);
-                }
-
-                @Override
-                public void onError(@NonNull ImageCaptureException exception) {
-                    handlePhotoError("拍照失败", exception);
-                }
-            });
+            // 快门瞬间抓拍水印位图与 GPS，保证「所见即所得」
+            pendingCapturedState = captureStateSnapshot();
+            camera2Controller.takePhoto(photoFile);
         } catch (IOException e) {
+            pendingCapturedState = null;
             handlePhotoError("创建文件失败", e);
         }
     }
 
     // region --- 录像：开始 / 停止 / 入库 ---
 
-    /** 开始录像：先定名字 + 写待入表 + 写水印首行，再直接录进正式目录。 */
+    /** 开始录像：先定名字 + 写待入表，再让 Camera2 边录边把水印合成进 MP4。 */
     private void startRecording() {
         if (isRecording) return;
-        if (videoCapture == null) {
+        if (camera2Controller == null || !camera2Controller.isVideoSupported()) {
             Toast.makeText(this, "本机不支持录像", Toast.LENGTH_SHORT).show();
             return;
         }
         try {
             long baseTime = System.currentTimeMillis();
-            videoWatermarkJson = buildVideoWatermarkJson(baseTime);
-            videoTicket = fileImporter.beginVideo(targetDirId, IdGenerator.get_id_by_time() + "." + WatermarkFileCodec.EXTENSION, videoWatermarkJson);
-            lastWatermarkValues.clear();
-            JSONObject initialValues = snapshotWatermarkValues();
-            java.util.Iterator<String> valueKeys = initialValues.keys();
-            while (valueKeys.hasNext()) {
-                String key = valueKeys.next();
-                lastWatermarkValues.put(key, initialValues.optString(key, ""));
-            }
-            lastWatermarkAnchor = currentAnchor();
+            JSONObject liveWatermark = buildVideoWatermarkJson(baseTime);
+            videoTicket = fileImporter.beginVideo(targetDirId, IdGenerator.get_id_by_time() + ".mp4");
 
-            FileOutputOptions options = new FileOutputOptions.Builder(videoTicket.targetFile).build();
             isRecording = true;
             recordStartMs = baseTime;
             if (recordingTimer != null) {
@@ -965,9 +860,8 @@ public class CameraActivity extends AppCompatActivity {
             recordTimerHandler.post(recordTimerRunnable);
             setCaptureButtonAlphaForRecording(true);
 
-            currentRecording = videoCapture.getOutput()
-                    .prepareRecording(this, options)
-                    .start(ContextCompat.getMainExecutor(this), event -> onVideoRecordEvent(event));
+            camera2Controller.startVideoRecording(videoTicket.targetFile,
+                    camera2Controller.getJpegRotation(), liveWatermark);
         } catch (Exception e) {
             isRecording = false;
             if (recordingTimer != null) recordingTimer.setVisibility(View.GONE);
@@ -981,54 +875,46 @@ public class CameraActivity extends AppCompatActivity {
         }
     }
 
-    /** 停止录像（Finalize 回调里再做入库）。 */
+    /** 停止录像；真正的入库在控制器收尾回调里做。 */
     private void stopRecording() {
-        if (currentRecording == null) {
-            isRecording = false;
-            return;
+        if (camera2Controller != null) {
+            camera2Controller.stopRecording();
         }
-        try {
-            currentRecording.stop();
-        } catch (Exception e) {
-            Log.e(TAG, "停止录像失败", e);
-        }
-        currentRecording = null;
     }
 
-    private void onVideoRecordEvent(VideoRecordEvent event) {
-        if (!(event instanceof VideoRecordEvent.Finalize)) return;
-        VideoRecordEvent.Finalize fin = (VideoRecordEvent.Finalize) event;
-        boolean failed = fin.hasError();
+    private void handleRecordingFinished(File file, Throwable error) {
         isRecording = false;
         recordTimerHandler.removeCallbacks(recordTimerRunnable);
         if (recordingTimer != null) recordingTimer.setVisibility(View.GONE);
         setCaptureButtonAlphaForRecording(false);
 
-        if (failed) {
-            Log.e(TAG, "录像结束但有错误: " + fin.getError());
-            if (videoTicket != null) {
-                fileImporter.abortVideo(videoTicket);
-                videoTicket = null;
-            }
-            Toast.makeText(this, "录像失败", Toast.LENGTH_SHORT).show();
-            if (pendingFinishAfterCapture) {
-                pendingFinishAfterCapture = false;
-                finishWithSession();
-            }
-            return;
-        }
-
-        // 录像文件已 finalize → 入库（算哈希、缩略图、提交）
         final FileImporter.VideoTicket ticket = videoTicket;
         videoTicket = null;
-        if (ticket == null) return;
-        try {
-            JSONObject record = fileImporter.finishVideo(ticket);
-            CameraSessionStore.addRecord(this, record);
-            onCaptureSaved(false);
-        } catch (Throwable e) {
-            fileImporter.abortVideo(ticket);
-            handlePhotoError("录像保存失败", e);
+        boolean saved = false;
+
+        if (error != null || file == null || !file.isFile() || file.length() <= 0) {
+            Log.e(TAG, "录像失败", error);
+            if (ticket != null) fileImporter.abortVideo(ticket);
+            showTopToast("录像失败");
+        } else {
+            try {
+                JSONObject record = fileImporter.finishVideo(ticket);
+                CameraSessionStore.addRecord(this, record);
+                saved = true;
+                onCaptureSaved(false);
+            } catch (Throwable e) {
+                if (ticket != null) fileImporter.abortVideo(ticket);
+                handlePhotoError("录像保存失败", e);
+            }
+        }
+
+        if (pausedWhileRecording) {
+            pausedWhileRecording = false;
+            if (camera2Controller != null) camera2Controller.stop();
+        }
+        if (!saved && pendingFinishAfterCapture) {
+            pendingFinishAfterCapture = false;
+            finishWithSession();
         }
     }
 
@@ -1105,62 +991,6 @@ public class CameraActivity extends AppCompatActivity {
         return (right ? "right" : "left") + "_" + (top ? "top" : "bottom");
     }
 
-    /** 每秒把"变化的水印字段/位置"追加成一条 delta 记录（首行已是全量）。 */
-    private void recordWatermarkDelta() {
-        if (!isRecording || videoWatermarkJson == null) return;
-        try {
-            JSONArray segments = videoWatermarkJson.optJSONArray("segments");
-            if (segments == null) return;
-            long elapsed = Math.max(0, System.currentTimeMillis() - recordStartMs);
-
-            JSONObject valuesDelta = new JSONObject();
-            JSONObject current = snapshotWatermarkValues();
-            java.util.Iterator<String> keys = current.keys();
-            while (keys.hasNext()) {
-                String key = keys.next();
-                String value = current.optString(key, "");
-                String old = lastWatermarkValues.get(key);
-                if (old == null || !old.equals(value)) {
-                    valuesDelta.put(key, value);
-                    lastWatermarkValues.put(key, value);
-                }
-            }
-
-            String anchor = currentAnchor();
-            boolean anchorChanged = !anchor.equals(lastWatermarkAnchor);
-
-            // 每秒把"最新的那一段变化"追加到 meta.jsonl（JSONL 可流式写，崩溃最多丢半行）
-            if (videoTicket != null && videoWatermarkJson != null) {
-                JSONArray segs = videoWatermarkJson.optJSONArray("segments");
-                if (segs != null && segs.length() > 0) {
-                    JSONObject last = segs.optJSONObject(segs.length() - 1);
-                    if (last != null) {
-                        try {
-                            JSONObject line = new JSONObject();
-                            line.put("t", last.optLong("from_ms", 0));
-                            if (last.has("values")) line.put("values", last.get("values"));
-                            if (last.has("pos")) line.put("pos", last.get("pos"));
-                            fileImporter.appendVideoMeta(videoTicket.fileId, line);
-                        } catch (Exception ignored) {
-                        }
-                    }
-                }
-            }
-            if (valuesDelta.length() > 0 || anchorChanged) {
-                JSONObject seg = new JSONObject();
-                seg.put("from_ms", elapsed);
-                if (valuesDelta.length() > 0) seg.put("values", valuesDelta);
-                if (anchorChanged) {
-                    seg.put("pos", anchor);
-                    lastWatermarkAnchor = anchor;
-                }
-                segments.put(seg);
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "记录水印变化失败", e);
-        }
-    }
-
     // endregion
 
     /**
@@ -1188,37 +1018,18 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private void performFocusOnPoint(float x, float y) {
-        if (cameraControl == null) return;
-        try {
-            MeteringPoint meteringPoint = previewView.getMeteringPointFactory().createPoint(x, y);
-            FocusMeteringAction action = new FocusMeteringAction.Builder(meteringPoint, FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE)
-                    .setAutoCancelDuration(3, TimeUnit.SECONDS)
-                    .build();
-            cameraControl.startFocusAndMetering(action);
-            showFocusIndicator(x, y);
-        } catch (Exception e) {
-            Log.e(TAG, "聚焦失败", e);
-        }
+        if (camera2Controller == null) return;
+        camera2Controller.focusAt(x, y);
+        showFocusIndicator(x, y);
     }
 
     /**
      * 根据当前摄像头支持的变焦范围，计算可选倍数档位并更新模式栏右侧的倍数按钮
      * （按钮实时显示当前倍数，点击弹出档位选择框；切换前后摄像头后需重新调用，无可用档位时隐藏按钮）
      */
-    private void setupZoomButton() {
+    private void setupZoomButton(float minZoom, float maxZoom) {
         availableZoomRatios.clear();
-        if (camera == null) {
-            zoomButton.setVisibility(View.GONE);
-            return;
-        }
-
-        ZoomState zoomState = camera.getCameraInfo().getZoomState().getValue();
-        if (zoomState == null) {
-            zoomButton.setVisibility(View.GONE);
-            return;
-        }
-        float minZoom = zoomState.getMinZoomRatio();
-        float maxZoom = zoomState.getMaxZoomRatio();
+        if (zoomButton == null) return;
 
         for (float preset : ZOOM_PRESETS) {
             if (preset >= minZoom - 0.01f && preset <= maxZoom + 0.01f) {
@@ -1235,36 +1046,26 @@ public class CameraActivity extends AppCompatActivity {
             return;
         }
         zoomButton.setVisibility(View.VISIBLE);
+        updateZoomButtonText();
+    }
 
-        // 实时显示当前变焦倍数（捏合缩放、档位选择都会触发更新）
-        LiveData<ZoomState> liveData = camera.getCameraInfo().getZoomState();
-        if (observedZoomState != null) {
-            observedZoomState.removeObservers(this);
-        }
-        observedZoomState = liveData;
-        liveData.observe(this, state -> {
-            if (state != null) {
-                zoomButton.setText(formatZoomText(state.getZoomRatio()));
-            }
-        });
+    private void updateZoomButtonText() {
+        if (zoomButton == null || camera2Controller == null) return;
+        zoomButton.setText(formatZoomText(camera2Controller.getZoomRatio()));
     }
 
     /**
      * 弹出倍数选择模态框，最接近当前倍数的一项默认选中，点击即精确切换
      */
     private void showZoomRatioDialog() {
-        if (camera == null || availableZoomRatios.isEmpty()) return;
+        if (camera2Controller == null || availableZoomRatios.isEmpty()) return;
 
         String[] labels = new String[availableZoomRatios.size()];
         for (int i = 0; i < availableZoomRatios.size(); i++) {
             labels[i] = formatZoomText(availableZoomRatios.get(i));
         }
 
-        float currentZoom = 1.0f;
-        ZoomState zoomState = camera.getCameraInfo().getZoomState().getValue();
-        if (zoomState != null) {
-            currentZoom = zoomState.getZoomRatio();
-        }
+        float currentZoom = camera2Controller.getZoomRatio();
         int checkedIndex = 0;
         float minDiff = Float.MAX_VALUE;
         for (int i = 0; i < availableZoomRatios.size(); i++) {
@@ -1278,9 +1079,8 @@ public class CameraActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("选择变焦倍数")
                 .setSingleChoiceItems(labels, checkedIndex, (dialog, which) -> {
-                    if (cameraControl != null) {
-                        cameraControl.setZoomRatio(availableZoomRatios.get(which));
-                    }
+                    camera2Controller.setZoomRatio(availableZoomRatios.get(which));
+                    updateZoomButtonText();
                     dialog.dismiss();
                 })
                 .setNegativeButton("取消", null)
@@ -1358,7 +1158,8 @@ public class CameraActivity extends AppCompatActivity {
     private void onCaptureSaved(boolean syncedToAlbum) {
         isCaptureProcessing = false;
         setCaptureButtonEnabled(true);
-        showTopToast(syncedToAlbum ? "照片已保存并同步相册" : "照片已保存");
+        showTopToast(isVideoMode ? "视频已保存"
+                : (syncedToAlbum ? "照片已保存并同步相册" : "照片已保存"));
         if (pendingFinishAfterCapture) {
             pendingFinishAfterCapture = false;
             finishWithSession();
@@ -2344,13 +2145,16 @@ public class CameraActivity extends AppCompatActivity {
             cameraConfig.shutter_sound = json.optBoolean("shutter_sound", true);
             cameraConfig.save_original = json.optBoolean("save_original", false);
             if ("4:3".equals(cameraConfig.proportion)) {
-                targetAspectRatio = AspectRatio.RATIO_4_3;
+                targetAspectRatio = 4f / 3f;
             } else {
-                targetAspectRatio = AspectRatio.RATIO_16_9;
+                targetAspectRatio = 16f / 9f;
+            }
+            if (camera2Controller != null) {
+                camera2Controller.setTargetAspectRatio(targetAspectRatio);
             }
         } catch (Exception e) {
             Log.e(TAG, "解析相机配置失败", e);
-            targetAspectRatio = AspectRatio.RATIO_16_9;
+            targetAspectRatio = 16f / 9f;
         }
     }
 
@@ -2477,19 +2281,38 @@ public class CameraActivity extends AppCompatActivity {
     // endregion
 
     // region --- 权限管理 ---
+    /** 相机/定位是硬性权限；录音只影响视频是否带声音，单独判断。 */
     private boolean allPermissionsGranted() {
-        for (String permission : REQUIRED_PERMISSIONS) {
-            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
-                return false;
-            }
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean audioPermissionGranted() {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** 相机/定位没授权就请求；录音只在第一次没授权时请求，拒绝后不再反复打扰。 */
+    private void requestPermissionsIfNeeded() {
+        boolean needRequired = !allPermissionsGranted();
+        boolean audioAsked = getSharedPreferences("camera", MODE_PRIVATE)
+                .getBoolean("audio_permission_asked", false);
+        boolean needAudio = !audioPermissionGranted() && !audioAsked;
+        if (needRequired || needAudio) {
+            ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_PERMISSIONS);
         }
-        return true;
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_PERMISSIONS) {
+            getSharedPreferences("camera", MODE_PRIVATE).edit()
+                    .putBoolean("audio_permission_asked", true).apply();
             if (allPermissionsGranted()) {
                 startCamera();
                 startLocationUpdates();
