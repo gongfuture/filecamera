@@ -56,15 +56,31 @@ public final class VideoWatermarkBurner {
      * @param output 目标文件（必须可写；一般直接给 app_data/&lt;新id&gt;.mp4）
      * @param wm     水印数据
      */
-    public static void burn(Context context, File input, File output, JSONObject wm, Callback callback) {
+    /** 烧录句柄：用于中途取消（取消后调用方负责清理半成品文件）。 */
+    public static final class Handle {
+        private final Transformer transformer;
+
+        Handle(Transformer transformer) {
+            this.transformer = transformer;
+        }
+
+        public void cancel() {
+            try {
+                transformer.cancel();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    public static Handle burn(Context context, File input, File output, JSONObject wm, Callback callback) {
         Handler main = new Handler(Looper.getMainLooper());
         if (input == null || !input.isFile()) {
             main.post(() -> callback.onError(new IllegalStateException("原视频不存在")));
-            return;
+            return null;
         }
         if (wm == null) {
             main.post(() -> callback.onError(new IllegalStateException("该视频没有水印数据")));
-            return;
+            return null;
         }
 
         int width;
@@ -83,7 +99,7 @@ public final class VideoWatermarkBurner {
         } catch (Exception e) {
             Log.e(TAG, "读取视频尺寸失败", e);
             main.post(() -> callback.onError(e));
-            return;
+            return null;
         } finally {
             try {
                 retriever.release();
@@ -92,13 +108,13 @@ public final class VideoWatermarkBurner {
         }
         if (width <= 0 || height <= 0) {
             main.post(() -> callback.onError(new IllegalStateException("无法获取视频分辨率")));
-            return;
+            return null;
         }
 
         Bitmap overlayBitmap = WatermarkBitmapRenderer.renderFullFrameOverlay(width, height, wm);
         if (overlayBitmap == null) {
             main.post(() -> callback.onError(new IllegalStateException("生成水印层失败")));
-            return;
+            return null;
         }
 
         OverlaySettings settings = new OverlaySettings.Builder()
@@ -150,10 +166,12 @@ public final class VideoWatermarkBurner {
         try {
             transformer.start(item, output.getAbsolutePath());
             main.postDelayed(poller[0], 600);
+            return new Handle(transformer);
         } catch (Exception e) {
             Log.e(TAG, "启动烧录失败", e);
             recycleQuietly(overlayBitmap);
             main.post(() -> callback.onError(e));
+            return null;
         }
     }
 

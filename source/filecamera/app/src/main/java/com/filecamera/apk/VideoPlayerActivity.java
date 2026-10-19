@@ -74,10 +74,12 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private LinearLayout burnMask;
     private ProgressBar burnBar;
     private TextView burnText;
+    private TextView burnStop;
     private File sourceVideoFile;
     private String sourceFileId;
     private String sourceDisplayName;
     private boolean burning = false;
+    private VideoWatermarkBurner.Handle burnHandle;
     private SeekBar volumeBar;
     private SeekBar seekBar;
     private TextView timePos;
@@ -132,6 +134,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
         burnMask = findViewById(R.id.burn_mask);
         burnBar = findViewById(R.id.burn_bar);
         burnText = findViewById(R.id.burn_text);
+        burnStop = findViewById(R.id.burn_stop);
         volumeBar = findViewById(R.id.volume_bar);
         seekBar = findViewById(R.id.seek_bar);
         timePos = findViewById(R.id.time_pos);
@@ -476,11 +479,19 @@ public class VideoPlayerActivity extends AppCompatActivity {
         }
 
         burning = true;
+        if (burnStop != null) {
+            burnStop.setOnClickListener(v -> {
+                if (burnHandle != null) {
+                    burnHandle.cancel();
+                    Toast.makeText(this, "已停止烧录，正在清理…", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
         burnMask.setVisibility(View.VISIBLE);
         burnBar.setProgress(0);
         burnText.setText("正在烧录水印… 0%");
 
-        VideoWatermarkBurner.burn(this, sourceVideoFile, ticket.targetFile, watermark,
+        burnHandle = VideoWatermarkBurner.burn(this, sourceVideoFile, ticket.targetFile, watermark,
                 new VideoWatermarkBurner.Callback() {
                     @Override
                     public void onProgress(int percent) {
@@ -493,6 +504,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
                         try {
                             importer.finishVideo(ticket);
                             burning = false;
+                            burnHandle = null;
                             burnMask.setVisibility(View.GONE);
                             Toast.makeText(VideoPlayerActivity.this, "烧录完成，已保存到当前文件夹", Toast.LENGTH_LONG).show();
                         } catch (Exception e) {
@@ -506,8 +518,9 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
                     @Override
                     public void onError(Throwable error) {
-                        importer.abortVideo(ticket);
+                        importer.abortVideo(ticket);   // 中途停止/失败：清掉已烧录的半成品
                         burning = false;
+                        burnHandle = null;
                         burnMask.setVisibility(View.GONE);
                         String msg = error == null ? "未知错误" : error.getMessage();
                         Toast.makeText(VideoPlayerActivity.this, "烧录失败：" + msg, Toast.LENGTH_LONG).show();

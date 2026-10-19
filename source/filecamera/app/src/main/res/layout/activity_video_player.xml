@@ -196,6 +196,18 @@
             android:text="正在烧录水印…"
             android:textColor="#FFFFFF"
             android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/burn_stop"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/zoom_button_background"
+            android:gravity="center"
+            android:paddingHorizontal="22dp"
+            android:text="停止烧录"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
     </LinearLayout>
 
     <!-- 播放/暂停：独立图层，暂停/播完时始终显示（不受控制条显隐影响） -->
