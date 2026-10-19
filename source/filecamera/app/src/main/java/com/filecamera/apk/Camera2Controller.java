@@ -903,7 +903,9 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
                     ? new Size(usedSize.getHeight(), usedSize.getWidth())
                     : usedSize;
             int mp4Rotation = rotation;
-            int glRotation = 0;
+            // 相机原始帧在传感器方向下与 tkhd 旋转元数据相差 180°：
+            // 竖屏元数据（90/270）时先把相机帧在 GL 里转 180，播放器再按元数据转正。
+            int glRotation = (mp4Rotation == 90 || mp4Rotation == 270) ? 180 : 0;
             int overlayRotation = mp4Rotation;
 
             MediaCodecInfo codecInfo = selectVideoEncoder(usedSize);
