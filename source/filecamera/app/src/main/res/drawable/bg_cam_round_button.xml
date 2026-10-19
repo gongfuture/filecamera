@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 圆形工具键：切换镜头 / 变焦（黑色控制区上的细描边） -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="oval">
+            <solid android:color="#1F1F1F" />
+            <stroke
+                android:width="1dp"
+                android:color="#4A4A4A" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#0A0A0A" />
+            <stroke
+                android:width="1dp"
+                android:color="#333333" />
+        </shape>
+    </item>
+</selector>

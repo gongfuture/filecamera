@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 相机页顶栏：竖屏/横屏共用；顶部 1dp 灰线与系统信息栏分隔 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/cam_top_bar"
+    android:orientation="vertical">
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/cam_line" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="48dp">
+
+        <ImageButton
+            android:id="@+id/exitButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="start|center_vertical"
+            android:layout_marginStart="4dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="退出"
+            android:padding="14dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_cam_back"
+            app:tint="@color/cam_text_primary" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:fontFamily="sans-serif-medium"
+            android:includeFontPadding="false"
+            android:letterSpacing="0.06"
+            android:text="巡查拍照"
+            android:textColor="@color/cam_accent"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:layout_gravity="end"
+            android:layout_marginEnd="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/sessionCountText"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:background="@drawable/bg_cam_count"
+                android:fontFamily="sans-serif-medium"
+                android:gravity="center"
+                android:includeFontPadding="false"
+                android:letterSpacing="0.04"
+                android:minWidth="52dp"
+                android:paddingHorizontal="9dp"
+                android:text="已拍 0"
+                android:textColor="#C7C7C7"
+                android:textSize="11sp" />
+
+            <ImageButton
+                android:id="@+id/flashButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="2dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="闪光灯"
+                android:padding="12dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_flash_off"
+                android:visibility="gone"
+                app:tint="@color/cam_text_primary" />
+        </LinearLayout>
+    </FrameLayout>
+</LinearLayout>

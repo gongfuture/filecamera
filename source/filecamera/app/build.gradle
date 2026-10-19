@@ -46,10 +46,8 @@ dependencies {
 
     implementation 'com.google.zxing:core:3.5.3'
 
-    // 视频播放 + 分片 MP4 封装（录像边录边烧，直接输出标准 .mp4）
+    // 分片 MP4 封装（录像边录边烧，直接输出标准 .mp4）
     def media3_version = "1.4.1"
-    implementation "androidx.media3:media3-exoplayer:${media3_version}"
-    implementation "androidx.media3:media3-ui:${media3_version}"
     implementation "androidx.media3:media3-muxer:${media3_version}"
     implementation "androidx.media3:media3-container:${media3_version}"
 

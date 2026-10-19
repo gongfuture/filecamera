@@ -34,8 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 把相机帧 + 水印位图用 OpenGL 合成到 MediaCodec 的输入 Surface 上。
  *
  * <p>相机输出（横向）→ OES 纹理 → 按 rotation 旋转到最终方向 → 画到编码器 Surface；
- * 水印是一张与编码画面同尺寸的透明位图，叠在相机帧上面。这样编码出来的 MP4 本身就带水印，
- * 不再需要 .wmp4 尾部数据和播放时叠印。
+ * 水印是一张与编码画面同尺寸的透明位图，叠在相机帧上面。这样编码出来的 MP4 本身就带水印。
  *
  * <p>所有 GL 操作都在独立线程；相机 SurfaceTexture 的 onFrameAvailable 会 post 到该线程合并渲染。
  */

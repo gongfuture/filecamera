@@ -244,22 +244,6 @@ public class FilePickerBridge {
         }
     }
     @JavascriptInterface
-    public void openVideo(String task_id, String json_data) {
-        try {
-            JSONObject params = new JSONObject(json_data);
-            Intent intent = new Intent(activity, VideoPlayerActivity.class);
-            intent.putExtra(VideoPlayerActivity.EXTRA_FILE_ID, params.optString("id", ""));
-            intent.putExtra(VideoPlayerActivity.EXTRA_FILE_NAME, params.optString("name", ""));
-            intent.putExtra(VideoPlayerActivity.EXTRA_REAL_FILE_NAME, params.optString("real_file_name", ""));
-            activity.startActivity(intent);
-            call_js_callback(task_id, true, new JSONObject(), null);
-        } catch (Exception e) {
-            Log.e(TAG, "Error in openVideo()", e);
-            call_js_callback(task_id, false, null, "打开视频失败: " + e.getMessage());
-        }
-    }
-
-    @JavascriptInterface
     public void shareFile(String task_id, String json_data) {
         new Thread(() -> {
             try {
@@ -442,8 +426,11 @@ public class FilePickerBridge {
                     String iconTempUri = params.optString("iconTempUri", null);
                     File iconFile = null;
                     if (iconTempUri != null && !iconTempUri.isEmpty()) {
-                        File tempFile = new File(Uri.parse(iconTempUri).getPath());
-                        if (tempFile.exists()) {
+                        String iconPath = Uri.parse(iconTempUri).getPath();
+                        File iconRoot = new File(activity.getFilesDir(), "watermark/icon");
+                        File tempFile = iconPath == null ? null : new File(iconPath);
+                        // 只允许读取水印图标目录内的暂存文件，防止任意文件被打包
+                        if (SecurityUtils.isUnderDirectory(tempFile, iconRoot) && tempFile.isFile()) {
                             iconFile = tempFile;
                         }
                     }

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 顶栏右侧的本次拍摄计数 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#141414" />
+    <stroke
+        android:width="1dp"
+        android:color="@color/cam_line" />
+    <corners android:radius="4dp" />
+</shape>

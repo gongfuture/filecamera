@@ -2,5 +2,17 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
-	<color name="icon_gold">#FFC107</color>
+
+    <!-- 相机页：纯黑底色 + 中性灰分隔线 + 琥珀强调色 -->
+    <color name="cam_bg">#000000</color>
+    <color name="cam_top_bar">#000000</color>
+    <color name="cam_line">#333333</color>
+    <!-- 纯黑控制区上的分隔线 -->
+    <color name="cam_black_line">#262626</color>
+    <color name="cam_text_primary">#F5F5F5</color>
+    <color name="cam_text_secondary">#B3B3B3</color>
+    <color name="cam_accent">#FF9800</color>
+    <color name="cam_accent_pressed">#FFB74D</color>
+    <color name="cam_danger">#D73A49</color>
+    <color name="cam_danger_bright">#FF5252</color>
 </resources>

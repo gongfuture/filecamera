@@ -66,14 +66,7 @@
 			android:name=".CameraActivity"
 			android:screenOrientation="portrait"
 			android:exported="false"
-			android:theme="@style/Theme.AppCompat.NoActionBar">
-		</activity>	
-		<!-- 视频播放页：播放干净视频并在画面上叠加水印数据 -->
-		<activity
-			android:name=".VideoPlayerActivity"
-			android:configChanges="orientation|screenSize|keyboardHidden"
-			android:exported="false"
-			android:theme="@style/Theme.AppCompat.NoActionBar">
+			android:theme="@style/Theme.巡查相机.Camera">
 		</activity>	
 		
 		

@@ -62,9 +62,8 @@ function createSvgBlobUrl(svgContent) {
 function isImageFile(filename) {
     return /\.(jpg|jpeg|png|gif|bmp|webp|svg)$/i.test(filename);
 }
-// 可播放的视频（点开进原生播放页，水印由同记录的 file_watermark 数据叠加）
+// 可播放的视频（点开进 WebView 播放页）
 function isVideoFile(filename) {
-    if (/\.wmp4$/i.test(filename)) return true;   // App 专用格式（水印数据在文件尾部）
     return /\.(mp4|m4v|mov|3gp|mkv|webm)$/i.test(filename);
 }
 let dir_icon_text = '<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg class="icon" style="width: 5em; height: 5em;vertical-align: middle;fill: currentColor;overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"><path d="M977.6 238.4c-9.6-9.6-21.6-14.4-33.6-14.4H472L366.4 118.4c-4-4-9.6-8-15.2-10.4-6.4-2.4-12-4-18.4-4H80c-12 0-24.8 4.8-33.6 14.4S32 140 32 152v280h960V272c0-12-4.8-24.8-14.4-33.6z" fill="#434a54" /><path d="M944 912H80c-26.4 0-48-21.6-48-48V352h960v512c0 26.4-21.6 48-48 48z" fill="#656d78" /> </svg>'
@@ -74,14 +73,6 @@ let book_icon_text = '<svg width="24" height="24" xmlns="http://www.w3.org/2000/
 let dir_icon_url = createSvgBlobUrl(dir_icon_text)
 let file_icon_url = createSvgBlobUrl(file_icon_text)
 let book_icon_url = createSvgBlobUrl(book_icon_text)
-// 水印数据文件（.wmd）专用图标：纸张 + 斜向水印纹 + 水滴，避免和普通文件图标混淆
-let watermark_icon_text = '<?xml version="1.0" encoding="utf-8"?><svg viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg"><path fill="#E5E5E5" d="M4.6 3.4c0-1.1.9-2 2-2h7.8l4.6 4.6v21.6c0 1.1-.9 2-2 2H6.6c-1.1 0-2-.9-2-2z"/><path fill="#CCCCCC" d="M14.4 1.4l4.6 4.6h-3.8c-.4 0-.8-.4-.8-.8z"/><g fill="#9AA4B2"><path d="M6.9 17.3l7.4-7.4 1.5 1.5-7.4 7.4z"/><path d="M9.9 21.3l7.2-7.2 1.5 1.5-7.2 7.2z" fill-opacity="0.45"/></g><path fill="#5B7FA6" d="M16.1 14.6c1.7 1.9 2.5 3.1 2.5 4.1 0 1.4-1.1 2.5-2.5 2.5s-2.5-1.1-2.5-2.5c0-1 .8-2.2 2.5-4.1z"/><g fill="#9AA4B2"><rect x="6.6" y="24" width="9.8" height="1.4" rx="0.7"/><rect x="6.6" y="26.9" width="6.2" height="1.4" rx="0.7" fill-opacity="0.6"/></g></svg>'
-let watermark_icon_url = createSvgBlobUrl(watermark_icon_text)
-// 水印数据文件后缀（伴生文件，记录水印内容/位置/时间轴）
-const WATERMARK_FILE_EXT = 'wmd'
-function isWatermarkFile(name){
-	return typeof name === 'string' && name.toLowerCase().endsWith('.' + WATERMARK_FILE_EXT)
-}
 // 图标制作函数
 async function icon_make(file) {
     if (!(file instanceof File) || !file.type.startsWith('image/')) {
@@ -995,7 +986,7 @@ async function updateTable(id,have_data) {
         const nameCell = document.createElement("div");
         nameCell.className = 'td1';
         let iconimg = document.createElement('img');
-        iconimg.src = isWatermarkFile(item.name) ? watermark_icon_url : file_icon_url;
+        iconimg.src = file_icon_url;
         iconimg.className = 'icon_img';
         iconimg.dataset.name = item.name;
         iconimg.dataset.id = item.id;

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 变焦浮层：半透明深色胶囊，内部只有纯文字档位 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#A6000000" />
+    <corners android:radius="999dp" />
+</shape>

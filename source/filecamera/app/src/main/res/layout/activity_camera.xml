@@ -3,10 +3,18 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000"
+    android:background="@color/cam_bg"
     android:orientation="vertical">
 
-    <!-- 取景区域：全宽、尽量占满 -->
+    <!-- ============ 顶栏：沿用主界面的深板岩标题条 ============ -->
+    <include layout="@layout/camera_top_bar" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/cam_line" />
+
+    <!-- ============ 取景区域 ============ -->
     <RelativeLayout
         android:id="@+id/previewContainer"
         android:layout_width="match_parent"
@@ -26,6 +34,7 @@
             android:orientation="vertical"
             android:visibility="gone" />
 
+        <!-- 录像计时：顶部居中的深色胶囊 -->
         <TextView
             android:id="@+id/recordingTimer"
             android:layout_width="wrap_content"
@@ -33,29 +42,93 @@
             android:layout_alignParentTop="true"
             android:layout_centerHorizontal="true"
             android:layout_margin="12dp"
-            android:background="#99000000"
-            android:paddingHorizontal="10dp"
-            android:paddingVertical="4dp"
-            android:text="● 00:00"
-            android:textColor="#FF5252"
-            android:textSize="13sp"
+            android:background="@drawable/bg_cam_timer"
+            android:drawableStart="@drawable/ic_rec_dot"
+            android:drawablePadding="7dp"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center_vertical"
+            android:includeFontPadding="false"
+            android:letterSpacing="0.1"
+            android:text="REC  00:00"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
             android:visibility="gone" />
+
+        <!-- 变焦浮层：半透明胶囊，宽度为原来容器的 75%，内部只有纯文字档位 -->
+        <LinearLayout
+            android:id="@+id/zoomPanelHost"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentBottom="true"
+            android:layout_marginHorizontal="24dp"
+            android:layout_marginBottom="16dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:id="@+id/zoomPanel"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="6"
+                android:background="@drawable/bg_cam_zoom_capsule"
+                android:clickable="true"
+                android:focusable="true"
+                android:orientation="horizontal"
+                android:paddingTop="0dp"
+                android:paddingBottom="0dp"
+                android:visibility="gone">
+
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:fillViewport="true"
+                    android:overScrollMode="never"
+                    android:scrollbars="none">
+
+                    <LinearLayout
+                        android:id="@+id/zoomOptionsRow"
+                        android:layout_width="wrap_content"
+                        android:layout_height="match_parent"
+                        android:gravity="center"
+                        android:orientation="horizontal"
+                        android:paddingHorizontal="18dp"
+                        android:paddingTop="0dp"
+                        android:paddingBottom="0dp" />
+                </HorizontalScrollView>
+            </LinearLayout>
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+        </LinearLayout>
 
     </RelativeLayout>
 
-    <!-- 底部控制面板：模式、闪光灯/倍率、快门三层 -->
+    <!-- ============ 底部操作区：纯黑、直角 ============ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#F20A0A0A"
+        android:background="@drawable/bg_cam_bottom_sheet"
         android:orientation="vertical"
         android:paddingBottom="8dp">
 
-        <!-- 第一层：照相 / 录像 -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/cam_black_line" />
+
+        <!-- 模式标签：照相 / 录像 -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:gravity="center_vertical"
+            android:layout_height="46dp"
+            android:background="@drawable/bg_cam_tab_row"
+            android:baselineAligned="false"
             android:orientation="horizontal">
 
             <TextView
@@ -63,121 +136,75 @@
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
+                android:background="@drawable/bg_cam_mode_selected"
                 android:fontFamily="sans-serif-medium"
                 android:gravity="center"
+                android:includeFontPadding="false"
                 android:letterSpacing="0.12"
                 android:text="照相"
-                android:textColor="#8A8A8A"
-                android:textSize="13sp" />
-
-            <View
-                android:layout_width="1dp"
-                android:layout_height="16dp"
-                android:background="#26FFFFFF" />
+                android:textColor="@color/cam_accent"
+                android:textSize="13sp"
+                android:textStyle="bold" />
 
             <TextView
                 android:id="@+id/modeTabVideo"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
+                android:background="@android:color/transparent"
                 android:fontFamily="sans-serif-medium"
                 android:gravity="center"
+                android:includeFontPadding="false"
                 android:letterSpacing="0.12"
                 android:text="录像"
-                android:textColor="#8A8A8A"
+                android:textColor="#9AA7B0"
                 android:textSize="13sp" />
-
         </LinearLayout>
 
-        <!-- 第二层：居中双格控制条，等宽等高 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:gravity="center"
-            android:orientation="horizontal">
-
-            <LinearLayout
-                android:layout_width="240dp"
-                android:layout_height="match_parent"
-                android:background="@drawable/zoom_group_background"
-                android:gravity="center"
-                android:orientation="horizontal">
-
-                <ImageButton
-                    android:id="@+id/flashButton"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1"
-                    android:background="?attr/selectableItemBackground"
-                    android:contentDescription="Flash Mode"
-                    android:padding="12dp"
-                    android:scaleType="centerInside"
-                    android:src="@drawable/ic_flash_off"
-                    android:visibility="gone"
-                    app:tint="@color/black" />
-
-                <View
-                    android:id="@+id/centerDivider"
-                    android:layout_width="1dp"
-                    android:layout_height="24dp"
-                    android:background="#33000000" />
-
-                <TextView
-                    android:id="@+id/zoomButton"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1"
-                    android:background="?attr/selectableItemBackground"
-                    android:fontFamily="sans-serif-medium"
-                    android:gravity="center"
-                    android:letterSpacing="0.05"
-                    android:text="1x"
-                    android:textColor="@color/black"
-                    android:textSize="14sp"
-                    android:visibility="gone" />
-
-            </LinearLayout>
-
-        </LinearLayout>
-
-        <!-- 第三层：切换 / 快门 / 退出 -->
+        <!-- 主控制行：切换 / 快门 / 变焦 -->
         <RelativeLayout
             android:layout_width="match_parent"
-            android:layout_height="92dp"
-            android:paddingHorizontal="24dp">
+            android:layout_height="112dp"
+            android:paddingHorizontal="22dp">
 
             <ImageButton
                 android:id="@+id/switchCameraButton"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:layout_alignParentStart="true"
                 android:layout_centerVertical="true"
-                android:background="?attr/selectableItemBackgroundBorderless"
+                android:background="@drawable/bg_cam_round_button"
                 android:contentDescription="切换摄像头"
+                android:padding="12dp"
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_camera_switch_arrows"
-                app:tint="@color/white" />
+                app:tint="@color/cam_text_primary" />
 
             <ImageButton
                 android:id="@+id/captureButton"
-                android:layout_width="80dp"
-                android:layout_height="80dp"
+                android:layout_width="78dp"
+                android:layout_height="78dp"
                 android:layout_centerInParent="true"
                 android:background="@drawable/capture_button"
                 android:contentDescription="拍照" />
 
-            <ImageButton
-                android:id="@+id/exitButton"
+            <TextView
+                android:id="@+id/zoomButton"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:layout_alignParentEnd="true"
                 android:layout_centerVertical="true"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="退出"
-                android:scaleType="centerInside"
-                android:src="@drawable/ic_close"
-                app:tint="@color/white" />
-
+                android:background="@drawable/bg_cam_round_button"
+                android:contentDescription="变焦倍数"
+                android:fontFamily="sans-serif-medium"
+                android:gravity="center"
+                android:includeFontPadding="false"
+                android:letterSpacing="0.02"
+                android:text="1x"
+                android:textColor="@color/cam_accent"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
         </RelativeLayout>
 
     </LinearLayout>

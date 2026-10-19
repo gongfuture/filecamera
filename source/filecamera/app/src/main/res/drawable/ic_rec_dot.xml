@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 录像计时前的方形红点 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/cam_danger_bright" />
+    <corners android:radius="1dp" />
+    <size
+        android:width="7dp"
+        android:height="7dp" />
+</shape>

@@ -3,6 +3,7 @@ package com.filecamera.apk;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.ContentResolver;
 import android.content.Intent;
@@ -621,9 +622,7 @@ public class MainActivity extends AppCompatActivity {
                     // 在 WebView 内部加载本地文件 URL
                     return false;
                 }
-                // 对于所有其他 URL，在外部浏览器中打开
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                startActivity(intent);
+                openExternalUrl(url);
                 return true;
             }
             @Override
@@ -754,9 +753,8 @@ public class MainActivity extends AppCompatActivity {
         if (locationManager != null && locationListener != null) {
             locationManager.removeUpdates(locationListener);
         }
-        if (dbHelper != null) {
-            dbHelper.close();
-        }
+        // DatabaseHelper 是进程级单例，可能仍被相机页/Web 桥使用；
+        // 不在单个 Activity 销毁时 close，交给进程生命周期回收。
     }
 
     /**
@@ -904,6 +902,21 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
+     * 打开外部链接：交给系统处理，不做 scheme 白名单。
+     * 私人版可能需要自定义 scheme 或从网络地址取数据。
+     */
+    private void openExternalUrl(String url) {
+        if (url == null || url.isEmpty()) return;
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (ActivityNotFoundException e) {
+            showToast("未找到可打开该链接的应用");
+        } catch (Exception e) {
+            Log.w(TAG, "打开外部链接失败", e);
+        }
+    }
+
+    /**
      * 使用 Android 的 DownloadManager 启动文件下载。
      */
     private void startDownload(String url, String fileName) {
@@ -914,7 +927,8 @@ public class MainActivity extends AppCompatActivity {
             if (cookies != null) {
                 request.addRequestHeader("Cookie", cookies);
             }
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+            String safeFileName = SecurityUtils.safePathComponent(fileName);
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeFileName);
             request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             android.app.DownloadManager downloadManager = (android.app.DownloadManager) getSystemService(DOWNLOAD_SERVICE);
             downloadManager.enqueue(request);

@@ -5,6 +5,7 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -54,6 +55,7 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.widget.ImageViewCompat;
 import androidx.exifinterface.media.ExifInterface;
 
 import com.google.zxing.BarcodeFormat;
@@ -106,10 +108,16 @@ public class CameraActivity extends AppCompatActivity {
     private ImageButton captureButton;
     private LinearLayout watermarkContainer;
     private ImageButton flashButton;
-    private View centerDivider;
     private ImageButton exitButton;
-    // 变焦按钮（位于两个模式标签中间，显示当前倍数，点击弹出倍数选择框）
+    // 顶栏的本次拍摄计数
+    private TextView sessionCountText;
+    private int sessionShotCount = 0;
+    // 变焦按钮（显示当前倍数；点击展开/收起上方变焦浮层）
     private TextView zoomButton;
+    // 变焦浮层：贴在底部操作区上沿，展开时覆盖水印并拦截点击
+    private LinearLayout zoomPanel;
+    private LinearLayout zoomOptionsRow;
+    private boolean zoomDockOpen = false;
     private final List<Float> availableZoomRatios = new ArrayList<>();
     // 预设变焦倍数，仅展示设备支持范围内的档位
     private static final float[] ZOOM_PRESETS = {0.6f, 1.0f, 2.0f, 3.0f, 5.0f};
@@ -146,7 +154,7 @@ public class CameraActivity extends AppCompatActivity {
         public void run() {
             if (!isRecording || recordingTimer == null) return;
             long ms = System.currentTimeMillis() - recordStartMs;
-            recordingTimer.setText(String.format(Locale.CHINA, "● %02d:%02d", ms / 60000, (ms / 1000) % 60));
+            recordingTimer.setText(String.format(Locale.CHINA, "REC  %02d:%02d", ms / 60000, (ms / 1000) % 60));
             recordTimerHandler.postDelayed(this, 500);
         }
     };
@@ -337,6 +345,7 @@ public class CameraActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         isActivityResumed = false;
+        dismissZoomPanelImmediately();
         if (orientationEventListener != null) {
             orientationEventListener.disable();
         }
@@ -400,7 +409,7 @@ public class CameraActivity extends AppCompatActivity {
             if (camera2Controller != null) {
                 camera2Controller.setTargetRotation(currentRotation);
             }
-            startCamera();
+            startCameraIfReady();
             startLocationUpdates(); // 开始位置更新
             uiUpdateHandler.post(uiUpdateRunnable); // 启动UI更新循环
         }
@@ -434,7 +443,6 @@ public class CameraActivity extends AppCompatActivity {
         previewContainer = findViewById(R.id.previewContainer);
         captureButton = findViewById(R.id.captureButton);
         flashButton = findViewById(R.id.flashButton);
-        centerDivider = findViewById(R.id.centerDivider);
         modeTabPhoto = findViewById(R.id.modeTabPhoto);
         switchCameraButton = findViewById(R.id.switchCameraButton);
         if (switchCameraButton != null) {
@@ -447,8 +455,17 @@ public class CameraActivity extends AppCompatActivity {
         }
         watermarkContainer = findViewById(R.id.watermarkContainer);
         exitButton = findViewById(R.id.exitButton);
+        sessionCountText = findViewById(R.id.sessionCountText);
+        updateSessionCount();
         zoomButton = findViewById(R.id.zoomButton);
-        zoomButton.setOnClickListener(v -> showZoomRatioDialog());
+        zoomButton.setOnClickListener(v -> toggleZoomPanel());
+        zoomPanel = findViewById(R.id.zoomPanel);
+        zoomOptionsRow = findViewById(R.id.zoomOptionsRow);
+        if (zoomPanel != null) {
+            // 浮层自己消费点击，避免穿透到下层水印
+            zoomPanel.setOnClickListener(v -> {
+            });
+        }
         captureButton.setOnClickListener(v -> takePhoto());
         flashButton.setOnClickListener(v -> cycleFlashMode());
         exitButton.setOnClickListener(v -> requestExit());
@@ -507,31 +524,40 @@ public class CameraActivity extends AppCompatActivity {
             return;
         }
         isVideoMode = videoMode;
+        hideZoomPanel();
         setCaptureButtonAlphaForRecording(false);   // 切模式时同步快门外观（录像=红色内圆）
         updateModeTabHighlight();
         flashButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
-        syncCenterDivider();
         bindCameraUseCases();
     }
 
     /** 照相/录像标签高亮 + 切换按钮文案显示当前镜头。 */
     private void updateModeTabHighlight() {
-        int selectedColor = ContextCompat.getColor(this, R.color.icon_gold);
-        int unselectedColor = Color.parseColor("#8A8A8A");
         boolean isBack = currentLensFacing == Camera2Controller.LENS_FACING_BACK;
 
-        if (modeTabPhoto != null) {
-            modeTabPhoto.setTextColor(isVideoMode ? unselectedColor : selectedColor);
-            modeTabPhoto.setTypeface(null, isVideoMode ? Typeface.NORMAL : Typeface.BOLD);
-        }
-        if (modeTabVideo != null) {
-            modeTabVideo.setTextColor(isVideoMode ? selectedColor : unselectedColor);
-            modeTabVideo.setTypeface(null, isVideoMode ? Typeface.BOLD : Typeface.NORMAL);
-        }
+        applyModeTabState(modeTabPhoto, !isVideoMode);
+        applyModeTabState(modeTabVideo, isVideoMode);
+
         if (switchCameraButton != null) {
-            // 前置(自拍)时图标蓝色，后置时白色，用来表示当前镜头
-            switchCameraButton.setColorFilter(isBack ? Color.WHITE : selectedColor);
+            // 前置(自拍)时图标琥珀色，后置时白色，用来表示当前镜头
+            switchCameraButton.setColorFilter(ContextCompat.getColor(this,
+                    isBack ? R.color.cam_text_primary : R.color.cam_accent));
         }
+    }
+
+    /** 分段模式开关：选中 = 琥珀文字 + 底部指示条，未选中 = 灰字。 */
+    private void applyModeTabState(TextView tab, boolean selected) {
+        if (tab == null) return;
+        tab.setBackgroundResource(selected ? R.drawable.bg_cam_mode_selected : 0);
+        tab.setTextColor(ContextCompat.getColor(this,
+                selected ? R.color.cam_accent : R.color.cam_text_secondary));
+        tab.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
+    }
+
+    /** 顶栏计数：本次会话已保存的照片/视频数量。 */
+    private void updateSessionCount() {
+        if (sessionCountText == null) return;
+        sessionCountText.setText(String.format(Locale.CHINA, "已拍 %d", sessionShotCount));
     }
 
     private void initGestureDetectors() {
@@ -732,7 +758,6 @@ public class CameraActivity extends AppCompatActivity {
             setupZoomButton(minZoom, maxZoom);
             updateModeTabHighlight();
             flashButton.setVisibility(hasFlash && !isVideoMode ? View.VISIBLE : View.GONE);
-            syncCenterDivider();
             updateFlashMode();
         }
 
@@ -797,6 +822,11 @@ public class CameraActivity extends AppCompatActivity {
                 flashButton.setImageResource(R.drawable.ic_flash_auto);
                 break;
         }
+        // 关闭时白色；开启/自动时琥珀色，状态一眼可辨
+        boolean active = currentFlashMode != Camera2Controller.FLASH_OFF;
+        ImageViewCompat.setImageTintList(flashButton, ColorStateList.valueOf(
+                ContextCompat.getColor(this,
+                        active ? R.color.cam_accent : R.color.cam_text_primary)));
         if (camera2Controller != null) {
             camera2Controller.setFlashMode(currentFlashMode);
         }
@@ -808,23 +838,35 @@ public class CameraActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * 权限弹窗关闭后，Activity 可能已经 resumed，但 TextureView 还没完成布局；
+     * 统一等到 resumed + 权限齐全后再启动，避免第一次授权后一直黑屏。
+     */
+    private void startCameraIfReady() {
+        if (!allPermissionsGranted() || !isActivityResumed || previewView == null) {
+            return;
+        }
+        startCamera();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && previewView != null) {
+            previewView.post(this::startCameraIfReady);
+        }
+    }
+
     /** 切换拍照/录像模式后，让控制器重建会话（拍照模式带 JPEG ImageReader，录像模式只留预览）。 */
     private void bindCameraUseCases() {
         if (camera2Controller != null) {
             camera2Controller.setVideoMode(isVideoMode);
         }
         flashButton.setVisibility(isVideoMode ? View.GONE : flashButton.getVisibility());
-        syncCenterDivider();
-    }
-
-    /** 闪光灯隐藏时，中间那条细分隔线也一起隐藏，保持双按钮组干净。 */
-    private void syncCenterDivider() {
-        if (centerDivider == null || flashButton == null) return;
-        centerDivider.setVisibility(
-                flashButton.getVisibility() == View.VISIBLE ? View.VISIBLE : View.GONE);
     }
 
     private void takePhoto() {
+        hideZoomPanel();
         // 录像模式：快门 = 开始/停止录像
         if (isVideoMode) {
             if (isRecording) {
@@ -874,7 +916,7 @@ public class CameraActivity extends AppCompatActivity {
             recordStartMs = baseTime;
             if (recordingTimer != null) {
                 recordingTimer.setVisibility(View.VISIBLE);
-                recordingTimer.setText("● 00:00");
+                recordingTimer.setText("REC  00:00");
             }
             recordTimerHandler.post(recordTimerRunnable);
             setCaptureButtonAlphaForRecording(true);
@@ -942,18 +984,18 @@ public class CameraActivity extends AppCompatActivity {
         if (captureButton == null) return;
         captureButton.setAlpha(1.0f);
         if (recording) {
-            // 录像中：白底红描边（按下即停止）
+            // 录像中：红色方块收缩成停止键
             captureButton.setBackgroundResource(R.drawable.capture_button_recording);
             captureButton.setScaleX(1.0f);
             captureButton.setScaleY(1.0f);
         } else {
-            // 未录像：按当前模式还原（录像模式红色内圆，拍照模式白色内圆）
+            // 未录像：按当前模式还原（录像模式红框，拍照模式琥珀框）
             captureButton.setBackgroundResource(isVideoMode
                     ? R.drawable.capture_button_video
                     : R.drawable.capture_button);
             captureButton.setScaleX(1.0f);
             captureButton.setScaleY(1.0f);
-    }
+        }
     }
 
     /** 水印数据首行（全量）：配置里的 header/body/foot/position/scale + 图标引用 + 首段字段值。 */
@@ -1038,6 +1080,7 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private void performFocusOnPoint(float x, float y) {
+        hideZoomPanel();
         if (camera2Controller == null) return;
         camera2Controller.focusAt(x, y);
         showFocusIndicator(x, y);
@@ -1045,9 +1088,11 @@ public class CameraActivity extends AppCompatActivity {
 
     /**
      * 根据当前摄像头支持的变焦范围，计算可选倍数档位并更新模式栏右侧的倍数按钮
-     * （按钮实时显示当前倍数，点击弹出档位选择框；切换前后摄像头后需重新调用，无可用档位时隐藏按钮）
+     * （按钮实时显示当前倍数，点击展开/收起档位浮层；切换前后摄像头后需重新调用，无可用档位时隐藏按钮）
      */
     private void setupZoomButton(float minZoom, float maxZoom) {
+        // 镜头切换后旧档位失效，先收起浮层
+        dismissZoomPanelImmediately();
         availableZoomRatios.clear();
         if (zoomButton == null) return;
 
@@ -1072,20 +1117,115 @@ public class CameraActivity extends AppCompatActivity {
     private void updateZoomButtonText() {
         if (zoomButton == null || camera2Controller == null) return;
         zoomButton.setText(formatZoomText(camera2Controller.getZoomRatio()));
+        updateZoomDockSelection();
     }
 
     /**
-     * 弹出倍数选择模态框，最接近当前倍数的一项默认选中，点击即精确切换
+     * 变焦浮层：贴在底部操作区上沿，非模态，展开/收起由变焦按钮控制。
+     * 浮层自身消费点击，避免穿透到下层水印。
      */
-    private void showZoomRatioDialog() {
-        if (camera2Controller == null || availableZoomRatios.isEmpty()) return;
-
-        String[] labels = new String[availableZoomRatios.size()];
-        for (int i = 0; i < availableZoomRatios.size(); i++) {
-            labels[i] = formatZoomText(availableZoomRatios.get(i));
+    private void toggleZoomPanel() {
+        if (zoomDockOpen) {
+            hideZoomPanel();
+        } else {
+            showZoomPanel();
         }
+    }
 
-        float currentZoom = camera2Controller.getZoomRatio();
+    private void showZoomPanel() {
+        if (camera2Controller == null || availableZoomRatios.isEmpty() || zoomPanel == null) {
+            return;
+        }
+        rebuildZoomOptions();
+        zoomDockOpen = true;
+        zoomPanel.animate().cancel();
+        zoomPanel.setVisibility(View.VISIBLE);
+        zoomPanel.setAlpha(0f);
+        zoomPanel.setTranslationY(dpToPx(10));
+        zoomPanel.animate().alpha(1f).translationY(0f).setDuration(180).start();
+    }
+
+    private void hideZoomPanel() {
+        if (zoomPanel == null) return;
+        zoomDockOpen = false;
+        zoomPanel.animate().cancel();
+        if (zoomPanel.getVisibility() == View.VISIBLE) {
+            zoomPanel.animate().alpha(0f).translationY(dpToPx(10)).setDuration(140)
+                    .withEndAction(() -> {
+                        if (!zoomDockOpen) {
+                            zoomPanel.setVisibility(View.GONE);
+                            zoomPanel.setAlpha(1f);
+                            zoomPanel.setTranslationY(0f);
+                        }
+                    }).start();
+        }
+    }
+
+    /** 页面暂停或切换镜头时立即收起，避免动画残留的透明层继续拦截触摸。 */
+    private void dismissZoomPanelImmediately() {
+        zoomDockOpen = false;
+        if (zoomPanel != null) {
+            zoomPanel.animate().cancel();
+            zoomPanel.setVisibility(View.GONE);
+            zoomPanel.setAlpha(1f);
+            zoomPanel.setTranslationY(0f);
+        }
+    }
+
+    /** 按当前可用档位重建浮层里的纯文字倍数项。 */
+    private void rebuildZoomOptions() {
+        if (zoomOptionsRow == null || camera2Controller == null) return;
+        zoomOptionsRow.removeAllViews();
+        int checkedIndex = closestZoomIndex(camera2Controller.getZoomRatio());
+        for (int i = 0; i < availableZoomRatios.size(); i++) {
+            final float ratio = availableZoomRatios.get(i);
+            TextView option = new TextView(this);
+            option.setText(formatZoomText(ratio));
+            option.setGravity(Gravity.CENTER);
+            option.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+            option.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            option.setIncludeFontPadding(false);
+            option.setShadowLayer(dpToPx(2), 0f, dpToPx(1), 0x99000000);
+            option.setPadding(0, 0, 0, 0);
+            option.setTag(ratio);
+            applyZoomOptionState(option, i == checkedIndex);
+            option.setOnClickListener(v -> {
+                if (camera2Controller != null) {
+                    camera2Controller.setZoomRatio(ratio);
+                    updateZoomButtonText();
+                }
+                hideZoomPanel();
+            });
+            LinearLayout.LayoutParams optionLp = new LinearLayout.LayoutParams(
+                    dpToPx(63), LinearLayout.LayoutParams.MATCH_PARENT);
+            zoomOptionsRow.addView(option, optionLp);
+        }
+    }
+
+    /** 纯文字档位：不画背景/边框，只靠文字颜色表示选中。 */
+    private void applyZoomOptionState(TextView option, boolean selected) {
+        if (option == null) return;
+        option.setTextColor(ContextCompat.getColor(this,
+                selected ? R.color.cam_accent : R.color.cam_text_primary));
+        option.setSelected(selected);
+    }
+
+    /** 捏合变焦时同步浮层里“最接近当前倍数”的高亮。 */
+    private void updateZoomDockSelection() {
+        if (zoomOptionsRow == null || camera2Controller == null
+                || zoomPanel == null || zoomPanel.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        int checkedIndex = closestZoomIndex(camera2Controller.getZoomRatio());
+        for (int i = 0; i < zoomOptionsRow.getChildCount(); i++) {
+            View child = zoomOptionsRow.getChildAt(i);
+            if (child instanceof TextView) {
+                applyZoomOptionState((TextView) child, i == checkedIndex);
+            }
+        }
+    }
+
+    private int closestZoomIndex(float currentZoom) {
         int checkedIndex = 0;
         float minDiff = Float.MAX_VALUE;
         for (int i = 0; i < availableZoomRatios.size(); i++) {
@@ -1095,16 +1235,7 @@ public class CameraActivity extends AppCompatActivity {
                 checkedIndex = i;
             }
         }
-
-        new AlertDialog.Builder(this)
-                .setTitle("选择变焦倍数")
-                .setSingleChoiceItems(labels, checkedIndex, (dialog, which) -> {
-                    camera2Controller.setZoomRatio(availableZoomRatios.get(which));
-                    updateZoomButtonText();
-                    dialog.dismiss();
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        return checkedIndex;
     }
 
     /**
@@ -1178,6 +1309,8 @@ public class CameraActivity extends AppCompatActivity {
     private void onCaptureSaved(boolean syncedToAlbum) {
         isCaptureProcessing = false;
         setCaptureButtonEnabled(true);
+        sessionShotCount++;
+        updateSessionCount();
         showTopToast(isVideoMode ? "视频已保存"
                 : (syncedToAlbum ? "照片已保存并同步相册" : "照片已保存"));
         if (pendingFinishAfterCapture) {
@@ -1197,10 +1330,11 @@ public class CameraActivity extends AppCompatActivity {
             TextView view = new TextView(this);
             view.setText(message);
             view.setTextColor(Color.WHITE);
-            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            view.setLetterSpacing(0.04f);
             GradientDrawable background = new GradientDrawable();
-            background.setColor(0xCC000000);
-            background.setCornerRadius(dpToPx(18));
+            background.setColor(0xE62C3E50);
+            background.setCornerRadius(dpToPx(8));
             view.setBackground(background);
             view.setPadding(dpToPx(16), dpToPx(9), dpToPx(16), dpToPx(9));
             toast.setView(view);
@@ -1900,6 +2034,7 @@ public class CameraActivity extends AppCompatActivity {
      * 处理水印容器点击事件 (用于 "input" 字段)
      */
     private void handleWatermarkClick() {
+        hideZoomPanel();
         // 1. 收集所有 "input" 和 "input_auto_save" 字段
         List<WatermarkItem> inputItems = collectInputItems();
 
@@ -1977,9 +2112,7 @@ public class CameraActivity extends AppCompatActivity {
         }
         AccelerateDecelerateInterpolator interpolator = new AccelerateDecelerateInterpolator();
         watermarkContainer.animate().rotation(targetRotation).setInterpolator(interpolator).setDuration(300).start();
-        captureButton.animate().rotation(targetRotation).setInterpolator(interpolator).setDuration(300).start();
-        flashButton.animate().rotation(targetRotation).setInterpolator(interpolator).setDuration(300).start();
-        exitButton.animate().rotation(targetRotation).setInterpolator(interpolator).setDuration(300).start();
+        // 控制键都改成圆形/对称图标，不再随方向旋转：顶栏图标始终保持正向，录像停止方块也不会转成菱形
         positionWatermarkContainer();
     }
 
@@ -2339,7 +2472,13 @@ public class CameraActivity extends AppCompatActivity {
             getSharedPreferences("camera", MODE_PRIVATE).edit()
                     .putBoolean("audio_permission_asked", true).apply();
             if (allPermissionsGranted()) {
-                startCamera();
+                // 权限回调可能发生在 onResume 之前/之后；延迟到当前事件处理完再启动，
+                // 让 TextureView 有机会完成布局，避免首次授权后黑屏。
+                if (previewView != null) {
+                    previewView.postDelayed(this::startCameraIfReady, 200);
+                } else {
+                    startCameraIfReady();
+                }
                 startLocationUpdates();
                 uiUpdateHandler.post(uiUpdateRunnable);
             } else {

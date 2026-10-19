@@ -1599,7 +1599,7 @@ public class BackServer {
 			if (zipUri != null) {
 				try (OutputStream outputStream = resolver.openOutputStream(zipUri);
 					 ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(outputStream))) {
-					writeDirectoryToZip(zos, dirData, dirData.getString("name") + "/");
+					writeDirectoryToZip(zos, dirData, SecurityUtils.safePathComponent(dirData.getString("name")) + "/");
 				}
 				try{
 					values.clear();
@@ -1620,7 +1620,7 @@ public class BackServer {
 		File zipFile = new File(targetDir, zipFileName);
 
 		try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile)))) {
-			writeDirectoryToZip(zos, dirData, dirData.getString("name") + "/");
+			writeDirectoryToZip(zos, dirData, SecurityUtils.safePathComponent(dirData.getString("name")) + "/");
 		}
 
 		MediaScannerConnection.scanFile(context, new String[]{zipFile.getAbsolutePath()}, null, null);
@@ -1647,7 +1647,7 @@ public class BackServer {
             JSONArray files = db_helper.db_all("SELECT * FROM file WHERE parent_dir_id = ?", new JSONArray().put(currentId));
             for (int i = 0; i < files.length(); i++) {
                 JSONObject fileInfo = files.getJSONObject(i);
-                String fileName = fileInfo.getString("name");
+                String fileName = SecurityUtils.safePathComponent(fileInfo.getString("name"));
                 String storedFilename = fileInfo.getString("real_file_name");
                 File sourceFile = new File(createDataDirectory(), storedFilename);
 
@@ -1669,7 +1669,7 @@ public class BackServer {
             for(int i = 0; i < subDirs.length(); i++) {
                 JSONObject subDirInfo = subDirs.getJSONObject(i);
                 String subDirId = subDirInfo.getString("id");
-                String subDirName = subDirInfo.getString("name");
+                String subDirName = SecurityUtils.safePathComponent(subDirInfo.getString("name"));
                 queue.add(new Pair<>(subDirId, currentPathInZip + subDirName + "/"));
             }
 		}

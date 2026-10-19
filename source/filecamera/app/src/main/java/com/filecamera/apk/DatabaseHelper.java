@@ -12,7 +12,6 @@ import org.json.JSONObject;
 public class DatabaseHelper extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "backserver.db";
     // v2：新增 pending_file（入库预备表，对现有表零侵入）
-    // v4：删除 file_watermark（水印改为录制时烧进视频，数据库不保存）
     private static final int DATABASE_VERSION = 4;
 
     private static volatile DatabaseHelper instance;
@@ -49,8 +48,6 @@ public class DatabaseHelper extends SQLiteOpenHelper {
                     "tmp_photo_path TEXT," +
                     "tmp_icon_path TEXT)";
 
-    /** 视频水印数据表：水印 JSON + 视频内容哈希（播放时叠印，哈希不匹配则不叠印） */
-
     @Override
     public void onCreate(SQLiteDatabase db) {
         // 创建表的SQL语句 (V4版本)
@@ -81,7 +78,6 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 		db.execSQL("CREATE INDEX idx_file_seqnumber ON file (seqnumber)");
         // 入库预备表（v2 新增）
         db.execSQL(CREATE_PENDING_FILE);
-        // 视频水印数据表（v3 新增）
         // 插入根目录
         db.execSQL("INSERT OR IGNORE INTO dir (id, name, parent_dir_id, type, dirsortmode, filesortmode, createtime) " +
                 "VALUES ('root', '', NULL, 'dir', 2, 2, " + System.currentTimeMillis() + ")");
@@ -92,10 +88,6 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         // 只做增量建表/加列，不改老表结构，升级不会与现有数据冲突
         if (oldVersion < 2) {
             db.execSQL(CREATE_PENDING_FILE);
-        }
-        if (oldVersion < 4) {
-            // 水印改为录制时烧进视频，旧的水印表直接删掉
-            db.execSQL("DROP TABLE IF EXISTS file_watermark");
         }
     }
     // 通用数据库操作函数 - 类似Node.js的db_get

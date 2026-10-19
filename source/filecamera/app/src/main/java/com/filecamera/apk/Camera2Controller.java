@@ -63,7 +63,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   相机 → SurfaceTexture → Camera2GlRenderer（旋转 + 叠水印）→ MediaCodec 输入 Surface
  *        → H.264/AAC 样本 → Camera2MuxerSink（FragmentedMp4Muxer，1 秒分片）→ .mp4.part
  * </pre>
- * 水印在录制时就已经烧进画面，输出就是普通 .mp4；不再需要 .wmp4 尾部数据和播放器叠印。
+ * 水印在录制时就已经烧进画面，输出就是普通 .mp4。
  * 分片封装保证录制中进程被杀时，已落盘的分片仍可播，启动扫描补入库即可。
  *
  * <p>线程模型：相机回调在 {@link #cameraHandler}；编码器排空在两个独立线程；
@@ -209,6 +209,12 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
 
     public void start() {
         started = true;
+        // 权限弹窗/首帧布局期间可能错过 onSurfaceTextureAvailable，
+        // 这里主动补一次 surface 状态，避免 start 后一直等待不到预览。
+        if (!surfaceReady && previewView.isAvailable()) {
+            surfaceTexture = previewView.getSurfaceTexture();
+            surfaceReady = surfaceTexture != null;
+        }
         cameraHandler.post(this::openCameraIfReady);
     }
 
@@ -237,7 +243,14 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         surfaceTexture = texture;
         surfaceReady = true;
         cameraHandler.post(() -> {
-            if (started) openCameraIfReady();
+            if (!started) return;
+            // 权限弹窗/页面恢复可能导致 TextureView 的 Surface 被重建，
+            // 旧 session 仍绑定在失效的 Surface 上，表现为预览黑屏。
+            // 此时需要关掉旧相机，用新的 Surface 重新开会话。
+            if (cameraDevice != null && !recording) {
+                closeCameraInternal();
+            }
+            openCameraIfReady();
         });
     }
 

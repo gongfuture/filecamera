@@ -175,19 +175,24 @@ public class Android_js_bridge {
         new Thread(() -> {
             try {
 				// --- 1. "file" 类型: 写入公共 "Downloads" 目录 ---
-				byte[] decodedBytes = decodeBase64(base64String); // 使用辅助函数				
+				byte[] decodedBytes = decodeBase64(base64String); // 使用辅助函数
+                String safeFileName = SecurityUtils.safePathComponent(fileName);
                 if ("file".equals(datatype)) {
                     // --- 1. "file" 类型: 写入公共 "Downloads" 目录 (自动重命名) ---
                     ContentResolver resolver = activity.getContentResolver();
                     ContentValues values = new ContentValues();
+                    String safeParent = parentpath == null ? "" : parentpath;
+                    if (safeParent.contains("..")) {
+                        throw new SecurityException("非法路径");
+                    }
                     
                     // 目标路径: Downloads/file_camera/...
                     String customFolder = "file_camera";
-                    String relativePath = Environment.DIRECTORY_DOWNLOADS + "/" + customFolder + (parentpath == null ? "" : parentpath);
+                    String relativePath = Environment.DIRECTORY_DOWNLOADS + "/" + customFolder + safeParent;
 
                     // 自动检测 MimeType
                     String mimeType = "application/octet-stream";
-                    String extension = MimeTypeMap.getFileExtensionFromUrl(fileName);
+                    String extension = MimeTypeMap.getFileExtensionFromUrl(safeFileName);
                     if (extension != null) {
                         String mimeFromExtension = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.toLowerCase());
                         if (mimeFromExtension != null) {
@@ -196,7 +201,7 @@ public class Android_js_bridge {
                     }
 
                     // 生成唯一文件名（如果存在同名文件则添加序号）
-                    String finalFileName = generateUniqueFileName(resolver, relativePath, fileName);
+                    String finalFileName = generateUniqueFileName(resolver, relativePath, safeFileName);
 
                     values.put(MediaStore.Downloads.DISPLAY_NAME, finalFileName);
                     values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
@@ -218,14 +223,26 @@ public class Android_js_bridge {
                     }
 
                 } else if ("dir".equals(datatype)) {
-                        File storageDir = new File(activity.getExternalFilesDir(null), "file_camera/cache" + (parentpath == null ? "" : parentpath));
+                        File cacheRoot = new File(activity.getExternalFilesDir(null), "file_camera/cache").getCanonicalFile();
+                        String relativeDir = parentpath == null ? "" : parentpath.replace('\\', '/');
+                        while (relativeDir.startsWith("/")) relativeDir = relativeDir.substring(1);
+                        if (relativeDir.contains("..")) {
+                            throw new SecurityException("非法缓存路径");
+                        }
+                        File storageDir = new File(cacheRoot, relativeDir).getCanonicalFile();
+                        if (!SecurityUtils.isUnderDirectory(storageDir, cacheRoot)) {
+                            throw new SecurityException("缓存路径越界");
+                        }
                         if (!storageDir.exists()) {
                             if (!storageDir.mkdirs()) {
                                 throw new IOException("无法创建私有缓存目录: " + storageDir.getAbsolutePath());
                             }
                         }
 
-                        File targetFile = new File(storageDir, fileName); // [新增] 创建目标文件
+                        File targetFile = new File(storageDir, safeFileName).getCanonicalFile();
+                        if (!SecurityUtils.isUnderDirectory(targetFile, storageDir)) {
+                            throw new SecurityException("目标文件路径越界");
+                        }
                         
                         // 写入数据到私有文件
                         try (FileOutputStream fos = new FileOutputStream(targetFile)) { // [新增]

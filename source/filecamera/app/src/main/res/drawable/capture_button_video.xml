@@ -1,18 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 录像模式快门：白色外环 + 红色内圆 -->
+<!-- 录像待机快门：红色外环 + 红色内圆 -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_pressed="true">
-        <shape android:shape="oval">
-            <solid android:color="#E53935" />
-            <stroke android:width="6dp" android:color="#BDBDBD" />
-            <size android:width="80dp" android:height="80dp" />
-        </shape>
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <solid android:color="@android:color/transparent" />
+                    <stroke
+                        android:width="3dp"
+                        android:color="#E8616F" />
+                </shape>
+            </item>
+            <item
+                android:bottom="10dp"
+                android:left="10dp"
+                android:right="10dp"
+                android:top="10dp">
+                <shape android:shape="oval">
+                    <solid android:color="#E8616F" />
+                </shape>
+            </item>
+        </layer-list>
     </item>
     <item>
-        <shape android:shape="oval">
-            <solid android:color="#E53935" />
-            <stroke android:width="6dp" android:color="#E0E0E0" />
-            <size android:width="80dp" android:height="80dp" />
-        </shape>
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <solid android:color="@android:color/transparent" />
+                    <stroke
+                        android:width="3dp"
+                        android:color="@color/cam_danger" />
+                </shape>
+            </item>
+            <item
+                android:bottom="10dp"
+                android:left="10dp"
+                android:right="10dp"
+                android:top="10dp">
+                <shape android:shape="oval">
+                    <solid android:color="@color/cam_danger" />
+                </shape>
+            </item>
+        </layer-list>
     </item>
 </selector>
