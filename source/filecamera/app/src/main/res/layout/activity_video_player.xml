@@ -146,15 +146,17 @@
                     android:textColor="#FFFFFF"
                     android:textSize="12sp" />
 
-                <ImageButton
+                <TextView
                     android:id="@+id/btn_burn"
-                    android:layout_width="36dp"
+                    android:layout_width="wrap_content"
                     android:layout_height="36dp"
-                    android:layout_marginStart="4dp"
+                    android:layout_marginStart="6dp"
                     android:background="?android:attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="烧录水印"
-                    android:scaleType="centerInside"
-                    android:src="@drawable/ic_player_burn" />
+                    android:gravity="center"
+                    android:paddingHorizontal="8dp"
+                    android:text="烧录水印"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp" />
 
                 <ImageButton
                     android:id="@+id/btn_volume_toggle"

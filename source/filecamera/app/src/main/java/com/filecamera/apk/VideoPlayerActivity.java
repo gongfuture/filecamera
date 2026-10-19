@@ -70,7 +70,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private LinearLayout volumeRow;
     private ImageButton btnPlay;
     private ImageButton btnVolume;
-    private ImageButton btnVolumeToggle;    private ImageButton btnBurn;
+    private ImageButton btnVolumeToggle;    private TextView btnBurn;
     private LinearLayout burnMask;
     private ProgressBar burnBar;
     private TextView burnText;
