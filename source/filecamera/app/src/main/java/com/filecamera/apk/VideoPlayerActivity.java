@@ -165,6 +165,11 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 Toast.makeText(this, "该视频的水印信息与视频不匹配，无法显示水印", Toast.LENGTH_LONG).show();
             }
         }
+        // 烧录产物：水印已经烧进画面，这里不再叠印（数据行仍然保留，记录"已烧录"）
+        if (watermark != null && watermark.optBoolean("burned", false)) {
+            Log.i(TAG, "该视频已烧录水印，跳过叠印");
+            watermark = null;
+        }
         if (watermark != null) {
             segments = watermark.optJSONArray("segments") == null ? new JSONArray() : watermark.optJSONArray("segments");
         }
@@ -412,8 +417,13 @@ public class VideoPlayerActivity extends AppCompatActivity {
         final FileImporter importer = new FileImporter(this);
         final FileImporter.VideoTicket ticket;
         try {
-            // 不再写水印数据：烧进去的画面已经带印，播放时不能再叠一次
-            ticket = importer.beginVideo(dirId, outName, null);
+            // 烧录产物是独立的新文件（新编号 + _带水印 命名），水印数据照常留一行，
+            // 内容是"已烧录"标记：播放时据此跳过叠印，而不是删掉数据行
+            JSONObject burnMark = new JSONObject();
+            burnMark.put("ver", 1);
+            burnMark.put("burned", true);
+            burnMark.put("source_file_id", sourceFileId == null ? "" : sourceFileId);
+            ticket = importer.beginVideo(dirId, outName, burnMark);
         } catch (Exception e) {
             Log.e(TAG, "准备烧录失败", e);
             Toast.makeText(this, "烧录失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -437,9 +447,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
                     public void onDone(File output) {
                         try {
                             importer.finishVideo(ticket);
-                            DatabaseHelper.getInstance(VideoPlayerActivity.this).db_run(
-                                    "DELETE FROM file_watermark WHERE file_id = ?",
-                                    new JSONArray().put(ticket.fileId));
                             burning = false;
                             burnMask.setVisibility(View.GONE);
                             Toast.makeText(VideoPlayerActivity.this, "烧录完成，已保存到当前文件夹", Toast.LENGTH_LONG).show();
