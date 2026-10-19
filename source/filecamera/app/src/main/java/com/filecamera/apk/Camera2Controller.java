@@ -4,7 +4,6 @@ import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
-import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
@@ -36,6 +35,9 @@ import android.util.Range;
 import android.util.Size;
 import android.view.Surface;
 import android.view.TextureView;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.RelativeLayout;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -657,30 +659,13 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     }
 
     private float[] viewToPreviewNormalized(float x, float y, int vw, int vh) {
-        int pw = previewSize.getWidth();
-        int ph = previewSize.getHeight();
-        int rotation = previewRotationDegrees();
-        boolean swap = rotation == 90 || rotation == 270;
-        float rw = swap ? ph : pw;
-        float rh = swap ? pw : ph;
-        float sx = vw / (float) pw;
-        float sy = vh / (float) ph;
-        float scale = Math.max(vw / rw, vh / rh);
-
-        float dx = x - vw / 2f;
-        float dy = y - vh / 2f;
-        if (lensFacing == LENS_FACING_FRONT) dx = -dx;
-
-        double rad = Math.toRadians(-rotation);
-        float ux = (float) (dx * Math.cos(rad) - dy * Math.sin(rad));
-        float uy = (float) (dx * Math.sin(rad) + dy * Math.cos(rad));
-
-        float px = ux / scale * sx + pw / 2f;
-        float py = uy / scale * sy + ph / 2f;
-        return new float[]{
-                clamp(px / pw, 0f, 1f),
-                clamp(py / ph, 0f, 1f)
-        };
+        int layoutW = previewView.getWidth();
+        int layoutH = previewView.getHeight();
+        if (layoutW <= 0 || layoutH <= 0) return new float[]{0.5f, 0.5f};
+        float nx = clamp(x / layoutW, 0f, 1f);
+        float ny = clamp(y / layoutH, 0f, 1f);
+        if (lensFacing == LENS_FACING_FRONT) nx = 1f - nx;
+        return new float[]{nx, ny};
     }
 
     // endregion
@@ -705,30 +690,38 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
 
     private void applyPreviewTransform() {
         if (previewSize == null) return;
-        int vw = previewView.getWidth();
-        int vh = previewView.getHeight();
+        View parent = (View) previewView.getParent();
+        if (parent == null) return;
+        int vw = parent.getWidth();
+        int vh = parent.getHeight();
         if (vw <= 0 || vh <= 0) return;
 
         int pw = previewSize.getWidth();
         int ph = previewSize.getHeight();
-        int rotation = previewRotationDegrees();
-        boolean swap = rotation == 90 || rotation == 270;
-        float rw = swap ? ph : pw;
-        float rh = swap ? pw : ph;
-        float scale = Math.max(vw / rw, vh / rh);
+        // 关键：让 TextureView 的 layout 本身就是 16:9（相机 buffer 比例），
+        // 超出容器的部分由父布局裁掉。这样完全不依赖 setTransform 的 scale 语义，
+        // 画面不会被上下/左右拉伸。
+        float scale = Math.max(vw / (float) pw, vh / (float) ph);
+        int layoutW = Math.round(pw * scale);
+        int layoutH = Math.round(ph * scale);
 
-        float sx = vw / (float) pw;
-        float sy = vh / (float) ph;
-        float cx = vw / 2f;
-        float cy = vh / 2f;
-
-        Matrix matrix = new Matrix();
-        matrix.postScale(scale / sx, scale / sy, cx, cy);
-        matrix.postRotate(rotation, cx, cy);
-        if (lensFacing == LENS_FACING_FRONT) {
-            matrix.postScale(-1f, 1f, cx, cy);
+        ViewGroup.LayoutParams lp = previewView.getLayoutParams();
+        if (lp instanceof RelativeLayout.LayoutParams) {
+            RelativeLayout.LayoutParams rlp = (RelativeLayout.LayoutParams) lp;
+            if (rlp.width != layoutW || rlp.height != layoutH
+                    || rlp.getRules()[RelativeLayout.CENTER_IN_PARENT] == 0) {
+                rlp.width = layoutW;
+                rlp.height = layoutH;
+                rlp.addRule(RelativeLayout.CENTER_IN_PARENT);
+                previewView.setLayoutParams(rlp);
+            }
         }
-        previewView.setTransform(matrix);
+        previewView.setTransform(null);
+        previewView.setRotation(0f);
+        previewView.setPivotX(0f);
+        previewView.setPivotY(0f);
+        previewView.setScaleX(lensFacing == LENS_FACING_FRONT ? -1f : 1f);
+        previewView.setScaleY(1f);
     }
 
     // endregion

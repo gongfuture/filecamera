@@ -102,6 +102,7 @@ public class CameraActivity extends AppCompatActivity {
     private volatile boolean isActivityResumed = false;
     // 视图控件
     private TextureView previewView;
+    private View previewContainer;
     private ImageButton captureButton;
     private LinearLayout watermarkContainer;
     private ImageButton flashButton;
@@ -425,6 +426,7 @@ public class CameraActivity extends AppCompatActivity {
     // region --- 初始化方法 ---
     private void initViews() {
         previewView = findViewById(R.id.previewView);
+        previewContainer = findViewById(R.id.previewContainer);
         captureButton = findViewById(R.id.captureButton);
         flashButton = findViewById(R.id.flashButton);
         modeTabPhoto = findViewById(R.id.modeTabPhoto);
@@ -860,8 +862,8 @@ public class CameraActivity extends AppCompatActivity {
             recordTimerHandler.post(recordTimerRunnable);
             setCaptureButtonAlphaForRecording(true);
 
-            camera2Controller.startVideoRecording(videoTicket.targetFile,
-                    camera2Controller.getPreviewRotation(), liveWatermark);
+            // 和预览/照片保持一致：相机 buffer 本身就是正确方向，不再写旋转元数据。
+            camera2Controller.startVideoRecording(videoTicket.targetFile, 0, liveWatermark);
         } catch (Exception e) {
             isRecording = false;
             if (recordingTimer != null) recordingTimer.setVisibility(View.GONE);
@@ -1008,8 +1010,8 @@ public class CameraActivity extends AppCompatActivity {
         state.showQrCode = showQrCode;
         state.watermarkConfig = watermarkConfig;
         state.qrCodeConfig = qrCodeConfig;
-        state.previewWidth = previewView != null ? previewView.getWidth() : 0;
-        state.previewHeight = previewView != null ? previewView.getHeight() : 0;
+        state.previewWidth = previewContainer != null ? previewContainer.getWidth() : 0;
+        state.previewHeight = previewContainer != null ? previewContainer.getHeight() : 0;
         state.watermarkDensity = watermarkDensity();
         if (state.showWatermark && state.watermarkConfig != null) {
             state.watermarkOverlay = createBitmapFromView(watermarkContainer);
@@ -2059,8 +2061,13 @@ public class CameraActivity extends AppCompatActivity {
         indicator.setBackgroundResource(R.drawable.focus_indicator_crosshair);
         int size = dpToPx(80);
         RelativeLayout.LayoutParams params = new RelativeLayout.LayoutParams(size, size);
-        params.leftMargin = (int) (x - size / 2f);
-        params.topMargin = (int) (y - size / 2f);
+        // 触摸坐标是 TextureView 局部坐标；预览 View 可能被旋转/缩放，先换算到父容器坐标
+        float[] parentPoint = {x, y};
+        if (previewView != null) {
+            previewView.getMatrix().mapPoints(parentPoint);
+        }
+        params.leftMargin = (int) (parentPoint[0] - size / 2f);
+        params.topMargin = (int) (parentPoint[1] - size / 2f);
         ((ViewGroup) previewView.getParent()).addView(indicator, params);
         indicator.setAlpha(0f);
         indicator.setScaleX(1.5f);
@@ -2420,7 +2427,7 @@ public class CameraActivity extends AppCompatActivity {
      * 避免老年模式（字体/显示大小缩放）导致烧进照片的水印尺寸异常。
      */
     private float watermarkDensity() {
-        int previewWidth = previewView != null ? previewView.getWidth() : 0;
+        int previewWidth = previewContainer != null ? previewContainer.getWidth() : 0;
         if (previewWidth <= 0) {
             previewWidth = getResources().getDisplayMetrics().widthPixels;
         }
