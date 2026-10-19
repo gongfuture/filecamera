@@ -1031,22 +1031,29 @@ async function open_dir_or_file(td){
 		return;
 	}
 	ui_lock = true;
-	if(td.dataset.type =='dir'){
-		let dirname = td.textContent
-		let table1tbody = document.getElementById('table1tbody');
-		let scrollTop = table1tbody.scrollTop||0
-		top_map.set(当前文件夹路径_arr.join('/')+'/',scrollTop)
-		当前文件夹路径_arr.push(dirname)
-		document.getElementById("fileinput").value = 当前文件夹路径_arr.join('/')+'/'
-		await updateTable(td.dataset.id);
-		document.getElementById('fileinput').value = 当前文件夹路径_arr.join('/')+'/'
-		table1tbody.scrollTop = 0
-	}else{
-		if(isImageFile(td.dataset.name)){
-			await load_img(td.dataset.name)
+	try {
+		if(td.dataset.type =='dir'){
+			let dirname = td.textContent
+			let table1tbody = document.getElementById('table1tbody');
+			let scrollTop = table1tbody.scrollTop||0
+			top_map.set(当前文件夹路径_arr.join('/')+'/',scrollTop)
+			当前文件夹路径_arr.push(dirname)
+			document.getElementById("fileinput").value = 当前文件夹路径_arr.join('/')+'/'
+			await updateTable(td.dataset.id);
+			document.getElementById('fileinput').value = 当前文件夹路径_arr.join('/')+'/'
+			table1tbody.scrollTop = 0
+		}else{
+			if(isImageFile(td.dataset.name)){
+				await load_img(td.dataset.name)
+			}
 		}
+	} catch (error) {
+		// 任何异常都不能把 ui_lock 留在 true，否则整个列表会点不动
+		console.error("打开文件/目录失败:", error)
+		await alert_fix("打开失败：" + (error && error.message ? error.message : error))
+	} finally {
+		ui_lock = false;
 	}
-	ui_lock = false;
 }
 function select_click(checkbox){
 	const isChecked = checkbox.checked; 

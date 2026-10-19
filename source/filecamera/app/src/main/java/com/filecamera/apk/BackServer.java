@@ -340,6 +340,10 @@ public class BackServer {
 				String fileQuery = "SELECT * FROM file WHERE parent_dir_id = ? ORDER BY " + fileOrderBy;
 				JSONArray file_index_arr = db_helper.db_all(fileQuery, new JSONArray().put(id));
 
+				// 4.1 一致性自检：主图已不在磁盘上的行不可能被正常打开（否则图片页会白屏/卡住），
+				//     这里直接把这类"坏记录"连同缩略图一起清掉，再返回干净列表。
+				file_index_arr = dropRecordsWithMissingFile(file_index_arr);
+
 				// 5. 查询该目录下的所有子目录 (带排序)
 				String dirQuery = "SELECT id, name, type, createtime, seqnumber FROM dir WHERE parent_dir_id = ? ORDER BY " + dirOrderBy;
 				JSONArray dir_index_arr = db_helper.db_all(dirQuery, new JSONArray().put(id));
@@ -425,6 +429,44 @@ public class BackServer {
 		}
 		return orderBy;
 	}
+	/**
+	 * 一致性自检：把"数据库里有、磁盘上主图已不存在"的记录清掉（连带缩略图），
+	 * 避免列表里出现点开就白屏/卡住的坏记录。只检查当前目录下的行，开销可忽略。
+	 */
+	private JSONArray dropRecordsWithMissingFile(JSONArray rows) {
+		if (rows == null || rows.length() == 0) return rows;
+		File appDataDir = new File(context.getFilesDir(), "app_data");
+		File iconDir = new File(context.getFilesDir(), "icons");
+		JSONArray cleaned = new JSONArray();
+		for (int i = 0; i < rows.length(); i++) {
+			JSONObject row = rows.optJSONObject(i);
+			if (row == null) continue;
+			String realFileName = row.optString("real_file_name", "");
+			if (realFileName.isEmpty() || new File(appDataDir, realFileName).isFile()) {
+				cleaned.put(row);
+				continue;
+			}
+			String fileId = row.optString("id", "");
+			String realIconName = row.isNull("real_icon_name") ? null : row.optString("real_icon_name", null);
+			try {
+				if (!fileId.isEmpty()) {
+					db_helper.db_run("DELETE FROM file WHERE id = ?", new JSONArray().put(fileId));
+				}
+				if (realIconName != null && !realIconName.isEmpty()) {
+					File icon = new File(iconDir, realIconName);
+					if (icon.isFile()) {
+						//noinspection ResultOfMethodCallIgnored
+						icon.delete();
+					}
+				}
+				android.util.Log.w("BackServer", "主图缺失，已清理库记录: " + fileId + " / " + realFileName);
+			} catch (Exception e) {
+				android.util.Log.e("BackServer", "清理缺失文件的库记录失败: " + fileId, e);
+			}
+		}
+		return cleaned;
+	}
+
 	@JavascriptInterface
 	public void createFolder(String task_id, String json_data) {
 		new Thread(() -> {

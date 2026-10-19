@@ -360,6 +360,12 @@ async function load_img(picture_name){
 	let address = ""
 	if(real_file_name){
 		let blob = await fetchblob("https://appassets.androidplatform.net/app_data/"+real_file_name)
+		if(!blob){
+			// 文件已丢失/读取失败：关掉图片页并提示，绝不留下空白页（否则会像"卡住"一样）
+			picturediv.classList.remove('expanded')
+			await alert_fix("图片文件不存在或已损坏，请刷新列表")
+			return
+		}
 		url = URL.createObjectURL(blob);
 		address = await getaddress(blob)
 	}
@@ -416,6 +422,14 @@ async function picture_back(){
 		let address = "";
 		if(real_file_name){
 			let blob = await fetchblob("https://appassets.androidplatform.net/app_data/"+real_file_name)
+			if(!blob){
+				// 文件已丢失/读取失败：不要停在切换动画中途，提示后留在当前页
+				img.style.visibility = 'visible'
+				img.style.transition = 'transform 0.1s ease-out'
+				img.style.transform = 'translate(0, 0)'
+				await alert_fix("图片文件不存在或已损坏，请刷新列表")
+				return
+			}
 			url = URL.createObjectURL(blob);
 			address = await getaddress(blob)
 		}
@@ -495,6 +509,14 @@ async function picture_forward(){
 		let address = ""
 		if(real_file_name){
 			let blob = await fetchblob("https://appassets.androidplatform.net/app_data/"+real_file_name)
+			if(!blob){
+				// 文件已丢失/读取失败：不要停在切换动画中途，提示后留在当前页
+				img.style.visibility = 'visible'
+				img.style.transition = 'transform 0.1s ease-out'
+				img.style.transform = 'translate(0, 0)'
+				await alert_fix("图片文件不存在或已损坏，请刷新列表")
+				return
+			}
 			url = URL.createObjectURL(blob);
 			address = await getaddress(blob)
 		}
@@ -580,6 +602,14 @@ async function picture_goto_page(){
 		let address = ""
 		if(real_file_name){
 			let blob = await fetchblob("https://appassets.androidplatform.net/app_data/"+real_file_name)
+			if(!blob){
+				// 文件已丢失/读取失败：不要停在切换动画中途，提示后留在当前页
+				img.style.visibility = 'visible'
+				img.style.transition = 'transform 0.1s ease-out'
+				img.style.transform = 'translate(0, 0)'
+				await alert_fix("图片文件不存在或已损坏，请刷新列表")
+				return
+			}
 			url = URL.createObjectURL(blob);
 			address = await getaddress(blob)
 		}
