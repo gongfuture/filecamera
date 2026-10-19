@@ -1059,12 +1059,8 @@ async function open_dir_or_file(td){
 			if(isImageFile(td.dataset.name)){
 				await load_img(td.dataset.name)
 			}else if(isVideoFile(td.dataset.name)){
-				// 视频：交给原生播放页，水印由该记录的 file_watermark 数据在播放时叠加
-				await callAndroidMethod(window.FilePicker, 'openVideo', {
-					id: td.dataset.id,
-					name: td.dataset.name,
-					real_file_name: td.dataset.real_file_name
-				});
+				// 视频：用 WebView 自带 HTML5 播放器，和图片浏览器共用展开页
+				await load_video(td.dataset.name)
 			}
 		}
 	} catch (error) {

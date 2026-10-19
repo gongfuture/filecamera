@@ -97,6 +97,8 @@ final class Camera2GlRenderer {
     private final float[] identity = new float[16];
 
     private Size encoderSize;
+    private Size cameraSize;
+    private boolean matrixLogged;
     private Size overlayDisplaySize;
     private int overlayRotation;
     private Bitmap overlayBitmap;
@@ -126,6 +128,7 @@ final class Camera2GlRenderer {
                   int cameraRotation, Size displaySize, int overlayRotation,
                   JSONObject initialWatermark) throws Exception {
         this.encoderSize = encoderSize;
+        this.cameraSize = cameraSize;
         this.overlayDisplaySize = displaySize;
         this.overlayRotation = overlayRotation;
 
@@ -267,8 +270,7 @@ final class Camera2GlRenderer {
 
         Matrix.setIdentityM(identity, 0);
         Matrix.setIdentityM(mvpMatrix, 0);
-        // Camera2 的 SurfaceTexture 是传感器方向；Matrix.rotateM 正角度是逆时针，
-        // 这里取反，才能得到与预览一致的顺时针旋转。
+        // 与照片的顺时针旋转一致：Matrix.rotateM 正值是逆时针，所以取 360-rotation。
         Matrix.rotateM(mvpMatrix, 0, (360 - cameraRotation) % 360, 0f, 0f, 1f);
 
         cameraTextureId = createOesTexture();
@@ -369,6 +371,11 @@ final class Camera2GlRenderer {
         try {
             cameraTexture.updateTexImage();
             cameraTexture.getTransformMatrix(texMatrix);
+            if (!matrixLogged) {
+                matrixLogged = true;
+                Log.i(TAG, "texMatrix=" + java.util.Arrays.toString(texMatrix)
+                        + " camera=" + cameraSize + " encoder=" + encoderSize);
+            }
             long timestampNs = cameraTexture.getTimestamp();
             if (timestampNs <= 0) timestampNs = System.nanoTime();
 
@@ -394,7 +401,6 @@ final class Camera2GlRenderer {
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId);
         GLES20.glUniform1i(cameraSamplerLoc, 0);
         GLES20.glUniformMatrix4fv(cameraMvpLoc, 1, false, mvpMatrix, 0);
-        GLES20.glUniformMatrix4fv(cameraTexLoc, 1, false, texMatrix, 0);
 
         GLES20.glEnableVertexAttribArray(cameraPosLoc);
         GLES20.glVertexAttribPointer(cameraPosLoc, 2, GLES20.GL_FLOAT, false, 0, quadBuffer);
@@ -423,6 +429,20 @@ final class Camera2GlRenderer {
         GLES20.glDisableVertexAttribArray(overlayTexLoc);
     }
 
+    /** 横屏画幅按短边定水印大小，避免 1920 宽画幅里水印被放大。 */
+    private static JSONObject fitWatermarkScale(JSONObject wm, int width, int height) {
+        if (wm == null || width <= height) return wm;
+        try {
+            JSONObject copy = new JSONObject(wm.toString());
+            double factor = height / (double) width;
+            copy.put("scale", wm.optDouble("scale", 1.0) * factor);
+            copy.put("marginScale", factor);
+            return copy;
+        } catch (Exception e) {
+            return wm;
+        }
+    }
+
     /** 把水印画进与编码画面同尺寸的透明位图并上传纹理。必须在 GL 线程调用。 */
     private void drawOverlay(JSONObject wm) {
         if (wm == null || overlayBitmap == null) {
@@ -431,14 +451,19 @@ final class Camera2GlRenderer {
         }
         try {
             overlayBitmap.eraseColor(Color.TRANSPARENT);
+            int wmWidth = overlayRotation == 0
+                    ? overlayBitmap.getWidth() : overlayDisplayBitmap.getWidth();
+            int wmHeight = overlayRotation == 0
+                    ? overlayBitmap.getHeight() : overlayDisplayBitmap.getHeight();
+            JSONObject effectiveWm = fitWatermarkScale(wm, wmWidth, wmHeight);
             if (overlayRotation == 0) {
                 WatermarkBitmapRenderer.drawWatermark(overlayCanvas,
-                        overlayBitmap.getWidth(), overlayBitmap.getHeight(), wm);
+                        overlayBitmap.getWidth(), overlayBitmap.getHeight(), effectiveWm);
             } else {
                 overlayDisplayBitmap.eraseColor(Color.TRANSPARENT);
                 Canvas displayCanvas = new Canvas(overlayDisplayBitmap);
                 WatermarkBitmapRenderer.drawWatermark(displayCanvas,
-                        overlayDisplayBitmap.getWidth(), overlayDisplayBitmap.getHeight(), wm);
+                        overlayDisplayBitmap.getWidth(), overlayDisplayBitmap.getHeight(), effectiveWm);
                 Canvas canvas = overlayCanvas;
                 int sw = overlayBitmap.getWidth();
                 int sh = overlayBitmap.getHeight();
@@ -560,13 +585,12 @@ final class Camera2GlRenderer {
 
     private static final String VERTEX_SHADER =
             "uniform mat4 uMvp;\n" +
-            "uniform mat4 uTexMatrix;\n" +
             "attribute vec4 aPosition;\n" +
             "attribute vec4 aTexCoord;\n" +
             "varying vec2 vTexCoord;\n" +
             "void main() {\n" +
             "  gl_Position = uMvp * aPosition;\n" +
-            "  vTexCoord = (uTexMatrix * aTexCoord).xy;\n" +
+            "  vTexCoord = aTexCoord.xy;\n" +
             "}\n";
 
     private static final String CAMERA_FRAGMENT_SHADER =

@@ -11,12 +11,15 @@ import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.net.Uri;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
@@ -26,6 +29,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResult;
@@ -61,6 +65,9 @@ public class MainActivity extends AppCompatActivity {
 
     // WebView 和相关组件
     private WebView webView;
+    private View fullscreenView;
+    private FrameLayout fullscreenContainer;
+    private WebChromeClient.CustomViewCallback fullscreenCallback;
     private ValueCallback<Uri[]> filePathCallback;
     private String cameraPhotoPath;
 
@@ -635,6 +642,35 @@ public class MainActivity extends AppCompatActivity {
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (fullscreenView != null) {
+                    callback.onCustomViewHidden();
+                    return;
+                }
+                fullscreenView = view;
+                fullscreenCallback = callback;
+                FrameLayout decor = (FrameLayout) getWindow().getDecorView();
+                fullscreenContainer = new FrameLayout(MainActivity.this);
+                fullscreenContainer.setBackgroundColor(Color.BLACK);
+                fullscreenContainer.addView(view, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+                decor.addView(fullscreenContainer, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+                getWindow().getDecorView().setSystemUiVisibility(
+                        View.SYSTEM_UI_FLAG_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                exitFullscreen();
+            }
+
+            @Override
             public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
                 // 取消任何之前的（可能未处理的）文件选择请求
                 if (MainActivity.this.filePathCallback != null) {
@@ -679,9 +715,29 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** 退出 WebView 自定义全屏；返回键和 onHideCustomView 共用。 */
+    private void exitFullscreen() {
+        if (fullscreenContainer != null) {
+            ViewGroup parent = (ViewGroup) fullscreenContainer.getParent();
+            if (parent != null) parent.removeView(fullscreenContainer);
+            fullscreenContainer = null;
+        }
+        fullscreenView = null;
+        if (fullscreenCallback != null) {
+            fullscreenCallback.onCustomViewHidden();
+            fullscreenCallback = null;
+        }
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+    }
+
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
+            // 全屏播放时，返回键只退出全屏，不再触发 JS 的页面退出逻辑
+            if (fullscreenView != null) {
+                exitFullscreen();
+                return true;
+            }
             // 拦截返回按钮事件并将其转发给 JavaScript 处理
             webView.evaluateJavascript("window.phoneback()", null);
             return true;

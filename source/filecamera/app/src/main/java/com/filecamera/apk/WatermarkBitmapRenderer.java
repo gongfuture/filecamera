@@ -112,7 +112,8 @@ public final class WatermarkBitmapRenderer {
         boolean right = anchor.startsWith("right");
         boolean topAnchor = anchor.endsWith("top");
         JSONObject pos = wm.optJSONObject("position");
-        float margin = 10 * density;
+        float marginScale = (float) wm.optDouble("marginScale", 1.0);
+        float margin = 10 * density * marginScale;
         float offsetX = margin;
         float offsetY = margin;
         if (pos != null) {

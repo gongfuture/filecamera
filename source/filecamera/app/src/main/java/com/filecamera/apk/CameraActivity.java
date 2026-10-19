@@ -362,6 +362,10 @@ public class CameraActivity extends AppCompatActivity {
         try {
             String latestConfig = WatermarkConfigManager.getInstance(this).getConfig();
             JSONObject root = new JSONObject(latestConfig);
+            if (root.has("camera")) {
+                // 拍摄比例（16:9 / 4:3）也属于相机参数，回到页面时重新生效
+                parseCamera(root.getJSONObject("camera"));
+            }
             if (root.has("watermark")) {
                 parseWatermark(root.getJSONObject("watermark"));
                 checkForWeatherItem();
@@ -862,8 +866,9 @@ public class CameraActivity extends AppCompatActivity {
             recordTimerHandler.post(recordTimerRunnable);
             setCaptureButtonAlphaForRecording(true);
 
-            // 和预览/照片保持一致：相机 buffer 本身就是正确方向，不再写旋转元数据。
-            camera2Controller.startVideoRecording(videoTicket.targetFile, 0, liveWatermark);
+            // 与照片同一套方向：照片 EXIF 旋转多少度，视频就在 GL 里转多少度。
+            camera2Controller.startVideoRecording(videoTicket.targetFile,
+                    camera2Controller.getJpegRotation(), liveWatermark);
         } catch (Exception e) {
             isRecording = false;
             if (recordingTimer != null) recordingTimer.setVisibility(View.GONE);

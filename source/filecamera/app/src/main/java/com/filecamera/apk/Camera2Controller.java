@@ -401,7 +401,10 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             }
             previewSize = choosePreviewSize(map, targetAspectRatio);
             photoSize = choosePhotoSize(map, targetAspectRatio);
-            videoCameraSize = choosePreviewSize(map, 16f / 9f);
+            // 录像输入按设置比例取相机画幅：4:3 或 16:9
+            videoCameraSize = targetAspectRatio > 1.5f
+                    ? choosePreviewSize(map, 16f / 9f)
+                    : chooseFourThreeSize(map);
             if (previewSize == null) {
                 opening = false;
                 postCameraError("相机没有可用预览尺寸");
@@ -882,24 +885,20 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         try {
             closeSessionAndReader();
 
-            boolean portrait = rotation == 90 || rotation == 270;
-            // 始终按传感器方向编码横屏，再写 tkhd 旋转元数据。这样竖拍/横拍/倒置
-            // 都走同一套逻辑，和原 CameraX 的输出方式一致。
-            Size usedSize = new Size(1920, 1080);
-            if (!encoderSupports(usedSize)) {
-                usedSize = new Size(1280, 720);
+            // 纯相机 → 编码器：输出尺寸直接用相机输出尺寸，不做任何方向/比例处理。
+            Size cameraSize = videoCameraSize != null ? videoCameraSize : previewSize;
+            Size usedSize = cameraSize;
+            if (selectVideoEncoder(usedSize) == null) {
+                usedSize = new Size(usedSize.getWidth() / 2, usedSize.getHeight() / 2);
             }
-            if (!encoderSupports(usedSize)) {
+            if (selectVideoEncoder(usedSize) == null) {
+                usedSize = new Size(usedSize.getWidth() / 2, usedSize.getHeight() / 2);
+            }
+            if (selectVideoEncoder(usedSize) == null) {
                 throw new IOException("编码器不支持录像尺寸");
             }
-            Size displaySize = portrait
-                    ? new Size(usedSize.getHeight(), usedSize.getWidth())
-                    : usedSize;
+            // 像素保持相机原始方向，方向写进 MP4 的 tkhd 旋转元数据。
             int mp4Rotation = rotation;
-            // 相机原始帧在传感器方向下与 tkhd 旋转元数据相差 180°：
-            // 竖屏元数据（90/270）时先把相机帧在 GL 里转 180，播放器再按元数据转正。
-            int glRotation = (mp4Rotation == 90 || mp4Rotation == 270) ? 180 : 0;
-            int overlayRotation = mp4Rotation;
 
             MediaCodecInfo codecInfo = selectVideoEncoder(usedSize);
             if (codecInfo == null) throw new IOException("没有可用的 H.264 编码器");
@@ -925,9 +924,16 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             Log.i(TAG, "录像开始: startUs=" + recordingStartUs + " size=" + usedSize
                     + " mp4Rotation=" + mp4Rotation + " audio=" + audioEnabled);
 
+            // GL 只做同尺寸合成：相机 → GL（叠水印）→ 编码器，尺寸/方向元数据都不动。
+            boolean portrait = rotation == 90 || rotation == 270;
+            Size displaySize = portrait
+                    ? new Size(cameraSize.getHeight(), cameraSize.getWidth())
+                    : cameraSize;
+            // 相机纹理裸采样在横屏时是 180°，竖屏时是 0°；四方向按此分情况。
+            int glCameraRotation = (rotation == 90 || rotation == 270) ? 0 : 180;
             glRenderer = new Camera2GlRenderer(this::onGlError);
-            videoCameraSurface = glRenderer.start(videoSurface, videoCameraSize, usedSize,
-                    glRotation, displaySize, overlayRotation, initialWatermark);
+            videoCameraSurface = glRenderer.start(videoSurface, cameraSize, usedSize,
+                    glCameraRotation, displaySize, rotation, initialWatermark);
 
             captureSessionForRecording();
         } catch (Throwable e) {
@@ -1362,6 +1368,23 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     // endregion
 
     // region --- 尺寸选择 ---
+
+    /** 最大的 4:3 相机输出，尽量保留 CMOS 原生画幅。 */
+    private Size chooseFourThreeSize(StreamConfigurationMap map) {
+        Size[] sizes = map.getOutputSizes(SurfaceTexture.class);
+        if (sizes == null) return choosePreviewSize(map, 4f / 3f);
+        Size best = null;
+        for (Size size : sizes) {
+            int w = Math.max(size.getWidth(), size.getHeight());
+            int h = Math.min(size.getWidth(), size.getHeight());
+            if (w > 1920 || h > 1440) continue;
+            if (Math.abs((float) w / h - 4f / 3f) > 0.03f) continue;
+            if (best == null || w * h > best.getWidth() * best.getHeight()) {
+                best = new Size(w, h);
+            }
+        }
+        return best != null ? best : choosePreviewSize(map, 4f / 3f);
+    }
 
     private Size choosePreviewSize(StreamConfigurationMap map, float targetAspect) {
         Size[] sizes = map.getOutputSizes(SurfaceTexture.class);

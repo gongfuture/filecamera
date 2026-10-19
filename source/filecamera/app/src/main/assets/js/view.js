@@ -6,6 +6,9 @@ let offsetX = 0, offsetY = 0;  // 图片的偏移量（中心点的偏移）
 let startDist = 0; // 初始两指距离
 let page = 0
 let picture_arr = []
+let viewer_mode = 'image'
+let video_arr = []
+let video_page = 1
 let pull_distance_arr = [0,0];
 let lastTouchTime = 0;
 let lastTouchdistance = 0
@@ -312,10 +315,22 @@ function gotoaddress(address,name) {
 }
 async function exit_page(){
 	const fileImg = document.getElementById('fileimg');
+	const video = document.getElementById('filevideo');
 	const picturediv = document.getElementById('picturediv');
 	picturediv.classList.remove('expanded');
 	reset_image()
-	if(fileImg.src){
+	if(video){
+		video.pause();
+		video.removeAttribute('src');
+		video.load();
+		video.style.display = 'none';
+	}
+	const playOverlay = document.getElementById('video_play_overlay');
+	if(playOverlay) playOverlay.style.display = 'none';
+	if(fileImg){
+		fileImg.style.display = '';
+	}
+	if(fileImg.src && fileImg.src.startsWith('blob:')){
 		URL.revokeObjectURL(fileImg.src)
 	}
 	fileImg.src ="dir/img/icon/loading_icon.svg"
@@ -332,9 +347,85 @@ async function fetchblob(url) {
     return null;
   }
 }
-async function load_img(picture_name){
+function toggle_video_play(){
+	const video = document.getElementById('filevideo');
+	if(!video) return;
+	if(video.paused) {
+		const p = video.play();
+		if(p && p.catch) p.catch(() => {});
+	} else {
+		video.pause();
+	}
+}
+
+async function load_video(video_name){
 	const picturediv = document.getElementById('picturediv');
 	const fileImg = document.getElementById('fileimg');
+	const video = document.getElementById('filevideo');
+	let real_file_name = "";
+	for(let file of file_index_arr){
+		if(file.name === video_name){
+			real_file_name = file.real_file_name || "";
+			break;
+		}
+	}
+	if(!real_file_name){
+		await alert_fix("视频文件不存在或已损坏，请刷新列表");
+		return;
+	}
+	viewer_mode = 'video';
+	video_arr = file_index_arr.filter(f => isVideoFile(f.name));
+	video_page = video_arr.findIndex(f => f.name === video_name) + 1;
+	picturediv.classList.add('expanded');
+	document.getElementById('picturenamespan').textContent = video_name;
+	fileImg.style.display = 'none';
+	video.style.display = 'block';
+	const playOverlay = document.getElementById('video_play_overlay');
+	if(playOverlay) playOverlay.style.display = 'flex';
+	video.controls = false;
+	video.onplay = function(){
+		video.controls = true;
+		if(playOverlay) playOverlay.style.display = 'none';
+	};
+	video.onpause = function(){
+		video.controls = false;
+		if(playOverlay) playOverlay.style.display = 'flex';
+	};
+	video.onended = video.onpause;
+	video.pause();
+	video.removeAttribute('src');
+	video.load();
+	video.onloadedmetadata = function(){
+		try { video.currentTime = 0.001; } catch (e) {}
+		video.pause();
+	};
+	video.onerror = async function(){
+		await alert_fix("视频无法播放，文件可能未写完或格式不支持");
+	};
+	// 直接用本地 HTTP 服务地址，避免把整个视频读进内存
+	video.src = "https://appassets.androidplatform.net/app_data/" + encodeURIComponent(real_file_name);
+	video.load();
+	// 只显示首帧/封面，不自动播放；用户点播放键才播
+	video.pause();
+	page = 0;
+	document.getElementById('pageseqinput').textContent =
+		Math.max(1, video_page) + "/" + Math.max(1, video_arr.length);
+}
+
+async function load_img(picture_name){
+	viewer_mode = 'image';
+	const picturediv = document.getElementById('picturediv');
+	const fileImg = document.getElementById('fileimg');
+	const video = document.getElementById('filevideo');
+	if(video){
+		video.pause();
+		video.removeAttribute('src');
+		video.load();
+		video.style.display = 'none';
+	}
+	const playOverlay = document.getElementById('video_play_overlay');
+	if(playOverlay) playOverlay.style.display = 'none';
+	if(fileImg) fileImg.style.display = '';
 	if(fileImg.src){
 		URL.revokeObjectURL(fileImg.src)
 	}
@@ -385,7 +476,23 @@ async function load_img(picture_name){
 		picturediv.removeEventListener('transitionend', onTransitionEnd);
 	}
 }
+async function video_back(){
+	if(video_arr.length < 2) return;
+	video_page = video_page <= 1 ? video_arr.length : video_page - 1;
+	await load_video(video_arr[video_page - 1].name);
+}
+
+async function video_forward(){
+	if(video_arr.length < 2) return;
+	video_page = video_page >= video_arr.length ? 1 : video_page + 1;
+	await load_video(video_arr[video_page - 1].name);
+}
+
 async function picture_back(){
+	if(viewer_mode === 'video'){
+		await video_back();
+		return;
+	}
 	let img = document.getElementById('fileimg')
 	if(img.src){
 		URL.revokeObjectURL(img.src)
@@ -466,6 +573,10 @@ function delay(ms) {
 }
 
 async function picture_forward(){
+	if(viewer_mode === 'video'){
+		await video_forward();
+		return;
+	}
 	if(picture_arr.length===0){
 		return;
 	}
@@ -554,6 +665,12 @@ async function picture_goto_page(){
 	}
 	let page_number = Number(folderPath)
 	if(isNaN(page_number) || folderPath <1){
+		return;
+	}
+	if(viewer_mode === 'video'){
+		if(page_number <= video_arr.length){
+			await load_video(video_arr[page_number - 1].name);
+		}
 		return;
 	}
 	let oldpage = page
