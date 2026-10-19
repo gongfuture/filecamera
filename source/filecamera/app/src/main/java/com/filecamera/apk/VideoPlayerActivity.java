@@ -66,6 +66,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private TextView timeView;               // 每秒刷新的时间行
     private final Handler tickHandler = new Handler(Looper.getMainLooper());
     private boolean playing = false;
+    /** 视频画面在 PlayerView 里的实际显示区域（扣掉黑边），水印层紧贴它 */
+    private int pictureWidth = 0;
+    private int pictureHeight = 0;
+    private String appliedAnchor = "";
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -127,7 +131,15 @@ public class VideoPlayerActivity extends AppCompatActivity {
                     tickHandler.post(tick);
                 }
             }
+
+            @Override
+            public void onVideoSizeChanged(androidx.media3.common.VideoSize videoSize) {
+                // 视频尺寸（或旋转）变化后，重算画面矩形并重排水印
+                updateOverlayToPicture();
+            }
         });
+        // 播放器/窗口尺寸变化（含设备旋转、控制器显隐）时也重排
+        playerView.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> updateOverlayToPicture());
         player.play();
     }
 
@@ -187,15 +199,58 @@ public class VideoPlayerActivity extends AppCompatActivity {
     // region --- 水印渲染 ---
 
     /**
+     * 计算视频在 PlayerView 里的实际显示矩形（等比缩放 + 居中，扣掉黑边），
+     * 让水印层紧贴画面；随后按"画面尺寸"重排水印。
+     * 设备怎么摆放都不影响水印与画面的相对关系——这里只做坐标换算，不读设备方向。
+     */
+    private void updateOverlayToPicture() {
+        int pw = playerView.getWidth();
+        int ph = playerView.getHeight();
+        if (pw <= 0 || ph <= 0) return;
+
+        int vw = 0;
+        int vh = 0;
+        if (player != null) {
+            androidx.media3.common.VideoSize size = player.getVideoSize();
+            vw = size.width;
+            vh = size.height;
+        }
+        if (vw <= 0 || vh <= 0) {
+            // 视频尺寸还没出来：先铺满，等 onVideoSizeChanged 再校正
+            vw = pw;
+            vh = ph;
+        }
+
+        float fit = Math.min((float) pw / vw, (float) ph / vh);
+        int w = Math.max(1, Math.round(vw * fit));
+        int h = Math.max(1, Math.round(vh * fit));
+        if (w == pictureWidth && h == pictureHeight) return;
+        pictureWidth = w;
+        pictureHeight = h;
+
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) overlay.getLayoutParams();
+        lp.width = w;
+        lp.height = h;
+        lp.leftMargin = (pw - w) / 2;
+        lp.topMargin = (ph - h) / 2;
+        lp.gravity = Gravity.TOP | Gravity.START;
+        overlay.setLayoutParams(lp);
+
+        if (watermark != null) {
+            buildWatermarkViews(watermark);
+        }
+    }
+
+    /**
      * 按水印数据构建视图。**绘制方式与相机端保持一致**：
      * 整块水印只裁剪一次圆角（四角半径来自配置 radius），header/body/foot 之间是直边；
-     * 各分区只负责自己的背景色和内边距，不再各自圆角。
-     * 尺寸以「播放区宽度 / 360」为密度基准，和相机端 360dp 设计宽度对齐。
+     * 各分区只负责自己的背景色和内边距。
+     * 密度基准用"画面宽度 / 360"，所以水印大小/边距都跟着画面走，不跟屏幕走。
      */
     private void buildWatermarkViews(JSONObject wm) {
         overlay.removeAllViews();
-        int baseWidth = getResources().getDisplayMetrics().widthPixels;
-        float density = baseWidth / DESIGN_WIDTH;
+        if (pictureWidth <= 0 || pictureHeight <= 0) return;
+        float density = pictureWidth / DESIGN_WIDTH;
         float scale = (float) wm.optDouble("scale", 0.75);
 
         // 与相机一致：整块水印统一裁一次圆角（复用相机那边的 ClippingFrameLayout）
@@ -226,33 +281,54 @@ public class VideoPlayerActivity extends AppCompatActivity {
         float rbl = (float) (radiusArr != null ? radiusArr.optDouble(3, 8) : 8) * density;
         clip.setCornerRadiiPx(new float[]{rtl, rtl, rtr, rtr, rbr, rbr, rbl, rbl});
 
-        // 位置：以 360dp 设计宽度为基准，换算成像素边距
+        // 摆放：锚点由数据决定（左上/左下/右上/右下），边距按画面宽度换算
+        appliedAnchor = currentAnchorFromData();
+        boolean right = appliedAnchor.startsWith("right");
+        boolean topAnchor = appliedAnchor.endsWith("top");
+
         JSONObject pos = wm.optJSONObject("position");
+        int margin = Math.round(10 * density);
+        int offsetX = margin;
+        int offsetY = margin;
+        if (pos != null) {
+            offsetX = Math.round((float) pos.optDouble(right ? "right" : "left", 10) * density * scale) + margin;
+            offsetY = Math.round((float) pos.optDouble(topAnchor ? "top" : "bottom", 10) * density * scale) + margin;
+        }
+
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        int margin = Math.round(10 * density);
-        lp.gravity = Gravity.START | Gravity.BOTTOM;
-        lp.leftMargin = margin;
-        lp.bottomMargin = margin;
-        if (pos != null) {
-            if (pos.has("left")) {
-                lp.gravity = Gravity.START | lp.gravity;
-                lp.leftMargin = Math.round((float) pos.optDouble("left", 10) * density * scale) + margin;
-            } else if (pos.has("right")) {
-                lp.gravity = Gravity.END | lp.gravity;
-                lp.rightMargin = Math.round((float) pos.optDouble("right", 10) * density * scale) + margin;
-            }
-            if (pos.has("top")) {
-                lp.gravity = (lp.gravity & Gravity.END) | (lp.gravity & Gravity.START) | Gravity.TOP;
-                lp.topMargin = Math.round((float) pos.optDouble("top", 10) * density * scale) + margin;
-                lp.bottomMargin = 0;
-            } else if (pos.has("bottom")) {
-                lp.gravity = (lp.gravity & (Gravity.END | Gravity.START)) | Gravity.BOTTOM;
-                lp.bottomMargin = Math.round((float) pos.optDouble("bottom", 10) * density * scale) + margin;
-                lp.topMargin = 0;
-            }
+        lp.gravity = (right ? Gravity.END : Gravity.START) | (topAnchor ? Gravity.TOP : Gravity.BOTTOM);
+        if (right) {
+            lp.rightMargin = offsetX;
+        } else {
+            lp.leftMargin = offsetX;
+        }
+        if (topAnchor) {
+            lp.topMargin = offsetY;
+        } else {
+            lp.bottomMargin = offsetY;
         }
         overlay.addView(clip, lp);
+    }
+
+    /** 当前生效的锚点：取当前数据段的 pos，回退到顶层 pos，再回退到配置 position。 */
+    private String currentAnchorFromData() {
+        JSONObject seg = currentSegment();
+        if (seg != null) {
+            String p = seg.optString("pos", "");
+            if (!p.isEmpty()) return p;
+        }
+        if (watermark != null) {
+            String p = watermark.optString("pos", "");
+            if (!p.isEmpty()) return p;
+            JSONObject pos = watermark.optJSONObject("position");
+            if (pos != null) {
+                boolean right = pos.has("right");
+                boolean top = pos.has("top");
+                return (right ? "right" : "left") + "_" + (top ? "top" : "bottom");
+            }
+        }
+        return "left_bottom";
     }
 
     /** 构建一个水印分区（header/body/foot）：只管背景色与内边距，圆角由外层统一裁剪。 */
@@ -389,6 +465,14 @@ public class VideoPlayerActivity extends AppCompatActivity {
     /** 每秒刷新：时间行 + 分段字段（坐标/路名等变化时自动切换）。 */
     private void updateDynamicWatermark() {
         if (watermark == null) return;
+        // 锚点变化（数据里 pos 段切换）→ 按新锚点重排水印
+        if (pictureWidth > 0) {
+            String anchor = currentAnchorFromData();
+            if (!anchor.equals(appliedAnchor)) {
+                buildWatermarkViews(watermark);
+                return;
+            }
+        }
         if (timeView != null) {
             JSONObject seg = currentSegment();
             String prefix = "";
