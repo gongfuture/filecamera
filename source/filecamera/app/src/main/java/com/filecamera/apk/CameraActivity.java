@@ -264,8 +264,8 @@ public class CameraActivity extends AppCompatActivity {
     private boolean showQrCode = false;
     private int targetAspectRatio = AspectRatio.RATIO_16_9;
     // 模式选择（普通/自拍）两个标签
-    private TextView modeTabNormal;
-    private TextView modeTabSelfie;
+    private TextView modeTabPhoto;
+    private TextView switchCameraButton;
     private int currentLensFacing = CameraSelector.LENS_FACING_BACK; // 当前摄像头方向
 
     // [Refactored] 水印数据和视图的单一来源
@@ -448,8 +448,11 @@ public class CameraActivity extends AppCompatActivity {
         previewView = findViewById(R.id.previewView);
         captureButton = findViewById(R.id.captureButton);
         flashButton = findViewById(R.id.flashButton);
-        modeTabNormal = findViewById(R.id.modeTabNormal);
-        modeTabSelfie = findViewById(R.id.modeTabSelfie);
+        modeTabPhoto = findViewById(R.id.modeTabPhoto);
+        switchCameraButton = findViewById(R.id.switchCameraButton);
+        if (switchCameraButton != null) {
+            switchCameraButton.setOnClickListener(v -> toggleLensFacing());
+        }
         modeTabVideo = findViewById(R.id.modeTabVideo);
         recordingTimer = findViewById(R.id.recordingTimer);
         if (modeTabVideo != null) {
@@ -487,28 +490,29 @@ public class CameraActivity extends AppCompatActivity {
     }
     
     /**
-     * 设置模式选择器 (普通/自拍)：两个等宽标签，点击切换前后摄像头，选中项金色加粗
+    /**
+     * 模式选择：照相模式 / 录像模式（前/后摄像头由底部切换按钮负责）
      */
     private void setupCameraModeSelector() {
-        modeTabNormal.setOnClickListener(v -> {
-            if (isVideoMode) {
-                switchVideoMode(false);
-            }
-            if (currentLensFacing != CameraSelector.LENS_FACING_BACK) {
-                switchCamera(CameraSelector.LENS_FACING_BACK);
-            }
-        });
-        modeTabSelfie.setOnClickListener(v -> {
-            if (isVideoMode) {
-                switchVideoMode(false);
-            }
-            if (currentLensFacing != CameraSelector.LENS_FACING_FRONT) {
-                switchCamera(CameraSelector.LENS_FACING_FRONT);
-            }
-        });
+        if (modeTabPhoto != null) {
+            modeTabPhoto.setOnClickListener(v -> switchVideoMode(false));
+        }
+        if (modeTabVideo != null) {
+            modeTabVideo.setOnClickListener(v -> switchVideoMode(true));
+        }
         updateModeTabHighlight();
     }
 
+    /** 前/后摄像头切换（自拍 / 普通）。 */
+    private void toggleLensFacing() {
+        if (isRecording) {
+            Toast.makeText(this, "正在录像，请先停止", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        switchCamera(currentLensFacing == CameraSelector.LENS_FACING_BACK
+                ? CameraSelector.LENS_FACING_FRONT
+                : CameraSelector.LENS_FACING_BACK);
+    }
     /** 切换 拍照/录像 模式：重新绑定 use case，并更新标签高亮。 */
     private void switchVideoMode(boolean videoMode) {
         if (isVideoMode == videoMode) return;
@@ -521,33 +525,22 @@ public class CameraActivity extends AppCompatActivity {
         bindCameraUseCases();
     }
 
-    /**
-     * 根据当前摄像头方向高亮对应的模式标签
-     */
+    /** 照相/录像标签高亮 + 切换按钮文案显示当前镜头。 */
     private void updateModeTabHighlight() {
-        if (modeTabNormal == null || modeTabSelfie == null) return;
         int selectedColor = ContextCompat.getColor(this, R.color.icon_gold);
         boolean isBack = currentLensFacing == CameraSelector.LENS_FACING_BACK;
-        // 录像模式下：录像标签高亮，普通/自拍都变白
-        if (isVideoMode) {
-            modeTabNormal.setTextColor(Color.WHITE);
-            modeTabNormal.setTypeface(null, Typeface.NORMAL);
-            modeTabSelfie.setTextColor(Color.WHITE);
-            modeTabSelfie.setTypeface(null, Typeface.NORMAL);
-            if (modeTabVideo != null) {
-                modeTabVideo.setTextColor(Color.parseColor("#FF5252"));
-                modeTabVideo.setTypeface(null, Typeface.BOLD);
-            }
-            return;
+
+        if (modeTabPhoto != null) {
+            modeTabPhoto.setTextColor(isVideoMode ? Color.WHITE : selectedColor);
+            modeTabPhoto.setTypeface(null, isVideoMode ? Typeface.NORMAL : Typeface.BOLD);
         }
         if (modeTabVideo != null) {
-            modeTabVideo.setTextColor(Color.WHITE);
-            modeTabVideo.setTypeface(null, Typeface.NORMAL);
+            modeTabVideo.setTextColor(isVideoMode ? Color.parseColor("#FF5252") : Color.WHITE);
+            modeTabVideo.setTypeface(null, isVideoMode ? Typeface.BOLD : Typeface.NORMAL);
         }
-        modeTabNormal.setTextColor(isBack ? selectedColor : Color.WHITE);
-        modeTabNormal.setTypeface(null, isBack ? Typeface.BOLD : Typeface.NORMAL);
-        modeTabSelfie.setTextColor(isBack ? Color.WHITE : selectedColor);
-        modeTabSelfie.setTypeface(null, isBack ? Typeface.NORMAL : Typeface.BOLD);
+        if (switchCameraButton != null) {
+            switchCameraButton.setText(isBack ? "后置" : "自拍");
+        }
     }
 
     private void initGestureDetectors() {
