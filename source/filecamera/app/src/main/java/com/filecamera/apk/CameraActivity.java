@@ -945,7 +945,7 @@ public class CameraActivity extends AppCompatActivity {
         try {
             long baseTime = System.currentTimeMillis();
             videoWatermarkJson = buildVideoWatermarkJson(baseTime);
-            videoTicket = fileImporter.beginVideo(targetDirId, IdGenerator.get_id_by_time() + ".mp4", videoWatermarkJson);
+            videoTicket = fileImporter.beginVideo(targetDirId, IdGenerator.get_id_by_time() + "." + WatermarkFileCodec.EXTENSION, videoWatermarkJson);
             lastWatermarkValues.clear();
             JSONObject initialValues = snapshotWatermarkValues();
             java.util.Iterator<String> valueKeys = initialValues.keys();
