@@ -64,6 +64,14 @@ import androidx.camera.core.ZoomState;
 import androidx.camera.core.resolutionselector.AspectRatioStrategy;
 import androidx.camera.core.resolutionselector.ResolutionSelector;
 import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.camera.video.FileOutputOptions;
+import androidx.camera.video.FallbackStrategy;
+import androidx.camera.video.Quality;
+import androidx.camera.video.QualitySelector;
+import androidx.camera.video.Recorder;
+import androidx.camera.video.Recording;
+import androidx.camera.video.VideoCapture;
+import androidx.camera.video.VideoRecordEvent;
 import androidx.camera.view.PreviewView;
 import androidx.lifecycle.LiveData;
 import androidx.core.app.ActivityCompat;
@@ -147,6 +155,32 @@ public class CameraActivity extends AppCompatActivity {
     private boolean gpsWarningShown = false;
     // endregion
 
+    // region --- 录像（视频不烧水印：水印数据随视频入库，播放/导出时再叠）---
+    private TextView modeTabVideo;
+    private TextView recordingTimer;
+    private VideoCapture<Recorder> videoCapture;
+    private Recording currentRecording;
+    private volatile boolean isRecording = false;
+    private boolean isVideoMode = false;
+    private long recordStartMs = 0;
+    private FileImporter.VideoTicket videoTicket;
+    /** 本次录像的水印数据（首行全量 + 变化回填） */
+    private JSONObject videoWatermarkJson;
+    /** 上一次的水印字段快照，用于只记录变化 */
+    private final java.util.Map<String, String> lastWatermarkValues = new java.util.HashMap<>();
+    private String lastWatermarkAnchor = "";
+    private final Handler recordTimerHandler = new Handler(Looper.getMainLooper());
+    private final Runnable recordTimerRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!isRecording || recordingTimer == null) return;
+            long ms = System.currentTimeMillis() - recordStartMs;
+            recordingTimer.setText(String.format(Locale.CHINA, "● %02d:%02d", ms / 60000, (ms / 1000) % 60));
+            recordTimerHandler.postDelayed(this, 500);
+        }
+    };
+    // endregion
+
     // CameraX 组件
     private ImageCapture imageCapture;
     private Camera camera;
@@ -213,6 +247,11 @@ public class CameraActivity extends AppCompatActivity {
                 // 自动模式GPS未就绪时保持当前显示（"获取中..."），等待下一秒轮询
             }
             
+            // 4. 录像中：把"变化的水印字段/位置"追加成 delta 记录
+            if (isRecording) {
+                recordWatermarkDelta();
+            }
+
             uiUpdateHandler.postDelayed(this, 1000); // 1秒更新一次
         }
     };
@@ -389,6 +428,11 @@ public class CameraActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        // 录像中直接销毁：先停录（Finalize 会把已录部分入库），再解绑相机
+        if (isRecording) {
+            stopRecording();
+        }
+        recordTimerHandler.removeCallbacksAndMessages(null);
         if (cameraProvider != null) {
             cameraProvider.unbindAll(); // 作为最后保障
         }
@@ -406,6 +450,11 @@ public class CameraActivity extends AppCompatActivity {
         flashButton = findViewById(R.id.flashButton);
         modeTabNormal = findViewById(R.id.modeTabNormal);
         modeTabSelfie = findViewById(R.id.modeTabSelfie);
+        modeTabVideo = findViewById(R.id.modeTabVideo);
+        recordingTimer = findViewById(R.id.recordingTimer);
+        if (modeTabVideo != null) {
+            modeTabVideo.setOnClickListener(v -> switchVideoMode(true));
+        }
         watermarkContainer = findViewById(R.id.watermarkContainer);
         exitButton = findViewById(R.id.exitButton);
         zoomButton = findViewById(R.id.zoomButton);
@@ -442,16 +491,34 @@ public class CameraActivity extends AppCompatActivity {
      */
     private void setupCameraModeSelector() {
         modeTabNormal.setOnClickListener(v -> {
+            if (isVideoMode) {
+                switchVideoMode(false);
+            }
             if (currentLensFacing != CameraSelector.LENS_FACING_BACK) {
                 switchCamera(CameraSelector.LENS_FACING_BACK);
             }
         });
         modeTabSelfie.setOnClickListener(v -> {
+            if (isVideoMode) {
+                switchVideoMode(false);
+            }
             if (currentLensFacing != CameraSelector.LENS_FACING_FRONT) {
                 switchCamera(CameraSelector.LENS_FACING_FRONT);
             }
         });
         updateModeTabHighlight();
+    }
+
+    /** 切换 拍照/录像 模式：重新绑定 use case，并更新标签高亮。 */
+    private void switchVideoMode(boolean videoMode) {
+        if (isVideoMode == videoMode) return;
+        if (isRecording) {
+            Toast.makeText(this, "正在录像，请先停止", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        isVideoMode = videoMode;
+        updateModeTabHighlight();
+        bindCameraUseCases();
     }
 
     /**
@@ -461,6 +528,22 @@ public class CameraActivity extends AppCompatActivity {
         if (modeTabNormal == null || modeTabSelfie == null) return;
         int selectedColor = ContextCompat.getColor(this, R.color.icon_gold);
         boolean isBack = currentLensFacing == CameraSelector.LENS_FACING_BACK;
+        // 录像模式下：录像标签高亮，普通/自拍都变白
+        if (isVideoMode) {
+            modeTabNormal.setTextColor(Color.WHITE);
+            modeTabNormal.setTypeface(null, Typeface.NORMAL);
+            modeTabSelfie.setTextColor(Color.WHITE);
+            modeTabSelfie.setTypeface(null, Typeface.NORMAL);
+            if (modeTabVideo != null) {
+                modeTabVideo.setTextColor(Color.parseColor("#FF5252"));
+                modeTabVideo.setTypeface(null, Typeface.BOLD);
+            }
+            return;
+        }
+        if (modeTabVideo != null) {
+            modeTabVideo.setTextColor(Color.WHITE);
+            modeTabVideo.setTypeface(null, Typeface.NORMAL);
+        }
         modeTabNormal.setTextColor(isBack ? selectedColor : Color.WHITE);
         modeTabNormal.setTypeface(null, isBack ? Typeface.BOLD : Typeface.NORMAL);
         modeTabSelfie.setTextColor(isBack ? Color.WHITE : selectedColor);
@@ -753,6 +836,38 @@ public class CameraActivity extends AppCompatActivity {
             return;
         }
 
+        // 录像模式：VideoCapture + Recorder（画面上不烧水印，水印数据随视频入库）
+        if (isVideoMode) {
+            // 画质从高到低退让，避免个别机型只支持低分辨率视频时直接绑定失败
+            QualitySelector qualitySelector = QualitySelector.fromOrderedList(
+                    java.util.Arrays.asList(Quality.FHD, Quality.HD, Quality.SD),
+                    FallbackStrategy.lowerQualityOrHigherThan(Quality.SD));
+            Recorder recorder = new Recorder.Builder()
+                    .setQualitySelector(qualitySelector)
+                    .build();
+            videoCapture = VideoCapture.withOutput(recorder);
+            imageCapture = null;
+            try {
+                cameraProvider.unbindAll();
+                camera = cameraProvider.bindToLifecycle(this, cameraSelector, preview, videoCapture);
+                cameraControl = camera.getCameraControl();
+                preview.setSurfaceProvider(previewView.getSurfaceProvider());
+                previewView.setScaleType(PreviewView.ScaleType.FILL_CENTER);
+                setupZoomButton();
+                updateModeTabHighlight();
+                flashButton.setVisibility(View.GONE);
+            } catch (Exception e) {
+                Log.e(TAG, "录像用例绑定失败", e);
+                videoCapture = null;
+                isVideoMode = false;
+                updateModeTabHighlight();
+                Toast.makeText(this, "本机不支持录像，已切回拍照模式", Toast.LENGTH_LONG).show();
+                // 失败后回到拍照绑定
+                bindCameraUseCases();
+            }
+            return;
+        }
+
         imageCapture = new ImageCapture.Builder()
                 .setResolutionSelector(resolutionSelector)
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
@@ -781,6 +896,15 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private void takePhoto() {
+        // 录像模式：快门 = 开始/停止录像
+        if (isVideoMode) {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+            return;
+        }
         if (imageCapture == null) return;
         // 上一张还在保存时忽略重复点击，避免两张照片的处理任务互相踩踏
         if (isCaptureProcessing) return;
@@ -813,6 +937,214 @@ public class CameraActivity extends AppCompatActivity {
             handlePhotoError("创建文件失败", e);
         }
     }
+
+    // region --- 录像：开始 / 停止 / 入库 ---
+
+    /** 开始录像：先定名字 + 写待入表 + 写水印首行，再直接录进正式目录。 */
+    private void startRecording() {
+        if (isRecording) return;
+        if (videoCapture == null) {
+            Toast.makeText(this, "本机不支持录像", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            long baseTime = System.currentTimeMillis();
+            videoWatermarkJson = buildVideoWatermarkJson(baseTime);
+            videoTicket = fileImporter.beginVideo(targetDirId, IdGenerator.getIdByTime() + ".mp4", videoWatermarkJson);
+            lastWatermarkValues.clear();
+            JSONObject initialValues = snapshotWatermarkValues();
+            java.util.Iterator<String> valueKeys = initialValues.keys();
+            while (valueKeys.hasNext()) {
+                String key = valueKeys.next();
+                lastWatermarkValues.put(key, initialValues.optString(key, ""));
+            }
+            lastWatermarkAnchor = currentAnchor();
+
+            FileOutputOptions options = new FileOutputOptions.Builder(videoTicket.targetFile).build();
+            isRecording = true;
+            recordStartMs = baseTime;
+            if (recordingTimer != null) {
+                recordingTimer.setVisibility(View.VISIBLE);
+                recordingTimer.setText("● 00:00");
+            }
+            recordTimerHandler.post(recordTimerRunnable);
+            setCaptureButtonAlphaForRecording(true);
+
+            currentRecording = videoCapture.getOutput()
+                    .prepareRecording(this, options)
+                    .start(ContextCompat.getMainExecutor(this), event -> onVideoRecordEvent(event));
+        } catch (Exception e) {
+            isRecording = false;
+            if (recordingTimer != null) recordingTimer.setVisibility(View.GONE);
+            recordTimerHandler.removeCallbacks(recordTimerRunnable);
+            setCaptureButtonAlphaForRecording(false);
+            if (videoTicket != null) {
+                fileImporter.abortVideo(videoTicket);
+                videoTicket = null;
+            }
+            handlePhotoError("开始录像失败", e);
+        }
+    }
+
+    /** 停止录像（Finalize 回调里再做入库）。 */
+    private void stopRecording() {
+        if (currentRecording == null) {
+            isRecording = false;
+            return;
+        }
+        try {
+            currentRecording.stop();
+        } catch (Exception e) {
+            Log.e(TAG, "停止录像失败", e);
+        }
+        currentRecording = null;
+    }
+
+    private void onVideoRecordEvent(VideoRecordEvent event) {
+        if (!(event instanceof VideoRecordEvent.Finalize)) return;
+        VideoRecordEvent.Finalize fin = (VideoRecordEvent.Finalize) event;
+        boolean failed = fin.hasError();
+        isRecording = false;
+        recordTimerHandler.removeCallbacks(recordTimerRunnable);
+        if (recordingTimer != null) recordingTimer.setVisibility(View.GONE);
+        setCaptureButtonAlphaForRecording(false);
+
+        if (failed) {
+            Log.e(TAG, "录像结束但有错误: " + fin.getError());
+            if (videoTicket != null) {
+                fileImporter.abortVideo(videoTicket);
+                videoTicket = null;
+            }
+            Toast.makeText(this, "录像失败", Toast.LENGTH_SHORT).show();
+            if (pendingFinishAfterCapture) {
+                pendingFinishAfterCapture = false;
+                finishWithSession();
+            }
+            return;
+        }
+
+        // 录像文件已 finalize → 入库（算哈希、缩略图、提交）
+        final FileImporter.VideoTicket ticket = videoTicket;
+        videoTicket = null;
+        if (ticket == null) return;
+        try {
+            JSONObject record = fileImporter.finishVideo(ticket);
+            CameraSessionStore.addRecord(this, record);
+            onCaptureSaved(false);
+        } catch (Throwable e) {
+            fileImporter.abortVideo(ticket);
+            handlePhotoError("录像保存失败", e);
+        }
+    }
+
+    private void setCaptureButtonAlphaForRecording(boolean recording) {
+        if (captureButton == null) return;
+        captureButton.setAlpha(1.0f);
+        if (recording) {
+            captureButton.setBackgroundResource(R.drawable.capture_button);
+            captureButton.setScaleX(0.82f);
+            captureButton.setScaleY(0.82f);
+        } else {
+            captureButton.setScaleX(1.0f);
+            captureButton.setScaleY(1.0f);
+        }
+    }
+
+    /** 水印数据首行（全量）：配置里的 header/body/foot/position/scale + 图标引用 + 首段字段值。 */
+    private JSONObject buildVideoWatermarkJson(long baseTimeMs) {
+        JSONObject wm = new JSONObject();
+        try {
+            wm.put("ver", 1);
+            wm.put("base_time_ms", baseTimeMs);
+            JSONObject root = new JSONObject(WatermarkConfigManager.getInstance(this).getConfig());
+            JSONObject config = root.optJSONObject("watermark");
+            if (config != null) {
+                for (String key : new String[]{"scale", "radius", "position", "header", "body", "foot"}) {
+                    if (config.has(key)) wm.put(key, config.get(key));
+                }
+                // 图标只存引用（图标本体仍放在应用私有目录，不进数据库）
+                JSONObject header = config.optJSONObject("header");
+                JSONObject icon = header == null ? null : header.optJSONObject("icon");
+                if (icon != null && icon.has("value")) {
+                    wm.put("icon_ref", icon.optString("value", ""));
+                }
+            }
+            wm.put("pos", currentAnchor());
+
+            JSONArray segments = new JSONArray();
+            JSONObject first = new JSONObject();
+            first.put("from_ms", 0);
+            first.put("values", snapshotWatermarkValues());
+            segments.put(first);
+            wm.put("segments", segments);
+        } catch (Exception e) {
+            Log.e(TAG, "构建视频水印数据失败", e);
+        }
+        return wm;
+    }
+
+    /** 当前所有水印字段值（time 除外，时间由播放位置实时换算）。 */
+    private JSONObject snapshotWatermarkValues() {
+        JSONObject values = new JSONObject();
+        try {
+            for (Map.Entry<String, String> entry : watermarkDataStore.entrySet()) {
+                if ("time".equals(entry.getKey())) continue;
+                values.put(entry.getKey(), entry.getValue() == null ? "" : entry.getValue());
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "快照水印字段失败", e);
+        }
+        return values;
+    }
+
+    /** 当前水印锚点：left_top / left_bottom / right_top / right_bottom。 */
+    private String currentAnchor() {
+        Position pos = watermarkConfig == null ? null : watermarkConfig.position;
+        boolean right = pos != null && pos.right != null;
+        boolean top = pos != null && pos.top != null;
+        return (right ? "right" : "left") + "_" + (top ? "top" : "bottom");
+    }
+
+    /** 每秒把"变化的水印字段/位置"追加成一条 delta 记录（首行已是全量）。 */
+    private void recordWatermarkDelta() {
+        if (!isRecording || videoWatermarkJson == null) return;
+        try {
+            JSONArray segments = videoWatermarkJson.optJSONArray("segments");
+            if (segments == null) return;
+            long elapsed = Math.max(0, System.currentTimeMillis() - recordStartMs);
+
+            JSONObject valuesDelta = new JSONObject();
+            JSONObject current = snapshotWatermarkValues();
+            java.util.Iterator<String> keys = current.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                String value = current.optString(key, "");
+                String old = lastWatermarkValues.get(key);
+                if (old == null || !old.equals(value)) {
+                    valuesDelta.put(key, value);
+                    lastWatermarkValues.put(key, value);
+                }
+            }
+
+            String anchor = currentAnchor();
+            boolean anchorChanged = !anchor.equals(lastWatermarkAnchor);
+
+            if (valuesDelta.length() > 0 || anchorChanged) {
+                JSONObject seg = new JSONObject();
+                seg.put("from_ms", elapsed);
+                if (valuesDelta.length() > 0) seg.put("values", valuesDelta);
+                if (anchorChanged) {
+                    seg.put("pos", anchor);
+                    lastWatermarkAnchor = anchor;
+                }
+                segments.put(seg);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "记录水印变化失败", e);
+        }
+    }
+
+    // endregion
 
     /**
      * 拍下一张照片瞬间的状态快照：水印位图 + GPS + 配置 + 预览尺寸。
@@ -1045,8 +1377,14 @@ public class CameraActivity extends AppCompatActivity {
 
     // region --- 会话退出：把本次新增图片信息交接给前端 ---
 
-    /** 退出入口（返回键 / 右上角关闭按钮）。正在保存照片时延迟到保存完成再退出，避免丢图。 */
+    /** 退出入口（返回键 / 右上角关闭按钮）。正在保存/正在录像时延迟到完成后再退出，避免丢数据。 */
     private void requestExit() {
+        if (isRecording) {
+            // 先停止录像，Finalize 回调里入库后再退出
+            pendingFinishAfterCapture = true;
+            stopRecording();
+            return;
+        }
         if (isCaptureProcessing) {
             pendingFinishAfterCapture = true;
             return;

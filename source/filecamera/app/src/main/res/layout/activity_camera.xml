@@ -26,6 +26,22 @@
             android:orientation="vertical"
             android:visibility="gone" />
 
+        <!-- 录像计时：录像时显示在顶部中间 -->
+        <TextView
+            android:id="@+id/recordingTimer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentTop="true"
+            android:layout_centerHorizontal="true"
+            android:layout_margin="12dp"
+            android:background="#99000000"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="4dp"
+            android:text="● 00:00"
+            android:textColor="#FF5252"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
     </RelativeLayout>
 
     <!-- 模式选择区域：普通模式 / 变焦倍数 / 自拍模式 三等分 -->
@@ -48,6 +64,17 @@
                 android:layout_weight="1"
                 android:gravity="center"
                 android:text="普通模式"
+                android:textColor="@color/white"
+                android:textSize="14sp" />
+
+            <!-- 录像模式：点击进入录像，快门变成开始/停止 -->
+            <TextView
+                android:id="@+id/modeTabVideo"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="录像"
                 android:textColor="@color/white"
                 android:textSize="14sp" />
 

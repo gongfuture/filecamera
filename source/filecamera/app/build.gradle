@@ -57,6 +57,8 @@ dependencies {
     implementation "androidx.camera:camera-lifecycle:${camerax_version}"
     // View 库，提供了 PreviewView 控件 (必需)
     implementation "androidx.camera:camera-view:${camerax_version}"
+    // 视频录制（录像模式）
+    implementation "androidx.camera:camera-video:${camerax_version}"
 
 	implementation 'com.google.zxing:core:3.5.3'
 

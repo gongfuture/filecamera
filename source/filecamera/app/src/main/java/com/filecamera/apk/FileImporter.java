@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.util.Log;
 
@@ -329,6 +330,194 @@ public class FileImporter {
         deleteQuietly(targetFile);
         deleteQuietly(iconFile);
         deleteQuietly(new File(row.optString("tmp_photo_path", "")));
+    }
+
+    // endregion
+
+    // region --- 视频录像入库（边录边写正式目录，中断由修复器兜底）---
+
+    /** 一次录像的入库票据：开录前就把文件名/待入表定下来，录完再提交。 */
+    public static final class VideoTicket {
+        public final String fileId;
+        public final String realFileName;
+        public final File targetFile;
+        public final String displayName;
+        public final String parentDirId;
+
+        VideoTicket(String fileId, String realFileName, File targetFile, String displayName, String parentDirId) {
+            this.fileId = fileId;
+            this.realFileName = realFileName;
+            this.targetFile = targetFile;
+            this.displayName = displayName;
+            this.parentDirId = parentDirId;
+        }
+    }
+
+    /**
+     * 开始录像前的准备：定下最终文件名，**直接录到正式目录** app_data/&lt;id&gt;.mp4，
+     * 同时写好 pending_file（未就绪，列表不可见）和 file_watermark（水印数据，content_hash 先留空）。
+     * 中断/被杀时：文件与两条记录都在，启动修复会探测能否播放，能播就补提交，不能播就清理。
+     *
+     * @param watermarkJson 本次录像的水印数据（base_time_ms + 首行全量 + 后续变化由调用方追加）
+     */
+    public VideoTicket beginVideo(String dirId, String displayName, JSONObject watermarkJson) throws Exception {
+        String targetDirId = (dirId == null || dirId.trim().isEmpty()) ? "root" : dirId;
+        if (dbHelper.db_get("SELECT id FROM dir WHERE id = ?", new JSONArray().put(targetDirId)) == null) {
+            throw new Exception("文件夹不存在");
+        }
+        if (displayName == null || displayName.trim().isEmpty()) {
+            displayName = IdGenerator.getIdByTime() + ".mp4";
+        }
+        String finalName = dedupeName(targetDirId, displayName);
+        if (extensionOf(finalName).isEmpty()) finalName = finalName + ".mp4";
+        String extension = extensionOf(finalName);
+        String fileId = IdGenerator.getIdByTime();
+        String realFileName = fileId + "." + extension;
+        String realIconName = fileId + "_icon.png";
+        File dataDir = dataDirectory();
+        if (!dataDir.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            dataDir.mkdirs();
+        }
+        File target = new File(dataDir, realFileName);
+
+        dbHelper.db_run("INSERT INTO pending_file (" + COLUMNS + ",tmp_photo_path,tmp_icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                new JSONArray()
+                        .put(fileId).put(finalName).put(targetDirId).put("file")
+                        .put(realFileName).put(realIconName).put(System.currentTimeMillis())
+                        .put(getSeqNumberFromString(baseNameOf(finalName))).put(0L).put(extension)
+                        .put("").put(""));
+        // 水印数据先落库（content_hash 录完再补），崩溃后修复也能带上水印
+        dbHelper.db_run("INSERT OR REPLACE INTO file_watermark (file_id,data,content_hash,created) VALUES (?,?,?,?)",
+                new JSONArray().put(fileId).put(watermarkJson == null ? "{}" : watermarkJson.toString())
+                        .put("").put(System.currentTimeMillis()));
+        return new VideoTicket(fileId, realFileName, target, finalName, targetDirId);
+    }
+
+    /**
+     * 录像 finalize 之后提交入库：探测可播放 → 算视频内容哈希（防篡改）→ 生成首帧缩略图 →
+     * 更新 pending/watermark → 事务把 pending 行搬进 file 表。
+     */
+    public JSONObject finishVideo(VideoTicket ticket) throws Exception {
+        if (ticket == null || !ticket.targetFile.isFile() || ticket.targetFile.length() <= 0) {
+            throw new IOException("录像文件不可用");
+        }
+        if (!isPlayableVideo(ticket.targetFile)) {
+            throw new IOException("录像文件无法播放（可能未正常结束）");
+        }
+        long size = ticket.targetFile.length();
+        String hash = sha256(ticket.targetFile);
+
+        // 缩略图（首帧）；失败不阻塞入库
+        String iconWritten = null;
+        File iconDir = iconDirectory();
+        if (!iconDir.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            iconDir.mkdirs();
+        }
+        byte[] thumb = videoThumbnail(ticket.targetFile);
+        String iconName = ticket.fileId + "_icon.png";
+        if (thumb != null && saveFile(thumb, new File(iconDir, iconName))) {
+            iconWritten = iconName;
+        }
+
+        dbHelper.db_run("UPDATE pending_file SET size = ?, real_icon_name = ? WHERE id = ?",
+                new JSONArray().put(size).put(iconWritten == null ? JSONObject.NULL : iconWritten).put(ticket.fileId));
+        dbHelper.db_run("UPDATE file_watermark SET content_hash = ? WHERE file_id = ?",
+                new JSONArray().put(hash).put(ticket.fileId));
+
+        promote(ticket.fileId);
+        return buildRecord(ticket.fileId, ticket.displayName, ticket.parentDirId, ticket.realFileName,
+                iconWritten, System.currentTimeMillis(), getSeqNumberFromString(baseNameOf(ticket.displayName)),
+                size, extensionOf(ticket.displayName));
+    }
+
+    /** 录像失败/取消：删待入表、水印数据、半成品文件与缩略图。 */
+    public void abortVideo(VideoTicket ticket) {
+        if (ticket == null) return;
+        try {
+            dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(ticket.fileId));
+            dbHelper.db_run("DELETE FROM file_watermark WHERE file_id = ?", new JSONArray().put(ticket.fileId));
+        } catch (Exception e) {
+            Log.e(TAG, "回滚录像记录失败", e);
+        }
+        if (ticket.targetFile.isFile()) {
+            //noinspection ResultOfMethodCallIgnored
+            ticket.targetFile.delete();
+        }
+        deleteQuietly(new File(iconDirectory(), ticket.fileId + "_icon.png"));
+    }
+
+    /** 探测文件是否是可播放的视频（未 finalize 的 MP4 会打不开）。 */
+    static boolean isPlayableVideo(File file) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(file.getAbsolutePath());
+            String duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            return duration != null && Long.parseLong(duration) > 0;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 取视频首帧做 256px 缩略图（失败返回 null，不阻塞入库）。 */
+    static byte[] videoThumbnail(File file) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(file.getAbsolutePath());
+            Bitmap frame = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            if (frame == null) return null;
+            int w = frame.getWidth();
+            int h = frame.getHeight();
+            if (w <= 0 || h <= 0) return null;
+            float aspect = (float) w / (float) h;
+            int nw, nh;
+            if (w >= h) {
+                nw = 256;
+                nh = Math.round(256 / aspect);
+            } else {
+                nh = 256;
+                nw = Math.round(256 * aspect);
+            }
+            Bitmap scaled = Bitmap.createScaledBitmap(frame, nw, nh, true);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            scaled.compress(Bitmap.CompressFormat.PNG, 100, out);
+            if (scaled != frame) frame.recycle();
+            scaled.recycle();
+            return out.toByteArray();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 文件内容 SHA-256（播放前用它校验水印数据是否与视频匹配）。 */
+    static String sha256(File file) {
+        try (InputStream in = new FileInputStream(file)) {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buf)) > 0) {
+                digest.update(buf, 0, read);
+            }
+            StringBuilder sb = new StringBuilder();
+            for (byte b : digest.digest()) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            Log.e(TAG, "计算文件哈希失败", e);
+            return "";
+        }
     }
 
     // endregion
