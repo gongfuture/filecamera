@@ -864,7 +864,7 @@ function setupIntersectionObserver(tr_arr) {
             let img = nameCell.querySelector('.icon_div').querySelector('.icon_img');
             if (nameCell.dataset.type === 'file') {
                 if (entry.isIntersecting) {  // 进入视口
-                    if (!img.dataset.load && isImageFile(img.dataset.name)) {
+                    if (!img.dataset.load && (isImageFile(img.dataset.name) || isVideoFile(img.dataset.name))) {
                         img.dataset.load = true;
                         
                         let real_icon_name = img.dataset.real_icon_name;
@@ -878,7 +878,7 @@ function setupIntersectionObserver(tr_arr) {
                         }
                     }
                 } else {  // 离开视口
-                    if (img.dataset.load && isImageFile(img.dataset.name)) {
+                    if (img.dataset.load && (isImageFile(img.dataset.name) || isVideoFile(img.dataset.name))) {
                         img.src = file_icon_url;
                         delete img.dataset.load;
                     }

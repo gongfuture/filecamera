@@ -70,6 +70,9 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private int pictureWidth = 0;
     private int pictureHeight = 0;
     private String appliedAnchor = "";
+    /** 播放控制条是否可见：可见时水印层底部要让出控制条高度，避免被压住 */
+    private boolean controllerVisible = true;
+    private int controllerInsetPx = 0;
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -129,6 +132,15 @@ public class VideoPlayerActivity extends AppCompatActivity {
             controlView.setShowPreviousButton(false);
             controlView.setShowNextButton(false);
         }
+        // 控制条显隐时重排水印：可见时水印层上移，避免被进度条/时间压住
+        playerView.setControllerVisibilityListener(
+                (androidx.media3.ui.PlayerView.ControllerVisibilityListener) visibility -> {
+            boolean visible = visibility == View.VISIBLE;
+            if (visible != controllerVisible) {
+                controllerVisible = visible;
+                playerView.post(this::updateOverlayToPicture);
+            }
+        });
         player.setMediaItem(MediaItem.fromUri(Uri.fromFile(videoFile)));
         player.prepare();
         player.addListener(new androidx.media3.common.Player.Listener() {
@@ -246,7 +258,11 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
         float fit = Math.min((float) pw / vw, (float) ph / vh);
         int w = Math.max(1, Math.round(vw * fit));
-        int h = Math.max(1, Math.round(vh * fit));
+        int fullH = Math.max(1, Math.round(vh * fit));
+
+        // 控制条可见时，水印层底部让出控制条高度：水印仍贴在画面内，但不会被进度条/时间压住
+        int inset = controllerVisible ? Math.min(measureControllerBarHeight(), fullH / 3) : 0;
+        int h = Math.max(1, fullH - inset);
         if (w == pictureWidth && h == pictureHeight) return;
         pictureWidth = w;
         pictureHeight = h;
@@ -255,7 +271,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
         lp.width = w;
         lp.height = h;
         lp.leftMargin = (pw - w) / 2;
-        lp.topMargin = (ph - h) / 2;
+        lp.topMargin = (ph - fullH) / 2;
+        controllerInsetPx = inset;
         lp.gravity = Gravity.TOP | Gravity.START;
         overlay.setLayoutParams(lp);
 
@@ -264,6 +281,14 @@ public class VideoPlayerActivity extends AppCompatActivity {
         }
     }
 
+    /** 量一下播放控制条（进度条+时间那一行）的实际高度；量不到就按 56dp 估算。 */
+    private int measureControllerBarHeight() {
+        View bar = playerView.findViewById(androidx.media3.ui.R.id.exo_bottom_bar);
+        if (bar != null && bar.getVisibility() == View.VISIBLE && bar.getHeight() > 0) {
+            return bar.getHeight();
+        }
+        return Math.round(56 * getResources().getDisplayMetrics().density);
+    }
     /**
      * 按水印数据构建视图。**绘制方式与相机端保持一致**：
      * 整块水印只裁剪一次圆角（四角半径来自配置 radius），header/body/foot 之间是直边；
