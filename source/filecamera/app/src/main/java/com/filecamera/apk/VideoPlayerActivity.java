@@ -1,7 +1,8 @@
 package com.filecamera.apk;
 
+import android.content.Context;
 import android.graphics.Color;
-import android.graphics.drawable.GradientDrawable;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -11,8 +12,11 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -28,7 +32,6 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
@@ -36,16 +39,12 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * 视频播放页：播放库里的视频，并按 file_watermark 里记录的水印数据在画面上叠加水印。
+ * 视频播放页：播放库里的干净视频，并按 file_watermark 里记录的水印数据在画面上叠加水印。
  *
- * <p>设计要点：
- * <ul>
- *     <li>播放器文件本身不带水印（干净视频，任何播放器都能播）；水印在播放时叠加，类似字幕。</li>
- *     <li>水印数据存在 SQLite（file_watermark 表），同时记录视频内容的 SHA-256 指纹：
- *         播放前重算指纹，和记录不一致就不叠加水印，避免"把别的水印数据嫁接到别的视频上"。</li>
- *     <li>水印内容里的"时间"用「基准时间 + 播放位置」实时计算，所以能跟着视频跳动；
- *         其余字段（坐标/路名/桩号/单位等）按 segments 里记录的 from_ms 分段切换。</li>
- * </ul>
+ * <p>界面完全自定义（不使用 Media3 默认控制条）：顶部返回 + 文件名，中间播放/暂停，
+ * 底部音量行 + 进度行；点画面显隐控制层，播放中自动隐藏。
+ *
+ * <p>水印层紧贴视频画面矩形：按画面坐标定位，与设备横竖屏无关；水印的锚点/位置全部来自数据。
  */
 public class VideoPlayerActivity extends AppCompatActivity {
 
@@ -56,30 +55,53 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
     /** 水印渲染的设计宽度（与相机端一致：360dp 基准） */
     private static final float DESIGN_WIDTH = 360f;
+    /** 控制层自动隐藏时间 */
+    private static final long CONTROLS_HIDE_DELAY_MS = 3500;
 
     private PlayerView playerView;
     private FrameLayout overlay;
     private ExoPlayer player;
 
-    private JSONObject watermark;            // 水印数据（file_watermark.data）
+    // 自定义控制层
+    private LinearLayout controls;
+    private LinearLayout controlsBottom;
+    private LinearLayout volumeRow;
+    private ImageButton btnPlay;
+    private ImageButton btnVolume;
+    private ImageButton btnVolumeToggle;
+    private SeekBar volumeBar;
+    private SeekBar seekBar;
+    private TextView timePos;
+    private TextView timeDur;
+    private AudioManager audioManager;
+    private boolean controlsVisible = true;
+    private boolean draggingSeek = false;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final Runnable hideControlsRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (player != null && player.isPlaying()) {
+                setControlsVisible(false);
+            }
+        }
+    };
+
+    // 水印
+    private JSONObject watermark;
     private JSONArray segments = new JSONArray();
-    private TextView timeView;               // 每秒刷新的时间行
-    private final Handler tickHandler = new Handler(Looper.getMainLooper());
+    private TextView timeView;
     private boolean playing = false;
-    /** 视频画面在 PlayerView 里的实际显示区域（扣掉黑边），水印层紧贴它 */
     private int pictureWidth = 0;
     private int pictureHeight = 0;
     private String appliedAnchor = "";
-    /** 播放控制条是否可见：可见时水印层底部要让出控制条高度，避免被压住 */
-    private boolean controllerVisible = true;
-    private int controllerInsetPx = 0;
 
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
             updateDynamicWatermark();
+            updateProgressUi();
             if (playing) {
-                tickHandler.postDelayed(this, 1000);
+                uiHandler.postDelayed(this, 500);
             }
         }
     };
@@ -88,14 +110,27 @@ public class VideoPlayerActivity extends AppCompatActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_video_player);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         playerView = findViewById(R.id.player_view);
         overlay = findViewById(R.id.watermark_overlay);
+        controls = findViewById(R.id.controls);
+        controlsBottom = findViewById(R.id.controls_bottom);
+        volumeRow = findViewById(R.id.volume_row);
+        btnPlay = findViewById(R.id.btn_play);
+        btnVolume = findViewById(R.id.btn_volume);
+        btnVolumeToggle = findViewById(R.id.btn_volume_toggle);
+        volumeBar = findViewById(R.id.volume_bar);
+        seekBar = findViewById(R.id.seek_bar);
+        timePos = findViewById(R.id.time_pos);
+        timeDur = findViewById(R.id.time_dur);
 
         String fileId = getIntent().getStringExtra(EXTRA_FILE_ID);
         String realFileName = getIntent().getStringExtra(EXTRA_REAL_FILE_NAME);
         String displayName = getIntent().getStringExtra(EXTRA_FILE_NAME);
-        setTitle(displayName == null ? "视频" : displayName);
+        TextView titleView = findViewById(R.id.title_view);
+        titleView.setText(displayName == null ? "视频" : displayName);
+        findViewById(R.id.btn_back).setOnClickListener(v -> finish());
 
         File videoFile = new File(new File(getFilesDir(), "app_data"), realFileName == null ? "" : realFileName);
         if (!videoFile.isFile()) {
@@ -117,62 +152,208 @@ public class VideoPlayerActivity extends AppCompatActivity {
         }
         if (watermark != null) {
             segments = watermark.optJSONArray("segments") == null ? new JSONArray() : watermark.optJSONArray("segments");
-            buildWatermarkViews(watermark);
         }
 
         // 2) 播放
         player = new ExoPlayer.Builder(this).build();
         playerView.setPlayer(player);
-        // 去掉播放器自带的 -5s / +15s 两个快捷快进快退按钮
-        androidx.media3.ui.PlayerControlView controlView = findPlayerControlView(playerView);
-        if (controlView != null) {
-            controlView.setShowRewindButton(false);
-            controlView.setShowFastForwardButton(false);
-            // 单视频播放：上一个/下一个也没意义，一起去掉
-            controlView.setShowPreviousButton(false);
-            controlView.setShowNextButton(false);
-        }
-        // 控制条显隐时重排水印：可见时水印层上移，避免被进度条/时间压住
-        playerView.setControllerVisibilityListener(
-                (androidx.media3.ui.PlayerView.ControllerVisibilityListener) visibility -> {
-            boolean visible = visibility == View.VISIBLE;
-            if (visible != controllerVisible) {
-                controllerVisible = visible;
-                playerView.post(this::updateOverlayToPicture);
-            }
-        });
         player.setMediaItem(MediaItem.fromUri(Uri.fromFile(videoFile)));
         player.prepare();
         player.addListener(new androidx.media3.common.Player.Listener() {
             @Override
             public void onIsPlayingChanged(boolean isPlaying) {
                 playing = isPlaying;
-                tickHandler.removeCallbacks(tick);
+                updatePlayPauseIcon();
+                uiHandler.removeCallbacks(tick);
                 if (playing) {
-                    tickHandler.post(tick);
+                    uiHandler.post(tick);
+                    scheduleHideControls();
                 }
             }
 
             @Override
             public void onVideoSizeChanged(androidx.media3.common.VideoSize videoSize) {
-                // 视频尺寸（或旋转）变化后，重算画面矩形并重排水印
-                updateOverlayToPicture();
+                postOverlayUpdate();
             }
         });
-        // 播放器/窗口尺寸变化（含设备旋转、控制器显隐）时也重排
         playerView.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> updateOverlayToPicture());
+
+        bindControls();
         player.play();
+        setControlsVisible(true);
     }
 
     @Override
     protected void onDestroy() {
-        tickHandler.removeCallbacksAndMessages(null);
+        uiHandler.removeCallbacksAndMessages(null);
         if (player != null) {
             player.release();
             player = null;
         }
         super.onDestroy();
     }
+
+    // region --- 自定义控制层 ---
+
+    private void bindControls() {
+        btnPlay.setOnClickListener(v -> {
+            if (player == null) return;
+            if (player.isPlaying()) {
+                player.pause();
+            } else {
+                player.play();
+            }
+            scheduleHideControls();
+        });
+
+        // 点画面：显隐控制层（水印层/播放器都挂上，保证黑边区域点也能响应）
+        View.OnClickListener toggle = v -> setControlsVisible(!controlsVisible);
+        playerView.setOnClickListener(toggle);
+        overlay.setClickable(true);
+        overlay.setOnClickListener(toggle);
+
+        // 点控制层空白处：收起（音量行展开时先收起音量行）
+        controls.setOnClickListener(v -> {
+            if (volumeRow.getVisibility() == View.VISIBLE) {
+                volumeRow.setVisibility(View.GONE);
+                postOverlayUpdate();
+                return;
+            }
+            setControlsVisible(false);
+        });
+
+        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (fromUser && player != null) {
+                    player.seekTo(progress);
+                    timePos.setText(formatDuration(progress));
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar bar) {
+                draggingSeek = true;
+                uiHandler.removeCallbacks(hideControlsRunnable);
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar bar) {
+                draggingSeek = false;
+                scheduleHideControls();
+            }
+        });
+
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager != null) {
+            int max = Math.max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+            volumeBar.setMax(max);
+            volumeBar.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+        }
+        volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (!fromUser || audioManager == null) return;
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0);
+                updateVolumeIcon();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar bar) {
+                uiHandler.removeCallbacks(hideControlsRunnable);
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar bar) {
+                scheduleHideControls();
+            }
+        });
+
+        View.OnClickListener volumeToggle = v -> {
+            boolean show = volumeRow.getVisibility() != View.VISIBLE;
+            volumeRow.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (show) {
+                updateVolumeIcon();
+                if (audioManager != null) {
+                    volumeBar.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+                }
+            }
+            scheduleHideControls();
+            postOverlayUpdate();
+        };
+        btnVolume.setOnClickListener(volumeToggle);
+        btnVolumeToggle.setOnClickListener(volumeToggle);
+
+        updatePlayPauseIcon();
+        updateVolumeIcon();
+    }
+
+    private void updatePlayPauseIcon() {
+        if (btnPlay == null) return;
+        boolean isPlaying = player != null && player.isPlaying();
+        btnPlay.setImageResource(isPlaying ? R.drawable.ic_player_pause : R.drawable.ic_player_play);
+    }
+
+    private void updateVolumeIcon() {
+        int progress = volumeBar == null ? 1 : volumeBar.getProgress();
+        int res = progress == 0 ? R.drawable.ic_player_volume_off : R.drawable.ic_player_volume;
+        if (btnVolume != null) btnVolume.setImageResource(res);
+        if (btnVolumeToggle != null) btnVolumeToggle.setImageResource(res);
+    }
+
+    /** 进度条与时间文案：拖动进度时不覆盖用户的位置。 */
+    private void updateProgressUi() {
+        if (player == null) return;
+        long duration = Math.max(0, player.getDuration());
+        long position = Math.max(0, player.getCurrentPosition());
+        if (seekBar != null) {
+            seekBar.setMax((int) Math.min(Integer.MAX_VALUE, duration));
+            if (!draggingSeek) {
+                seekBar.setProgress((int) Math.min(Integer.MAX_VALUE, position));
+                if (timePos != null) timePos.setText(formatDuration(position));
+            }
+        }
+        if (timeDur != null) timeDur.setText(formatDuration(duration));
+        updatePlayPauseIcon();
+        updateVolumeIcon();
+    }
+
+    private static String formatDuration(long ms) {
+        long totalSeconds = ms / 1000;
+        long minutes = totalSeconds / 60;
+        long seconds = totalSeconds % 60;
+        return String.format(Locale.CHINA, "%02d:%02d", minutes, seconds);
+    }
+
+    /** 显示/隐藏控制层；播放中显示后自动隐藏。 */
+    void setControlsVisible(boolean visible) {
+        controlsVisible = visible;
+        if (controls != null) {
+            controls.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+        uiHandler.removeCallbacks(hideControlsRunnable);
+        if (!visible && volumeRow != null) {
+            volumeRow.setVisibility(View.GONE);
+        } else if (player != null && player.isPlaying()) {
+            scheduleHideControls();
+        }
+        // 控制层显隐会影响水印可用的摆放高度
+        postOverlayUpdate();
+    }
+
+   /** 控件尺寸要等本次布局完成才准确，post 一下再按新的控制区高度重排水印。 */
+    private void postOverlayUpdate() {
+        if (playerView == null) return;
+        playerView.post(this::updateOverlayToPicture);
+    }
+    private void scheduleHideControls() {
+        uiHandler.removeCallbacks(hideControlsRunnable);
+        if (player != null && player.isPlaying()) {
+            uiHandler.postDelayed(hideControlsRunnable, CONTROLS_HIDE_DELAY_MS);
+        }
+    }
+
+    // endregion
 
     // region --- 水印数据 ---
 
@@ -217,26 +398,11 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
     // endregion
 
-    /** 在 PlayerView 里递归找到 PlayerControlView（播放控制器是懒加载的，setPlayer 之后才存在）。 */
-    private static androidx.media3.ui.PlayerControlView findPlayerControlView(View root) {
-        if (root instanceof androidx.media3.ui.PlayerControlView) {
-            return (androidx.media3.ui.PlayerControlView) root;
-        }
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                androidx.media3.ui.PlayerControlView found = findPlayerControlView(group.getChildAt(i));
-                if (found != null) return found;
-            }
-        }
-        return null;
-    }
     // region --- 水印渲染 ---
 
     /**
      * 计算视频在 PlayerView 里的实际显示矩形（等比缩放 + 居中，扣掉黑边），
-     * 让水印层紧贴画面；随后按"画面尺寸"重排水印。
-     * 设备怎么摆放都不影响水印与画面的相对关系——这里只做坐标换算，不读设备方向。
+     * 让水印层紧贴画面；控制层可见时底部让出控制层高度，避免进度条压住水印。
      */
     private void updateOverlayToPicture() {
         int pw = playerView.getWidth();
@@ -260,8 +426,11 @@ public class VideoPlayerActivity extends AppCompatActivity {
         int w = Math.max(1, Math.round(vw * fit));
         int fullH = Math.max(1, Math.round(vh * fit));
 
-        // 控制条可见时，水印层底部让出控制条高度：水印仍贴在画面内，但不会被进度条/时间压住
-        int inset = controllerVisible ? Math.min(measureControllerBarHeight(), fullH / 3) : 0;
+        // 控制层可见时让出底部控制区高度（音量行展开时也会跟着变）
+        int inset = 0;
+        if (controlsVisible && controlsBottom != null && controlsBottom.getHeight() > 0) {
+            inset = Math.min(controlsBottom.getHeight(), fullH / 3);
+        }
         int h = Math.max(1, fullH - inset);
         if (w == pictureWidth && h == pictureHeight) return;
         pictureWidth = w;
@@ -272,7 +441,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
         lp.height = h;
         lp.leftMargin = (pw - w) / 2;
         lp.topMargin = (ph - fullH) / 2;
-        controllerInsetPx = inset;
         lp.gravity = Gravity.TOP | Gravity.START;
         overlay.setLayoutParams(lp);
 
@@ -281,14 +449,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
         }
     }
 
-    /** 量一下播放控制条（进度条+时间那一行）的实际高度；量不到就按 56dp 估算。 */
-    private int measureControllerBarHeight() {
-        View bar = playerView.findViewById(androidx.media3.ui.R.id.exo_bottom_bar);
-        if (bar != null && bar.getVisibility() == View.VISIBLE && bar.getHeight() > 0) {
-            return bar.getHeight();
-        }
-        return Math.round(56 * getResources().getDisplayMetrics().density);
-    }
     /**
      * 按水印数据构建视图。**绘制方式与相机端保持一致**：
      * 整块水印只裁剪一次圆角（四角半径来自配置 radius），header/body/foot 之间是直边；
@@ -301,7 +461,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
         float density = pictureWidth / DESIGN_WIDTH;
         float scale = (float) wm.optDouble("scale", 0.75);
 
-        // 与相机一致：整块水印统一裁一次圆角（复用相机那边的 ClippingFrameLayout）
         CameraActivity.ClippingFrameLayout clip = new CameraActivity.ClippingFrameLayout(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -321,7 +480,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
             root.addView(buildSection(foot, density, scale, false));
         }
 
-        // 四角半径：配置里是 [左上, 右上, 右下, 左下]，同一个值给 X/Y
         JSONArray radiusArr = wm.optJSONArray("radius");
         float rtl = (float) (radiusArr != null ? radiusArr.optDouble(0, 8) : 8) * density;
         float rtr = (float) (radiusArr != null ? radiusArr.optDouble(1, 8) : 8) * density;
@@ -329,7 +487,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
         float rbl = (float) (radiusArr != null ? radiusArr.optDouble(3, 8) : 8) * density;
         clip.setCornerRadiiPx(new float[]{rtl, rtl, rtr, rtr, rbr, rbr, rbl, rbl});
 
-        // 摆放：锚点由数据决定（左上/左下/右上/右下），边距按画面宽度换算
         appliedAnchor = currentAnchorFromData();
         boolean right = appliedAnchor.startsWith("right");
         boolean topAnchor = appliedAnchor.endsWith("top");
@@ -359,31 +516,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
         overlay.addView(clip, lp);
     }
 
-    /** 当前生效的锚点：取当前数据段的 pos，回退到顶层 pos，再回退到配置 position。 */
-    private String currentAnchorFromData() {
-        JSONObject seg = currentSegment();
-        if (seg != null) {
-            String p = seg.optString("pos", "");
-            if (!p.isEmpty()) return p;
-        }
-        if (watermark != null) {
-            String p = watermark.optString("pos", "");
-            if (!p.isEmpty()) return p;
-            JSONObject pos = watermark.optJSONObject("position");
-            if (pos != null) {
-                boolean right = pos.has("right");
-                boolean top = pos.has("top");
-                return (right ? "right" : "left") + "_" + (top ? "top" : "bottom");
-            }
-        }
-        return "left_bottom";
-    }
-
     /** 构建一个水印分区（header/body/foot）：只管背景色与内边距，圆角由外层统一裁剪。 */
     private LinearLayout buildSection(JSONObject section, float density, float scale, boolean isHeader) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        // 与相机一致：分区背景是纯色（不做圆角），整块圆角由 ClippingFrameLayout 负责
         box.setBackgroundColor(readColor(section, "background", isHeader ? 0xFF1B4493 : 0xAAF8FAFC));
 
         int padH = Math.round(10 * density);
@@ -397,7 +533,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 TextView tv = new TextView(this);
                 tv.setText(text);
                 tv.setTextColor(readTextColor(title, 0xFFFFFFFF));
-                tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, Math.round((title != null ? title.optDouble("size", 20) : 20) * density * scale));
+                tv.setTextSize(TypedValue.COMPLEX_UNIT_PX,
+                        Math.round((title != null ? title.optDouble("size", 20) : 20) * density * scale));
                 tv.setGravity(Gravity.CENTER);
                 tv.setTypeface(null, android.graphics.Typeface.BOLD);
                 box.addView(tv);
@@ -407,7 +544,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
         JSONObject content = section.optJSONObject("content");
         if (content == null) {
-            // foot 可能用 items 数组简写
             JSONArray items = section.optJSONArray("items");
             if (items != null) {
                 for (int i = 0; i < items.length(); i++) {
@@ -419,7 +555,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
             return box;
         }
 
-        // 按 index 排序后逐行渲染
         java.util.List<JSONObject> list = new java.util.ArrayList<>();
         java.util.Iterator<String> keys = content.keys();
         while (keys.hasNext()) {
@@ -442,7 +577,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
         return box;
     }
 
-    /** 一行："名称：值"；时间类型的那一行会把 TextView 记下来供每秒刷新。 */
+    /** 一行："名称：值"；时间类型的那一行会把 TextView 记下来供实时刷新。 */
     private TextView buildRow(JSONObject item, float density, float scale, JSONObject section) {
         String key = item.optString("_key", "");
         String name = item.optString("name", "");
@@ -457,14 +592,13 @@ public class VideoPlayerActivity extends AppCompatActivity {
         tv.setTag(key);
         if ("time".equals(type)) {
             timeView = tv;
-            timeView.setTag("time");
+            tv.setTag("time");
         }
         String prefix = nameDisplay && !name.isEmpty() ? name + "：" : "";
         tv.setText(prefix + currentValue(type, key));
         return tv;
     }
 
-    /** 取当前播放位置对应的字段值。 */
     private String currentValue(String type, String key) {
         if ("time".equals(type)) {
             return formatTime(currentPlayPositionMs());
@@ -476,7 +610,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 return values.optString(key, "");
             }
         }
-        // 回退：水印数据里直接给的值
         return "";
     }
 
@@ -510,10 +643,9 @@ public class VideoPlayerActivity extends AppCompatActivity {
         return new SimpleDateFormat("yyyy-MM-dd EEE HH:mm:ss", Locale.CHINA).format(new Date(t));
     }
 
-    /** 每秒刷新：时间行 + 分段字段（坐标/路名等变化时自动切换）。 */
+    /** 每 0.5 秒刷新：时间行 + 锚点变化重排 + 分段字段。 */
     private void updateDynamicWatermark() {
         if (watermark == null) return;
-        // 锚点变化（数据里 pos 段切换）→ 按新锚点重排水印
         if (pictureWidth > 0) {
             String anchor = currentAnchorFromData();
             if (!anchor.equals(appliedAnchor)) {
@@ -522,17 +654,11 @@ public class VideoPlayerActivity extends AppCompatActivity {
             }
         }
         if (timeView != null) {
-            JSONObject seg = currentSegment();
-            String prefix = "";
-            // 从时间行的文本里保留"名称："前缀
             String old = timeView.getText() == null ? "" : timeView.getText().toString();
             int idx = old.indexOf('：');
-            if (idx > 0) {
-                prefix = old.substring(0, idx + 1);
-            }
+            String prefix = idx > 0 ? old.substring(0, idx + 1) : "";
             timeView.setText(prefix + formatTime(currentPlayPositionMs()));
         }
-        // 其它字段：分段切换时重绘（简单起见，值变化才重设文本）
         refreshRowsText();
     }
 
@@ -563,6 +689,26 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 tv.setText(prefix + values.optString(key, ""));
             }
         }
+    }
+
+    /** 当前生效的锚点：取当前数据段的 pos，回退到顶层 pos，再回退到配置 position。 */
+    private String currentAnchorFromData() {
+        JSONObject seg = currentSegment();
+        if (seg != null) {
+            String p = seg.optString("pos", "");
+            if (!p.isEmpty()) return p;
+        }
+        if (watermark != null) {
+            String p = watermark.optString("pos", "");
+            if (!p.isEmpty()) return p;
+            JSONObject pos = watermark.optJSONObject("position");
+            if (pos != null) {
+                boolean right = pos.has("right");
+                boolean top = pos.has("top");
+                return (right ? "right" : "left") + "_" + (top ? "top" : "bottom");
+            }
+        }
+        return "left_bottom";
     }
 
     private int readColor(JSONObject obj, String key, int def) {
