@@ -184,6 +184,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
             public void onIsPlayingChanged(boolean isPlaying) {
                 playing = isPlaying;
                 updatePlayPauseIcon();
+                if (!isPlaying) {
+                    // 暂停/播放结束：控制层与播放按钮必须常驻（不再自动隐藏）
+                    setControlsVisible(true);
+                }
                 uiHandler.removeCallbacks(tick);
                 if (playing) {
                     uiHandler.post(tick);
@@ -236,6 +240,12 @@ public class VideoPlayerActivity extends AppCompatActivity {
         playerView.setOnClickListener(toggle);
         overlay.setClickable(true);
         overlay.setOnClickListener(toggle);
+        // PlayerView 会吞掉触摸，画面黑边区域靠这一层接收点击
+        View tapCatcher = findViewById(R.id.tap_catcher);
+        if (tapCatcher != null) {
+            tapCatcher.setClickable(true);
+            tapCatcher.setOnClickListener(toggle);
+        }
 
         // 点控制层空白处：收起（音量行展开时先收起音量行）
         controls.setOnClickListener(v -> {
@@ -320,8 +330,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
         if (btnPlay == null) return;
         boolean isPlaying = player != null && player.isPlaying();
         btnPlay.setImageResource(isPlaying ? R.drawable.ic_player_pause : R.drawable.ic_player_play);
-        // 播放键是独立图层，且**常驻显示**：任何时候都能暂停/继续（控制条显隐不影响它）
-        btnPlay.setVisibility(View.VISIBLE);
+        // 按钮显隐跟随控制层（播放中自动隐藏、暂停时常驻），这里只管图标
     }
 
     private void updateVolumeIcon() {
@@ -363,6 +372,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
         controlsVisible = visible;
         if (controls != null) {
             controls.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+        // 播放/暂停按钮属于控制层：控制层收起时一起收起，弹出时一起出现
+        if (btnPlay != null) {
+            btnPlay.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
         updatePlayPauseIcon();
         uiHandler.removeCallbacks(hideControlsRunnable);

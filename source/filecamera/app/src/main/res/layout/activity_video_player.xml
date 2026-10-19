@@ -13,6 +13,11 @@
         app:show_buffering="when_playing"
         app:use_controller="false" />
 
+    <!-- 点击接收层：PlayerView 会吞掉触摸，这里单独放一层专门接收"点画面显隐控制层" -->
+    <View
+        android:id="@+id/tap_catcher"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
     <!-- 水印层：紧贴视频画面（宽高/位置在代码里按画面矩形设置） -->
     <FrameLayout
         android:id="@+id/watermark_overlay"
