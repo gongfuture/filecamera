@@ -551,6 +551,15 @@ public class FileImporter {
         if (oldSegments == null || oldSegments.length() == 0) return null;
 
         long[] keyFrames = readKeyFrameTimesMs(videoFile);
+        if (keyFrames == null || keyFrames.length == 0) {
+            // 读不到关键帧（个别机型/编码器）就退化为按 1 秒切分，保证水印数据不丢
+            long durationMs = videoDurationMs(videoFile);
+            if (durationMs <= 0) return null;
+            int count = (int) Math.max(1, durationMs / 1000 + 1);
+            keyFrames = new long[count];
+            for (int i = 0; i < count; i++) keyFrames[i] = i * 1000L;
+            Log.w(TAG, "关键帧不可用，退化为 1 秒采样: " + count + " 条");
+        }
         if (keyFrames == null || keyFrames.length == 0) return null;
 
         // 原始采样记录按时间排序（录制时是"首条全量 + 后续只记变化"）
@@ -600,6 +609,22 @@ public class FileImporter {
         return wm.toString();
     }
 
+    /** 读视频时长（毫秒）。 */
+    static long videoDurationMs(File videoFile) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(videoFile.getAbsolutePath());
+            String d = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            return d == null ? 0 : Long.parseLong(d);
+        } catch (Exception e) {
+            return 0;
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
     /** 读视频的关键帧时间（毫秒）。 */
     static long[] readKeyFrameTimesMs(File videoFile) {
         android.media.MediaExtractor extractor = new android.media.MediaExtractor();
@@ -617,8 +642,14 @@ public class FileImporter {
             if (videoTrack < 0) return null;
             extractor.selectTrack(videoTrack);
             java.util.List<Long> times = new java.util.ArrayList<>();
-            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(64 * 1024);
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(2 * 1024 * 1024);
+            // 关键帧样本可能远大于普通帧：按样本大小扩容，避免 readSampleData 抛 IllegalArgumentException
+            // （真机 1080p 关键帧 > 64KB 时，用固定小缓冲区会直接失败）
             while (true) {
+                long sampleSize = extractor.getSampleSize();
+                if (sampleSize > buffer.capacity()) {
+                    buffer = java.nio.ByteBuffer.allocate((int) Math.min(sampleSize, 32L * 1024 * 1024));
+                }
                 int size = extractor.readSampleData(buffer, 0);
                 if (size < 0) break;
                 long ptsUs = extractor.getSampleTime();
