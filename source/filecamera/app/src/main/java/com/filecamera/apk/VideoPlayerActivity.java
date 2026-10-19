@@ -41,7 +41,7 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * 视频播放页：播放库里的干净视频，并按 file_watermark 里记录的水印数据在画面上叠加水印。
+ * 视频播放页：播放库里的视频；.wmp4 的水印数据存在文件尾部，读取后在画面上叠加。
  *
  * <p>界面完全自定义（不使用 Media3 默认控制条）：顶部返回 + 文件名，中间播放/暂停，
  * 底部音量行 + 进度行；点画面显隐控制层，播放中自动隐藏。
@@ -545,7 +545,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
     // region --- 水印数据 ---
 
-    /** 读取 file_watermark；返回的 JSON 里额外带上 _content_hash 便于校验。 */
+    /** 读取 .wmp4 文件尾部的水印数据；返回的 JSON 里额外带上 _content_hash 便于校验。 */
     private JSONObject loadWatermark(String fileId, File videoFile) {
         // .wmp4：水印数据只存在文件尾部（数据库不保存），直接读文件
         if (WatermarkFileCodec.isWatermarkVideo(videoFile)) {

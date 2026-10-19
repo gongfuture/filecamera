@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 把水印数据（file_watermark.data）画到 Bitmap 上。
+ * 把水印数据（.wmp4 文件尾部那段 JSON）画到 Bitmap 上。
  *
  * <p>用途：
  * <ul>

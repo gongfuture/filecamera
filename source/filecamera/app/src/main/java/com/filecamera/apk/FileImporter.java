@@ -358,7 +358,7 @@ public class FileImporter {
 
     /**
      * 开始录像前的准备：定下最终文件名，**直接录到正式目录** app_data/&lt;id&gt;.mp4，
-     * 同时写好 pending_file（未就绪，列表不可见）和 file_watermark（水印数据，content_hash 先留空）。
+     * 同时写好 pending_file（未就绪，列表不可见）；水印数据不落库，录完写进 .wmp4 文件尾部。
      * 中断/被杀时：文件与两条记录都在，启动修复会探测能否播放，能播就补提交，不能播就清理。
      *
      * @param watermarkJson 本次录像的水印数据（base_time_ms + 首行全量 + 后续变化由调用方追加）
