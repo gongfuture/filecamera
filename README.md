@@ -19,8 +19,6 @@
 
 > **当前重构版发行版：v20261020-01**
 > [下载新版 APK（视频水印重构版）](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261020-01/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20261020-01.apk)
->
-> 代码库根目录 APK：[巡查相机v20261020-01.apk](https://gitee.com/zjywchenhui/filecamera/blob/master/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20261020-01.apk)
 
 ## 相对旧版的主要变化
 
