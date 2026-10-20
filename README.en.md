@@ -48,6 +48,7 @@ No ads, no fees, no hidden terms. Photos and videos are stored in the app's priv
 - Preview is fixed to the full 4:3 sensor frame; photo/video still use the configured aspect ratio, with matrix-based cover and clipping
 - Front final photos get one horizontal mirror so they match the preview
 - Zoom capsule text auto-sizes between 9sp and 16sp; presets follow the device CONTROL_ZOOM_RATIO_RANGE
+- Video watermark margins are normalized to a 1920 reference frame to match photo edge spacing
 - Watermarks use the preview container coordinates directly
 - Unified JS bridge contract remains: `callAndroidMethod(task_id + JSON)` + `handlePromiseCallback`
 
