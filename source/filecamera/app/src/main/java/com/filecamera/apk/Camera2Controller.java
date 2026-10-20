@@ -346,7 +346,10 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
 
     /** Activity 方向监听器更新物理方向时调用（Surface.ROTATION_*）。 */
     public void setTargetRotation(int rotation) {
+        if (targetRotation == rotation) return;
         targetRotation = rotation;
+        // 预览方向跟随物理方向；同时重新按旋转后的画幅计算 cover 裁剪。
+        mainHandler.post(this::applyPreviewTransform);
     }
 
     /** 照片/视频应当写入的旋转角度（0/90/180/270）。 */
@@ -689,19 +692,18 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     // region --- 预览变换 ---
 
     private int previewRotationDegrees() {
-        int displayDegrees = 0;
-        try {
-            if (previewView.getDisplay() != null) {
-                switch (previewView.getDisplay().getRotation()) {
-                    case Surface.ROTATION_90: displayDegrees = 90; break;
-                    case Surface.ROTATION_180: displayDegrees = 180; break;
-                    case Surface.ROTATION_270: displayDegrees = 270; break;
-                    default: displayDegrees = 0; break;
-                }
-            }
-        } catch (Exception ignored) {
+        int deviceDegrees = 0;
+        switch (targetRotation) {
+            case Surface.ROTATION_90: deviceDegrees = 90; break;
+            case Surface.ROTATION_180: deviceDegrees = 180; break;
+            case Surface.ROTATION_270: deviceDegrees = 270; break;
+            default: deviceDegrees = 0; break;
         }
-        return (sensorOrientation - displayDegrees + 360) % 360;
+        if (lensFacing == LENS_FACING_FRONT) {
+            // 前置与拍照/录像保持同一套旋转方向，否则转手机时预览会往反方向转。
+            return (sensorOrientation + deviceDegrees) % 360;
+        }
+        return (sensorOrientation - deviceDegrees + 360) % 360;
     }
 
     private void applyPreviewTransform() {
@@ -714,10 +716,14 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
 
         int pw = previewSize.getWidth();
         int ph = previewSize.getHeight();
-        // 关键：让 TextureView 的 layout 本身就是 16:9（相机 buffer 比例），
-        // 超出容器的部分由父布局裁掉。这样完全不依赖 setTransform 的 scale 语义，
-        // 画面不会被上下/左右拉伸。
-        float scale = Math.max(vw / (float) pw, vh / (float) ph);
+        int rotation = previewRotationDegrees();
+        boolean swapped = rotation == 90 || rotation == 270;
+
+        // 画面先按传感器尺寸等比铺开，再旋转；用旋转后的显示宽高计算 cover，
+        // 这样只裁剪多余画面，不会把宽高分别拉伸导致“压缩”。
+        float contentW = swapped ? ph : pw;
+        float contentH = swapped ? pw : ph;
+        float scale = Math.max(vw / contentW, vh / contentH);
         int layoutW = Math.round(pw * scale);
         int layoutH = Math.round(ph * scale);
 
@@ -733,9 +739,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             }
         }
         previewView.setTransform(null);
-        previewView.setRotation(0f);
-        // 镜像必须绕 View 中心翻转；pivot 为 0 时负 scaleX 会把整个预览翻到容器外，
-        // 前置摄像头就会表现为黑屏。刚布局完 getWidth() 可能还是 0，用 layoutW/H 兜底。
+        previewView.setRotation(rotation);
+        // 镜像/旋转都绕 View 中心；pivot 为 0 时负 scaleX 会把前置预览翻出容器。
         float pivotX = previewView.getWidth() > 0 ? previewView.getWidth() / 2f : layoutW / 2f;
         float pivotY = previewView.getHeight() > 0 ? previewView.getHeight() / 2f : layoutH / 2f;
         previewView.setPivotX(pivotX);
