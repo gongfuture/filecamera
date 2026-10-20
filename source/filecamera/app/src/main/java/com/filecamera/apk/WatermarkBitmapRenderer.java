@@ -71,6 +71,9 @@ public final class WatermarkBitmapRenderer {
     public static void drawWatermark(Canvas canvas, int pictureWidth, int pictureHeight, JSONObject wm) {
         if (canvas == null || wm == null || pictureWidth <= 0 || pictureHeight <= 0) return;
         float density = pictureWidth / DESIGN_WIDTH;
+        // 边距密度用短边：竖拍 1080×1920 与横拍 1920×1080 都按 1080 计算，
+        // 避免横拍时用 1920 把边距放大到竖拍的近两倍。
+        float edgeDensity = Math.min(pictureWidth, pictureHeight) / DESIGN_WIDTH;
         float scale = (float) wm.optDouble("scale", 0.75);
 
         Ctx ctx = new Ctx();
@@ -114,7 +117,7 @@ public final class WatermarkBitmapRenderer {
         JSONObject pos = wm.optJSONObject("position");
         // 视频水印的边缘距离按 1920 参考帧归一化，和照片的 placement 保持同一视觉尺度。
         float frameScale = Math.min(1f, pictureWidth / 1920f);
-        float margin = 10 * density * frameScale;
+        float margin = 10 * edgeDensity * frameScale;
         float offsetX = margin;
         float offsetY = margin;
         if (pos != null) {
