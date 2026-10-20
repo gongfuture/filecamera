@@ -1,123 +1,186 @@
 # FileCamera (Patrol Camera)
 
-A clean, free, ad-free open-source watermark camera. Designed to provide field workers with a distraction-free, efficient photo capture and management experience.
+An open-source watermark camera for highway patrols, bridge inspections, pipeline surveys, and similar fieldwork.
 
-> **Latest Version**: v20260825-02 | [Download APK](./巡查相机v20260825-02.apk) | [All Releases](https://gitee.com/zjywchenhui/filecamera/releases)
+No ads, no fees, no hidden terms. Photos and videos are stored in the app's private folder tree instead of the personal gallery.
+
+> ## Choose the right version first
 >
-> v20260825-02: The zoom button now shows the current zoom ratio in real time (refreshes on pinch zoom and preset selection; tapping still opens the ratio picker). Tap-to-focus now triggers on finger lift with a movement threshold, so pinch-to-zoom no longer causes an accidental refocus — zooming feels smoother
+> **The current `master` branch is a large Camera2 video-watermark rewrite.** It adds video watermarking during recording, a video browser, and a redesigned camera UI.
+>
+> **If you only need photo capture + photo watermarks and do not need video watermarks, use the stable legacy build:**
+>
+> **[FileCamera v20260825-02 APK (stable legacy)](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk)**
+>
+> The legacy version has been used in the field for a long time and is stable for photos, watermarks, route matching, weather, and folder management.
+> Validate the current rewrite on a small scale before rolling it out broadly.
+>
+> [All releases](https://gitee.com/zjywchenhui/filecamera/releases)
 
-## Why This Project
+## What changed from the legacy version
 
-Most watermark cameras on the market are bloated with ads. Workers in the field often accidentally tap ads, leading to unwanted app installs or charges. FileCamera is the answer — **no ads, no fees, no hidden terms**. Clean, reliable, and easy to use.
+### Video
+
+- Camera pipeline migrated from CameraX to **Camera2**
+- Video encoded directly to standard MP4 with **MediaCodec + Media3 Muxer**
+- Audio, rotation metadata, and interrupted-session recovery
+- **Video watermark is burned into the recorded frames**, not overlaid during playback
+- New video browser with playback, previous/next, delete, share, and export
+
+### Photos
+
+- Photo watermarks, QR codes, GPS, weather, address, route matching, and pile numbers retained
+- Continuous capture session: take multiple photos, then deliver new records when exiting the camera
+- Photo watermark scaling now uses the screen's longer side, avoiding watermark enlargement after the new camera UI reduced the preview area
+- Video thumbnails are generated with a translucent play triangle
+
+### UI and interaction
+
+- Redesigned dark camera panel with amber shutter/mode bar and zoom capsule
+- Separate image viewer and video viewer containers
+- Independent delete, share, export, and paging logic for photos and videos
+- Haptic feedback for buttons, file rows, menus, dialogs, and native camera controls
+- Unified JS bridge contract remains: `callAndroidMethod(task_id + JSON)` + `handlePromiseCallback`
+
+### Security and stability
+
+- File-path validation
+- Removed the legacy player activity; videos now play in the WebView
+- Fixed first-permission camera black screen and video deletion incorrectly using the image array
 
 ## Features
 
-### 📸 Watermark
-- **Highly customizable**: Header, body, and footer zones — each with independent text, color, font size, and visibility settings
-- **Custom icon**: Replace the header icon to match your organization's branding
-- **Dynamic fields**: Auto-populate route name, pile number, GPS coordinates, timestamp, weather, and address
-- **Config import/export**: Export watermark settings as a ZIP file for batch deployment across devices — configure once, deploy everywhere
+### Watermark
 
-### 📁 Folder Management
-- Organize photos into folders just like on a desktop — no more cluttered gallery
-- Create, rename, move, and delete folders
-- Photos are stored in the app's private directory, **isolated from your personal albums**
-- Export photos to public directories when you need to share them
+- Independent header, body, and footer configuration
+- Adjustable text, colors, font sizes, and icon
+- Dynamic fields: route name, pile number, coordinates, time, weather, address
+- Export/import watermark settings as ZIP for batch deployment
 
-### 🌤 Weather & Geocoding
-- Configure an [Amap (高德) Web Service API Key](https://lbs.amap.com/) to automatically fetch weather data (temperature, humidity, wind) and precise address via reverse geocoding
-- **One-tap adcode**: After setting up the API key, tap the fetch button to get the city adcode via GPS — no need to look it up online
+### File management
 
-### 🛣 Route Matching & Pile Numbering
-- Use with [Road Manager (路线管理)](https://gitee.com/zjywchenhui/road_manage) to export GeoJSON route data
-- Import the route data and the app will automatically match your photo location to the nearest route and calculate the pile number — ideal for highway inspections, pipeline patrols, and similar fieldwork
+- Folder-tree management for photos and videos
+- Create, rename, move, copy, delete, and sort
+- Import/export files or entire folders
+- Thumbnails, image viewer, and video browser
+- Private app storage by default, export when needed
 
-### 📍 QR Code Navigation
-- Each photo embeds a QR code containing Amap navigation coordinates
-- Share a photo via WeChat, scan the QR code, and navigate directly to the shooting location
+### Routes and field data
 
-### 📷 Camera
-- Multiple aspect ratios (16:9 / 4:3 / 1:1)
-- Touch to focus, flash control, GPS positioning
-- **Zoom ratios**: The button between the mode tabs shows the current zoom ratio live; tap it to open a picker for exact ratios supported by the device
-- **Shutter sound**: Optional audible capture confirmation
-- **Original image backup**: Optionally save a watermark-free original (same EXIF/GPS) for post-adjustment
-- **Sync to album**: Automatically save a copy to DCIM/Camera when enabled (syncs both images when combined with original backup)
+- Import GeoJSON routes from [Road Manager](https://gitee.com/zjywchenhui/road_manage)
+- Automatically match the nearest route and calculate pile numbers
+- Optional Amap Web Service API key for weather and reverse geocoding
+- One-tap adcode lookup
+
+### QR navigation
+
+- Photos can include an Amap navigation QR code with coordinates
+- Scan after sharing to navigate to the capture location
+
+### Camera
+
+- 16:9 / 4:3 / 1:1 aspect ratios
+- Touch focus, flash, front/rear camera, zoom presets
+- Optional shutter sound
+- Optional watermark-free original with EXIF/GPS
+- Optional copy to the system gallery
+- Video mode with standard MP4 + audio + watermark
 
 ## Architecture
 
-Hybrid development: WebView (HTML5/CSS3/JS) for UI + Java (Android native) for camera, image processing, watermark rendering, and file management.
+Hybrid WebView + Java architecture:
 
-```
-Frontend (WebView / JS)           Backend (Java)
-───────────────────               ─────────────────────
-index.html          ←──→          MainActivity.java        Entry point & location services
-setting.js          ←──→          WatermarkConfigManager   Watermark settings (import/export)
-view.js             ←──→          CameraActivity.java      Camera preview, capture, watermark
-menu.js             ←──→          BackServer.java          Built-in HTTP file server
-file_server.js      ←──→          FilePickerBridge.java    File picker & config zip packaging
-key_manage.js       ←──→          GaodeApi.java            Weather, geocoding, coordinate transform
-road_data.js        ←──→          RoadApiHelper.java       Route matching engine
-                                  RoadDatabaseHelper.java  Route database
-                                  DatabaseHelper.java      File index database
-                                  Android_js_bridge.java   JS ↔ Native bridge
+- **WebView / H5**: file list, settings, route management, image/video viewers
+- **Java native layer**: camera, recording, watermark compositing, file index, location, weather, route calculations
+- **Unified JS bridge**: `task_id + JSON` requests; native replies through `handlePromiseCallback`
+
+```text
+WebView (HTML/CSS/JS)
+  ├─ index.html / setting.js / view.js / menu.js / file_server.js
+  ├─ Android_js_bridge      unified JS → Native bridge
+  ├─ BackServer             file index and built-in HTTP file server
+  └─ FilePickerBridge       file picking, config import/export, sharing
+
+Camera2
+  ├─ Camera2Controller      preview, capture, recording session
+  ├─ Camera2GlRenderer      camera frame + watermark → encoder Surface
+  ├─ Camera2MuxerSink       MediaCodec + Media3 Muxer → MP4
+  └─ WatermarkBitmapRenderer watermark bitmap rendering
 ```
 
-## Tech Stack
+## Tech stack
 
 | Category | Technology |
 |----------|------------|
-| Min API Level | Android 10 (API 29) |
-| Compile SDK | 34 |
-| Camera | CameraX 1.3.3 |
-| QR Code | ZXing 3.5.3 |
+| Minimum | Android 10 (API 29) |
+| Compile/target SDK | 34 |
+| Camera | Camera2 |
+| Video encoding | MediaCodec + Media3 Muxer |
+| QR code | ZXing 3.5.3 |
 | Frontend | WebView (HTML5 / CSS3 / JavaScript) |
-| Backend | Java 17 |
-| Dependencies | AppCompat 1.6.1, Material 1.11.0, ExifInterface 1.3.7, WebKit 1.11.0 |
+| Native | Java 17 |
+| Build | AGP 9.x / Gradle 9.x |
+| Main dependencies | AppCompat 1.6.1, Material 1.11.0, ExifInterface 1.3.7, WebKit 1.11.0 |
 
-## Getting Started
+## Getting started
 
-### Direct Install (Recommended)
+### Install the stable legacy build (recommended if video watermark is not needed)
 
-1. Download the latest [APK](./巡查相机v20260825-02.apk)
-2. Install on your Android device — ready to use
+1. Download [FileCamera v20260825-02 APK](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk)
+2. Install on Android 10 or later
 
-> Weather and geocoding features require an Amap API Key. See instructions below.
-
-### Build from Source
+### Build the current rewrite from source
 
 ```bash
 git clone https://gitee.com/zjywchenhui/filecamera.git
+cd filecamera/source/filecamera
+./gradlew assembleDebug
 ```
 
-Open `source/filecamera` in Android Studio, wait for Gradle sync, then build.
+Windows:
 
-Requirements: Android Studio Hedgehog+ | SDK 34 | JDK 17+
+```powershell
+.\gradlew.bat assembleDebug
+```
+
+Output:
+
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
+
+Requirements: Android Studio with AGP 9.x support | SDK 34 | JDK 17+
 
 ## Usage
 
-### Enable Weather & Geocoding
+### Weather and address
 
-1. Sign up at [Amap Open Platform](https://lbs.amap.com/) and apply for a **Web Service** API Key
-2. In the app, go to **Settings → Key Management** and enter your API Key
-3. In the weather field's adcode input, tap the **Fetch** button to auto-detect your city code via GPS
+1. Apply for an Amap **Web Service** API key at [Amap Open Platform](https://lbs.amap.com/)
+2. In the app, open **Settings → Key Management** and enter the key
+3. Tap **Fetch** next to the weather adcode field to resolve the city code via GPS
 
-### Enable Route & Pile Number Matching
+### Routes and pile numbers
 
-1. Use [Road Manager](https://gitee.com/zjywchenhui/road_manage) to export a GeoJSON route file
-2. In the app, go to **Route Management** and import the GeoJSON file
-3. Photos will automatically be matched to the nearest route with pile numbers calculated
+1. Export GeoJSON routes from [Road Manager](https://gitee.com/zjywchenhui/road_manage)
+2. In the app, open **Route Management** and import the GeoJSON file
+3. Photos are matched to the nearest route and pile numbers are calculated automatically
 
-### Batch Deploy Watermark Config
+### Batch-deploy watermark settings
 
-1. Configure the watermark on one device (icon, text, colors, layout, etc.)
-2. Go to Settings, tap **Export Settings Package**, and save the generated ZIP
-3. On target devices, go to Settings, tap **Import Settings Package**, and select the ZIP file
+1. Configure the watermark on one device
+2. Open **Settings → Export Settings Package** and save the ZIP
+3. On target devices, use **Settings → Import Settings Package**
+
+## Version notes
+
+- **Current master**: Camera2 video-watermark rewrite; build from source, no official APK yet
+- **v20260825-02**: stable legacy version without video watermark; recommended for photo-only use
+- All versions: [Gitee Releases](https://gitee.com/zjywchenhui/filecamera/releases)
 
 ## License
 
 [MIT License](./LICENSE) © 2025 zjywchenhui
 
-## Related Projects
+## Related projects
 
-- [Road Manager (路线管理)](https://gitee.com/zjywchenhui/road_manage) — Route data management tool for generating GeoJSON files used by FileCamera
+- [Road Manager](https://gitee.com/zjywchenhui/road_manage) — route data management and GeoJSON generation

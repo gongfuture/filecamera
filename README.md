@@ -1,66 +1,111 @@
-# 巡查相机（FileCamera）
+# 巡查相机 FileCamera
 
-一款纯粹、公益、无广告的开源水印相机，致力于为一线工作人员提供清爽、高效的拍照与管理体验。
+一款面向公路巡查、桥梁检查、管线巡检等现场工作的开源水印相机。
 
-> **最新版本**：v20260825-02 | [下载 APK](./巡查相机v20260825-02.apk) | [所有版本](https://gitee.com/zjywchenhui/filecamera/releases)
+无广告、无付费、无隐藏条款。照片和视频都保存在应用私有目录中，按文件夹管理，不混入个人相册。
+
+> ## 重要：先选对版本
 >
-> v20260825-02：变焦按钮实时显示当前变焦倍数（捏合缩放、档位选择即时刷新显示，点击仍可弹出倍数档位选择框）；点按对焦改为抬手触发并加入位移阈值，双指捏合缩放时不再误触发对焦，变焦操作更顺滑
+> **当前 master 是 Camera2 视频水印重构版**，改动很大，包含视频边录边烧水印、视频浏览器、全新相机 UI 等能力，适合需要视频水印的场景。
+>
+> **如果只需要拍照 + 照片水印，不需要视频水印，建议直接使用稳定旧版：**
+>
+> **[巡查相机 v20260825-02 APK（稳定旧版）](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk)**
+>
+> 旧版经过长期现场使用，拍照、水印、路线、天气、文件夹管理等流程稳定。
+> 当前重构版请先小范围验证，再批量部署。
+>
+> [查看全部历史版本](https://gitee.com/zjywchenhui/filecamera/releases)
 
-## 为什么做这个
+## 相对旧版的主要变化
 
-市面上的水印相机广告繁多，一线工人师傅常因误触下载无关应用甚至意外扣费。巡查相机应运而生——**无广告、无付费、无隐藏条款**，干净、可靠、易用。
+### 视频能力
+
+- 相机管线由 CameraX 迁移到 **Camera2**
+- 视频采用 **MediaCodec + Media3 Muxer** 直接编码为标准 MP4
+- 支持录像音频、方向元数据、异常中断后的会话恢复
+- **视频水印在录制时直接烧进画面**，不再依赖播放页二次叠加
+- 新增视频浏览器，支持播放、上一页/下一页、删除、分享、导出
+
+### 拍照与照片
+
+- 保留照片水印、二维码、GPS、天气、地址、路线匹配、桩号计算
+- 拍照会话模式：进入相机后可连续拍摄，退出时统一交付本次新增照片
+- 照片水印尺寸改为按整屏长边换算，避免相机 UI 增加顶栏/底部面板后水印被放大
+- 视频缩略图直接生成带半透明播放三角的封面
+
+### 界面与交互
+
+- 相机 UI 重做：深色控制面板、琥珀黄快门/模式条、变焦胶囊
+- 图片浏览器和视频浏览器拆成两个独立页面容器
+- 图片和视频各自拥有独立的删除、分享、导出、翻页逻辑
+- 新增统一震动反馈：按钮、文件行、菜单、弹窗、相机控件均有轻震动
+- 前端桥接继续使用统一契约：`callAndroidMethod(task_id + JSON)` + `handlePromiseCallback`
+
+### 安全与稳定性
+
+- 文件路径增加校验，避免越权访问
+- 清理旧播放器 Activity，视频统一使用 WebView 播放
+- 修复首次授权后相机黑屏、视频删除误用图片数组等问题
 
 ## 核心功能
 
-### 📸 水印管理
-- **高度自定义水印**：页眉、主体、页脚三区域独立配置，文字内容、颜色、字号随意调整
-- **自定义水印图标**：支持替换页眉图标，满足企业品牌需求
-- **动态字段**：支持路线名称、桩号、坐标、时间、天气、地址等动态填充
-- **配置导入/导出**：将水印配置打包为 ZIP，批量部署到多台设备——配置一次，到处使用
+### 水印管理
 
-### 📁 文件夹管理
-- 像电脑一样以文件夹形式整理照片，告别手机相册的混乱
-- 支持新建、重命名、移动、删除文件夹
-- 照片存储在应用私有目录，**与个人相册隔离**，工作归工作，生活归生活
-- 需要分享时，可导出到公共目录
+- 页眉、主体、页脚三区独立配置
+- 文字内容、颜色、字号、图标可调
+- 支持路线名称、桩号、坐标、时间、天气、地址等动态字段
+- 配置可导出为 ZIP，批量部署到多台设备
 
-### 🌤 天气与地理位置
-- 配置[高德 Web 服务 API Key](https://lbs.amap.com/)后，自动获取拍摄地天气和精确地址
-- **adcode 一键获取**：配置好密钥后，点击按钮即可通过 GPS 自动解析，无需手动上网查找
+### 文件管理
 
-### 🛣 路线匹配与桩号计算
-- 搭配 [路线管理](https://gitee.com/zjywchenhui/road_manage) 导出 GeoJSON 路线数据
-- 导入后拍照时自动匹配最近路线并计算桩号，适用于公路巡检、管线巡查等场景
+- 以文件夹树管理照片和视频
+- 新建、重命名、移动、复制、删除、排序
+- 导入/导出文件或整个文件夹
+- 内置缩略图、图片浏览器、视频浏览器
+- 照片和视频默认保存在应用私有目录，需要时再导出
 
-### 📍 二维码导航
-- 拍摄照片自动生成含经纬度的高德导航二维码
-- 图片分享到微信后，识别二维码即可一键导航到拍摄位置
+### 路线与现场信息
 
-### 📷 相机功能
-- 多种画幅比例（16:9 / 4:3 / 1:1）
-- 触控对焦、闪光灯控制、GPS 定位
-- **变焦倍数**：模式栏中间的按钮实时显示当前变焦倍数，点击弹出倍数选择框，可精确切换设备支持的倍数档位
-- **拍照声音**：可选开启快门提示音，拍摄成功即时可闻
-- **原图保存**：开启后同步备份一张无水印原图（含相同 EXIF/GPS），便于后期调整
-- **同步相册**：开启后拍摄时自动复制一份到 DCIM/Camera 目录（与原图保存同开时，两张图都会同步）
+- 搭配 [路线管理](https://gitee.com/zjywchenhui/road_manage) 导入 GeoJSON 路线
+- 拍照时自动匹配最近路线并计算桩号
+- 配置高德 Web 服务 API Key 后，自动获取天气、逆地理编码地址
+- 支持 adcode 一键获取
+
+### 二维码导航
+
+- 照片可生成包含经纬度的高德导航二维码
+- 分享到微信后扫码即可导航到拍摄位置
+
+### 相机
+
+- 16:9 / 4:3 / 1:1 画幅
+- 触摸对焦、闪光灯、前后摄切换、变焦档位
+- 可选快门声音
+- 可选保存无水印原图（保留 EXIF/GPS）
+- 可选同步一份到系统相册
+- 录像模式支持标准 MP4 + 音频 + 水印
 
 ## 软件架构
 
-采用 WebView + Java 混合开发模式，WebView 负责 UI 展示与用户交互，Java 原生层负责相机调用、图像处理、水印绘制及文件管理等核心逻辑。
+采用 WebView + Java 原生混合架构：
 
-```
-前端 (WebView / JS)             后端 (Java)
-───────────────────             ─────────────────────
-index.html          ←──→        MainActivity.java        主入口、定位服务
-setting.js          ←──→        WatermarkConfigManager   水印配置管理（导入/导出）
-view.js             ←──→        CameraActivity.java      相机预览、拍摄、水印渲染
-menu.js             ←──→        BackServer.java          内置 HTTP 文件服务
-file_server.js      ←──→        FilePickerBridge.java    文件选择、配置 zip 打包
-key_manage.js       ←──→        GaodeApi.java            高德天气、地理逆编码、坐标转换
-road_data.js        ←──→        RoadApiHelper.java       路线匹配引擎
-                                RoadDatabaseHelper.java  路线数据库
-                                DatabaseHelper.java      文件索引数据库
-                                Android_js_bridge.java   JS ↔ Native 桥接
+- **WebView / H5**：文件列表、设置、路线管理、图片/视频浏览器
+- **Java 原生层**：相机、录像、水印合成、文件索引、定位、天气、路线计算
+- **统一 JS 桥**：`task_id + JSON` 请求，原生通过 `handlePromiseCallback` 回执
+
+```text
+WebView (HTML/CSS/JS)
+  ├─ index.html / setting.js / view.js / menu.js / file_server.js
+  ├─ Android_js_bridge      统一 JS → Native 桥
+  ├─ BackServer             文件索引与内置 HTTP 文件服务
+  └─ FilePickerBridge       文件选择、配置导入导出、分享
+
+Camera2
+  ├─ Camera2Controller      预览、拍照、录像会话
+  ├─ Camera2GlRenderer      相机帧 + 水印 → 编码器 Surface
+  ├─ Camera2MuxerSink       MediaCodec + Media3 Muxer → MP4
+  └─ WatermarkBitmapRenderer 水印位图绘制
 ```
 
 ## 技术栈
@@ -68,51 +113,71 @@ road_data.js        ←──→        RoadApiHelper.java       路线匹配引
 | 类别 | 技术 |
 |------|------|
 | 最低支持 | Android 10（API 29） |
-| 编译 SDK | 34 |
-| 相机 | CameraX 1.3.3 |
+| 编译/目标 SDK | 34 |
+| 相机 | Camera2 |
+| 视频编码 | MediaCodec + Media3 Muxer |
 | 二维码 | ZXing 3.5.3 |
 | 前端 | WebView（HTML5 / CSS3 / JavaScript） |
-| 后端 | Java 17 |
-| 依赖库 | AppCompat 1.6.1, Material 1.11.0, ExifInterface 1.3.7, WebKit 1.11.0 |
+| 原生 | Java 17 |
+| 构建 | AGP 9.x / Gradle 9.x |
+| 主要依赖 | AppCompat 1.6.1、Material 1.11.0、ExifInterface 1.3.7、WebKit 1.11.0 |
 
 ## 快速开始
 
-### 直接安装（推荐）
+### 直接安装稳定旧版（推荐，不需要视频水印时）
 
-1. 下载最新 [APK 安装包](./巡查相机v20260825-02.apk)
-2. 在 Android 设备上安装即可使用
+1. 下载 [巡查相机 v20260825-02 APK](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk)
+2. 在 Android 10 及以上设备安装即可
 
-> 天气、地理位置等联网功能需配置高德 API Key，见下方说明。
+> 天气、地址、路线等功能需要配置高德 API Key 和路线数据，见下文。
 
-### 从源码编译
+### 从源码编译当前重构版
 
 ```bash
 git clone https://gitee.com/zjywchenhui/filecamera.git
+cd filecamera/source/filecamera
+./gradlew assembleDebug
 ```
 
-用 Android Studio 打开 `source/filecamera` 目录，等待 Gradle 同步完成后编译。
+Windows：
 
-环境要求：Android Studio Hedgehog+ | SDK 34 | JDK 17+
+```powershell
+.\gradlew.bat assembleDebug
+```
+
+产物：
+
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
+
+环境要求：Android Studio（支持 AGP 9.x）| SDK 34 | JDK 17+
 
 ## 使用指南
 
-### 开启天气与地理位置
+### 配置天气与地址
 
-1. 前往[高德开放平台](https://lbs.amap.com/)注册并申请 **Web 服务** API Key
-2. 在 App 中进入 **设置 → 密钥管理**，填入 API Key
-3. 在天气字段的 adcode 输入框旁点击 **获取** 按钮，通过 GPS 自动获取城市编码
+1. 在 [高德开放平台](https://lbs.amap.com/) 申请 **Web 服务** API Key
+2. App 内进入 **设置 → 密钥管理**，填入 Key
+3. 在天气字段的 adcode 输入框旁点击 **获取**，通过 GPS 自动获取城市编码
 
-### 实现路线桩号匹配
+### 配置路线与桩号
 
-1. 使用 [路线管理](https://gitee.com/zjywchenhui/road_manage) 导出 GeoJSON 路线文件
-2. 在 App 中进入 **路线管理**，导入 GeoJSON 文件
+1. 使用 [路线管理](https://gitee.com/zjywchenhui/road_manage) 导出 GeoJSON 路线
+2. App 内进入 **路线管理**，导入 GeoJSON
 3. 拍照时自动匹配最近路线并计算桩号
 
 ### 批量部署水印配置
 
-1. 在一台设备上配置好水印（图标、文字、颜色、布局等）
-2. 进入设置点击 **导出设置包**，保存生成的 ZIP
-3. 在目标设备上进入设置点击 **导入设置包**，选择 ZIP 文件即可
+1. 在一台设备上配置好水印
+2. **设置 → 导出设置包**，保存 ZIP
+3. 在目标设备 **设置 → 导入设置包**，选择 ZIP
+
+## 版本说明
+
+- **当前 master**：Camera2 视频水印重构版，源码构建，尚未发布正式 APK
+- **v20260825-02**：稳定旧版，不含视频水印，建议只需要照片水印的用户使用
+- 历史版本：[Gitee Releases](https://gitee.com/zjywchenhui/filecamera/releases)
 
 ## 开源协议
 
