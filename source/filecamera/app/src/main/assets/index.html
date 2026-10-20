@@ -451,7 +451,8 @@
 			justify-content:center;
 			align-items:center;
 		}
-		#displayfilediv {
+		#displayfilediv,
+		#videodisplayfilediv {
 			display: flex;
 			padding: 0;
 			flex-direction: row;
@@ -461,6 +462,7 @@
 			justify-content: center;
 			overflow: hidden;
 			transition: transform 0.3s ease-out;
+			position: relative;
 		}
 
 		#filebackbutton:hover,
@@ -715,7 +717,8 @@
 			background-color: var(--danger-hover);
 		}
 
-		#picturecontrondiv {
+		#picturecontrondiv,
+		#videocontrondiv {
 			display: flex;
 			width: 100%;
 			height: 50px;
@@ -726,7 +729,8 @@
 			align-items: center;
 		}
 
-		#picturecontrondiv span {
+		#picturecontrondiv span,
+		#videocontrondiv span {
 			display: flex;
 			flex-direction: column;
 			background: none;
@@ -739,7 +743,8 @@
 			justify-content: center;
 		}
 
-		#picturediv {
+		#picturediv,
+		#videodiv {
 			display: flex;
 			position: absolute;
 			right: -100%;
@@ -758,7 +763,8 @@
 			box-shadow: var(--shadow-md);
 		}
 
-		#picturediv.expanded {
+		#picturediv.expanded,
+		#videodiv.expanded {
 			right: 0;
 		}
 		/* 容器基础样式 */
@@ -1972,10 +1978,6 @@
 			<div style = "display:flex;width:100%;height:100%;overflow: hidden;align-items: center;justify-content: center;flex:1;">
 				<div id="displayfilediv">
 					<img id ='fileimg' src ="dir/img/icon/loading_icon.svg"/>
-					<video id="filevideo" playsinline preload="metadata" style="display:none;max-width:100%;max-height:100%;"></video>
-					<div id="video_play_overlay" onclick="toggle_video_play()">
-						<div id="video_play_icon">▶</div>
-					</div>
 				</div>
 			</div>
 			<div id = 'picturecontrondiv'>
@@ -1992,6 +1994,36 @@
 					<button id='fileforwardbutton' onclick = 'picture_forward()'>
 						<img src="dir/img/icon/forward_icon.svg" style="width: 16px;">
 					</button>
+			</div>
+		</div>
+		<div id="videodiv">
+			<div class='child_page_title_div'>
+				<span id='videonamepan' class='child_page_title_span'></span>
+				<span class='back_button' onclick="exit_page()">
+					<img src="dir/img/icon/back_icon.svg" alt="后退" style="width: 20px;">
+				</span>
+			</div>
+			<div style="display:flex;width:100%;height:100%;overflow:hidden;align-items:center;justify-content:center;flex:1;">
+				<div id="videodisplayfilediv">
+					<video id="filevideo" playsinline preload="metadata" style="max-width:100%;max-height:100%;"></video>
+					<div id="video_play_overlay" onclick="toggle_video_play()">
+						<div id="video_play_icon">▶</div>
+					</div>
+				</div>
+			</div>
+			<div id='videocontrondiv'>
+				<span id="video_detelebutton" onclick='video_deleteByPaths()'><img src="dir/img/icon/delete_icon.svg" style='height:90%;'/></span>
+				<span id="video_sharebutton" onclick='video_share()'><img src="dir/img/icon/share_icon.svg" style='height:90%;'/></span>
+				<span id="video_outbutton" onclick='video_download()'><img src="dir/img/icon/export_icon.svg" style='height:90%;'/></span>
+			</div>
+			<div id="videogotodiv" class='picture_view_bottom_div'>
+				<button id='videobackbutton' onclick='video_back()'>
+					<img src="dir/img/icon/back_icon.svg" style="width: 16px;">
+				</button>
+				<span id="videopageseqinput" onclick='video_goto_page()' style="width: 120px; height: 25px; font-size: 20px; text-align: center;padding-bottom:5px;"></span>
+				<button id='videoforwardbutton' onclick='video_forward()'>
+					<img src="dir/img/icon/forward_icon.svg" style="width: 16px;">
+				</button>
 			</div>
 		</div>
 		<div id = 'setting_div' class = 'child_page'>
@@ -2125,6 +2157,7 @@
 		let setting_div = document.getElementById('setting_div')
 		let road_div = document.getElementById('road_div')
 		let picturediv = document.getElementById('picturediv')
+		let videodiv = document.getElementById('videodiv')
 		let key_manage_div = document.getElementById('key_manage_div')
 		let menu = document.getElementById('menu')
 		if(key_manage_div.classList.contains('expanded')){
@@ -2141,6 +2174,11 @@
 		}			
 		if(setting_div.classList.contains('expanded')){
 			await close_setting_page()
+			return;
+		}
+		if(videodiv.classList.contains('expanded')){
+			exit_page()
+			history.pushState(null, null, location.href);
 			return;
 		}
 		if(picturediv.classList.contains('expanded')){

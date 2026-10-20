@@ -317,23 +317,31 @@ async function exit_page(){
 	const fileImg = document.getElementById('fileimg');
 	const video = document.getElementById('filevideo');
 	const picturediv = document.getElementById('picturediv');
+	const videodiv = document.getElementById('videodiv');
 	picturediv.classList.remove('expanded');
+	videodiv.classList.remove('expanded');
 	reset_image()
 	if(video){
 		video.pause();
 		video.removeAttribute('src');
 		video.load();
-		video.style.display = 'none';
 	}
 	const playOverlay = document.getElementById('video_play_overlay');
 	if(playOverlay) playOverlay.style.display = 'none';
 	if(fileImg){
-		fileImg.style.display = '';
+		if(fileImg.src && fileImg.src.startsWith('blob:')){
+			URL.revokeObjectURL(fileImg.src)
+		}
+		fileImg.src ="dir/img/icon/loading_icon.svg"
 	}
-	if(fileImg.src && fileImg.src.startsWith('blob:')){
-		URL.revokeObjectURL(fileImg.src)
+	const videoName = document.getElementById('videonamepan');
+	if(videoName){
+		videoName.textContent = "";
+		videoName.dataset.id = "";
+		videoName.dataset.real_file_name = "";
 	}
-	fileImg.src ="dir/img/icon/loading_icon.svg"
+	const videoPage = document.getElementById('videopageseqinput');
+	if(videoPage) videoPage.textContent = "0/0";
 }
 async function fetchblob(url) {
   try {
@@ -359,13 +367,15 @@ function toggle_video_play(){
 }
 
 async function load_video(video_name){
-	const picturediv = document.getElementById('picturediv');
-	const fileImg = document.getElementById('fileimg');
+	const videodiv = document.getElementById('videodiv');
 	const video = document.getElementById('filevideo');
+	const picturediv = document.getElementById('picturediv');
 	let real_file_name = "";
+	let file_id = "";
 	for(let file of file_index_arr){
 		if(file.name === video_name){
 			real_file_name = file.real_file_name || "";
+			file_id = file.id || "";
 			break;
 		}
 	}
@@ -376,12 +386,12 @@ async function load_video(video_name){
 	viewer_mode = 'video';
 	video_arr = file_index_arr.filter(f => isVideoFile(f.name));
 	video_page = video_arr.findIndex(f => f.name === video_name) + 1;
-	const deleteBtn = document.getElementById('pic_detelebutton');
-	if (deleteBtn) deleteBtn.onclick = video_deleteByPaths;
-	picturediv.classList.add('expanded');
-	document.getElementById('picturenamespan').textContent = video_name;
-	fileImg.style.display = 'none';
-	video.style.display = 'block';
+	picturediv.classList.remove('expanded');
+	videodiv.classList.add('expanded');
+	const nameSpan = document.getElementById('videonamepan');
+	nameSpan.textContent = video_name;
+	nameSpan.dataset.id = file_id;
+	nameSpan.dataset.real_file_name = real_file_name;
 	const playOverlay = document.getElementById('video_play_overlay');
 	if(playOverlay) playOverlay.style.display = 'flex';
 	video.controls = false;
@@ -409,26 +419,24 @@ async function load_video(video_name){
 	video.load();
 	// 只显示首帧/封面，不自动播放；用户点播放键才播
 	video.pause();
-	page = 0;
-	document.getElementById('pageseqinput').textContent =
+	document.getElementById('videopageseqinput').textContent =
 		Math.max(1, video_page) + "/" + Math.max(1, video_arr.length);
 }
 
 async function load_img(picture_name){
 	viewer_mode = 'image';
-	const deleteBtn = document.getElementById('pic_detelebutton');
-	if (deleteBtn) deleteBtn.onclick = pic_deleteByPaths;
 	const picturediv = document.getElementById('picturediv');
+	const videodiv = document.getElementById('videodiv');
 	const fileImg = document.getElementById('fileimg');
 	const video = document.getElementById('filevideo');
 	if(video){
 		video.pause();
 		video.removeAttribute('src');
 		video.load();
-		video.style.display = 'none';
 	}
 	const playOverlay = document.getElementById('video_play_overlay');
 	if(playOverlay) playOverlay.style.display = 'none';
+	videodiv.classList.remove('expanded');
 	if(fileImg) fileImg.style.display = '';
 	if(fileImg.src){
 		URL.revokeObjectURL(fileImg.src)
@@ -493,10 +501,6 @@ async function video_forward(){
 }
 
 async function picture_back(){
-	if(viewer_mode === 'video'){
-		await video_back();
-		return;
-	}
 	let img = document.getElementById('fileimg')
 	if(img.src){
 		URL.revokeObjectURL(img.src)
@@ -577,10 +581,6 @@ function delay(ms) {
 }
 
 async function picture_forward(){
-	if(viewer_mode === 'video'){
-		await video_forward();
-		return;
-	}
 	if(picture_arr.length===0){
 		return;
 	}
@@ -668,13 +668,7 @@ async function picture_goto_page(){
 	  return;
 	}
 	let page_number = Number(folderPath)
-	if(isNaN(page_number) || folderPath <1){
-		return;
-	}
-	if(viewer_mode === 'video'){
-		if(page_number <= video_arr.length){
-			await load_video(video_arr[page_number - 1].name);
-		}
+	if(isNaN(page_number) || page_number < 1){
 		return;
 	}
 	let oldpage = page
@@ -756,6 +750,23 @@ async function picture_goto_page(){
 		img.style.transition = 'transform 0.1s ease-out'
 	}
 	document.getElementById('pageseqinput').textContent = String(page)+'/'+picture_arr.length
+}
+async function video_goto_page(){
+	let folderPath = await prompt_fix("请输入页码");
+	if (folderPath=="") {
+		await alert_fix("页码不能为空");
+		return;
+	}
+	if (!folderPath) {
+		return;
+	}
+	let page_number = Number(folderPath);
+	if(isNaN(page_number) || page_number < 1) return;
+	if(page_number > video_arr.length){
+		await alert_fix('超出范围');
+		return;
+	}
+	await load_video(video_arr[page_number - 1].name);
 }
 async function pic_download() {
 	let fileimg = document.getElementById('fileimg');
@@ -929,4 +940,24 @@ async function share_picture(){
 	let name = document.getElementById('picturenamespan').textContent;
 	uri_arr.push({uri:uri+real_file_name,name:name})
 	await nativeShareFile(uri_arr,true, 'all')
+}
+
+async function video_share(){
+	const nameSpan = document.getElementById('videonamepan');
+	const real_file_name = nameSpan.dataset.real_file_name;
+	if(!real_file_name){
+		return;
+	}
+	let uri = "content://com.filecamera.apk.fileprovider/private_files/app_data/";
+	let uri_arr = [];
+	let name = nameSpan.textContent;
+	uri_arr.push({uri:uri+real_file_name,name:name});
+	await nativeShareFile(uri_arr,true, 'all');
+}
+
+async function video_download(){
+	const id = document.getElementById('videonamepan').dataset.id;
+	if(id){
+		await exportItems([id]);
+	}
 }
