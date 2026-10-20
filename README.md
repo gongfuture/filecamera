@@ -50,6 +50,7 @@
 - 变焦胶囊字体按容器在 9sp–16sp 间自适应，档位按设备 CONTROL_ZOOM_RATIO_RANGE 生成
 - 视频水印边距按 1920 参考帧归一化，与照片边缘距保持一致
 - 水印直接使用预览容器坐标
+- 预览水印按旋转后的可视矩形统一定位，修复 +90° 姿态的角点偏移；安全边距固定为 10px
 - 前端桥接继续使用统一契约：`callAndroidMethod(task_id + JSON)` + `handlePromiseCallback`
 
 ### 安全与稳定性
@@ -185,7 +186,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## 版本说明
 
-- **v20261020-01**：Camera2 视频水印重构版，含视频水印、视频浏览器、新相机 UI、震动反馈、4:3 全画幅预览、拍照/录像比例解耦和前置成片镜像；建议先小范围验证
+- **v20261020-01**：Camera2 视频水印重构版，含视频水印、视频浏览器、新相机 UI、震动反馈、4:3 全画幅预览、拍照/录像比例解耦、前置成片镜像和 +90° 预览水印定位修复；建议先小范围验证
 - **v20260825-02**：稳定旧版，不含视频水印，建议只需要照片水印的用户使用
 - 当前源码包：[v20261020-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261020-01.zip)
 - 历史版本：[Gitee Releases](https://gitee.com/zjywchenhui/filecamera/releases)
