@@ -89,27 +89,43 @@ public class Android_js_bridge {
 
     // JavaScript接口方法
     @JavascriptInterface
-    public void vibrate(int durationMs) {
+    public void vibrate(String task_id, String json_data) {
+        int durationMs = 15;
+        try {
+            JSONObject data = new JSONObject(json_data);
+            durationMs = data.optInt("duration", 15);
+        } catch (Exception ignored) {
+        }
         final int ms = Math.max(8, Math.min(durationMs <= 0 ? 15 : durationMs, 60));
         activity.runOnUiThread(() -> {
             try {
-                Vibrator vibrator;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    VibratorManager manager = (VibratorManager) activity.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
-                    vibrator = manager != null ? manager.getDefaultVibrator() : null;
-                } else {
-                    vibrator = (Vibrator) activity.getSystemService(Context.VIBRATOR_SERVICE);
-                }
-                if (vibrator == null || !vibrator.hasVibrator()) return;
+                performVibration(ms);
+            } finally {
+                call_js_callback(task_id, true, null, null);
+            }
+        });
+    }
+
+    /** 原生内部复用：执行一次短震动；没有马达或系统禁用时静默忽略。 */
+    private void performVibration(int ms) {
+        try {
+            Vibrator vibrator;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                VibratorManager manager = (VibratorManager) activity.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                vibrator = manager != null ? manager.getDefaultVibrator() : null;
+            } else {
+                vibrator = (Vibrator) activity.getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (vibrator != null && vibrator.hasVibrator()) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
                 } else {
                     vibrator.vibrate(ms);
                 }
-            } catch (Exception ignored) {
-                // 部分设备没有马达或系统禁用了震动，静默忽略，不影响业务
             }
-        });
+        } catch (Exception ignored) {
+            // 部分设备没有马达或系统禁用了震动，静默忽略，不影响业务
+        }
     }
 
     @JavascriptInterface
@@ -134,11 +150,11 @@ public class Android_js_bridge {
             builder.setTitle("确认退出");
             builder.setMessage("您确定要退出应用吗？");
             builder.setPositiveButton("是", (dialog, which) -> {
-                vibrate(12);
+                performVibration(12);
                 activity.finish();
             });
             builder.setNegativeButton("否", (dialog, which) -> {
-                vibrate(12);
+                performVibration(12);
                 dialog.dismiss();
             });
             builder.show();

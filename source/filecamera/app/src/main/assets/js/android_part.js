@@ -11,7 +11,8 @@ function haptic(duration_ms = 12) {
     last_haptic_at = now;
     try {
         if (window.Android && typeof window.Android.vibrate === 'function') {
-            window.Android.vibrate(duration_ms);
+            // 走统一桥接契约：task_id + JSON，原生通过 handlePromiseCallback 回执
+            callAndroidMethod(window.Android, 'vibrate', { duration: duration_ms }).catch(() => {});
         } else if (navigator.vibrate) {
             navigator.vibrate(duration_ms);
         }
