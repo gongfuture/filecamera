@@ -740,7 +740,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         float pivotY = previewView.getHeight() > 0 ? previewView.getHeight() / 2f : layoutH / 2f;
         previewView.setPivotX(pivotX);
         previewView.setPivotY(pivotY);
-        previewView.setScaleX(lensFacing == LENS_FACING_FRONT ? -1f : 1f);
+        // 前置只做一次左右翻转；设备前置输入本身已镜像，这里去掉原来的再次镜像。
+        previewView.setScaleX(1f);
         previewView.setScaleY(1f);
     }
 
