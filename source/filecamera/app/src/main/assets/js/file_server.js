@@ -1034,6 +1034,7 @@ async function open_dir_or_file(td){
 	if(ui_lock){
 		return;
 	}
+	haptic();
 	ui_lock = true;
 	try {
 		if(td.dataset.type =='dir'){
@@ -1095,6 +1096,7 @@ window.updata_load_info = function(str){
 }
 
 async function back(){
+	haptic();
 	if(ui_lock){
 		return;
 	}

@@ -1,4 +1,36 @@
 let time_arr = [0,0]
+let last_haptic_at = 0;
+
+/**
+ * 统一的轻震动反馈。原生桥不可用时退化为 navigator.vibrate。
+ * 40ms 内合并重复触发，避免“按钮自身 + 全局点击监听”震两次。
+ */
+function haptic(duration_ms = 12) {
+    const now = Date.now();
+    if (now - last_haptic_at < 40) return;
+    last_haptic_at = now;
+    try {
+        if (window.Android && typeof window.Android.vibrate === 'function') {
+            window.Android.vibrate(duration_ms);
+        } else if (navigator.vibrate) {
+            navigator.vibrate(duration_ms);
+        }
+    } catch (e) {
+        // 没有马达/系统禁用震动时静默忽略
+    }
+}
+window.haptic = haptic;
+
+// 所有按钮、带 onclick 的控件、文件行、菜单项、复选框等统一给轻震动。
+// 具体业务函数里还有显式 haptic() 的调用，靠 40ms 合并去重。
+document.addEventListener('click', function (event) {
+    const target = event.target.closest(
+        'button, [onclick], .back_button, .switch, label, input, ' +
+        '.icon_div, .td1, .tabletr, .menu_item, .menu_div, .child_page_title_span, #menuspan, #menu, #menu2'
+    );
+    if (target && !target.disabled) haptic();
+}, true);
+
 function get_id_by_time() {
     let timepart = Date.now();
     let seq = 0;

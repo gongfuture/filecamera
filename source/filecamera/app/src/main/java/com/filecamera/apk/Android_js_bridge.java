@@ -6,10 +6,14 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Environment;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.util.Base64;
@@ -85,6 +89,30 @@ public class Android_js_bridge {
 
     // JavaScript接口方法
     @JavascriptInterface
+    public void vibrate(int durationMs) {
+        final int ms = Math.max(8, Math.min(durationMs <= 0 ? 15 : durationMs, 60));
+        activity.runOnUiThread(() -> {
+            try {
+                Vibrator vibrator;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    VibratorManager manager = (VibratorManager) activity.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                    vibrator = manager != null ? manager.getDefaultVibrator() : null;
+                } else {
+                    vibrator = (Vibrator) activity.getSystemService(Context.VIBRATOR_SERVICE);
+                }
+                if (vibrator == null || !vibrator.hasVibrator()) return;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+                } else {
+                    vibrator.vibrate(ms);
+                }
+            } catch (Exception ignored) {
+                // 部分设备没有马达或系统禁用了震动，静默忽略，不影响业务
+            }
+        });
+    }
+
+    @JavascriptInterface
     public void downloadFile(String url, String fileName, String parentpath, String datatype,String showContent, String id) {
         downloadBlob(url, fileName, parentpath, datatype, showContent, id);
     }
@@ -105,8 +133,14 @@ public class Android_js_bridge {
             AlertDialog.Builder builder = new AlertDialog.Builder(activity);
             builder.setTitle("确认退出");
             builder.setMessage("您确定要退出应用吗？");
-            builder.setPositiveButton("是", (dialog, which) -> activity.finish());
-            builder.setNegativeButton("否", (dialog, which) -> dialog.dismiss());
+            builder.setPositiveButton("是", (dialog, which) -> {
+                vibrate(12);
+                activity.finish();
+            });
+            builder.setNegativeButton("否", (dialog, which) -> {
+                vibrate(12);
+                dialog.dismiss();
+            });
             builder.show();
         });
     }

@@ -21,10 +21,14 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.media.MediaActionSound;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.provider.MediaStore;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -278,6 +282,7 @@ public class CameraActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_camera);
+        haptic();
         // 相机会话可能持续较久（连续拍摄），拍摄期间保持屏幕常亮（与主界面 wakelock 同一套机制）
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
@@ -438,6 +443,26 @@ public class CameraActivity extends AppCompatActivity {
     // endregion
 
     // region --- 初始化方法 ---
+    /** 原生相机控件的统一轻震动反馈；没有马达的设备静默忽略。 */
+    private void haptic() {
+        try {
+            Vibrator vibrator;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                VibratorManager manager = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                vibrator = manager != null ? manager.getDefaultVibrator() : null;
+            } else {
+                vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (vibrator == null || !vibrator.hasVibrator()) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(12, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vibrator.vibrate(12);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     private void initViews() {
         previewView = findViewById(R.id.previewView);
         previewContainer = findViewById(R.id.previewContainer);
@@ -446,31 +471,51 @@ public class CameraActivity extends AppCompatActivity {
         modeTabPhoto = findViewById(R.id.modeTabPhoto);
         switchCameraButton = findViewById(R.id.switchCameraButton);
         if (switchCameraButton != null) {
-            switchCameraButton.setOnClickListener(v -> toggleLensFacing());
+            switchCameraButton.setOnClickListener(v -> {
+                haptic();
+                toggleLensFacing();
+            });
         }
         modeTabVideo = findViewById(R.id.modeTabVideo);
         recordingTimer = findViewById(R.id.recordingTimer);
         if (modeTabVideo != null) {
-            modeTabVideo.setOnClickListener(v -> switchVideoMode(true));
+            modeTabVideo.setOnClickListener(v -> {
+                haptic();
+                switchVideoMode(true);
+            });
         }
         watermarkContainer = findViewById(R.id.watermarkContainer);
         exitButton = findViewById(R.id.exitButton);
         sessionCountText = findViewById(R.id.sessionCountText);
         updateSessionCount();
         zoomButton = findViewById(R.id.zoomButton);
-        zoomButton.setOnClickListener(v -> toggleZoomPanel());
+        zoomButton.setOnClickListener(v -> {
+            haptic();
+            toggleZoomPanel();
+        });
         zoomPanel = findViewById(R.id.zoomPanel);
         zoomOptionsRow = findViewById(R.id.zoomOptionsRow);
         if (zoomPanel != null) {
             // 浮层自己消费点击，避免穿透到下层水印
-            zoomPanel.setOnClickListener(v -> {
-            });
+            zoomPanel.setOnClickListener(v -> haptic());
         }
-        captureButton.setOnClickListener(v -> takePhoto());
-        flashButton.setOnClickListener(v -> cycleFlashMode());
-        exitButton.setOnClickListener(v -> requestExit());
+        captureButton.setOnClickListener(v -> {
+            haptic();
+            takePhoto();
+        });
+        flashButton.setOnClickListener(v -> {
+            haptic();
+            cycleFlashMode();
+        });
+        exitButton.setOnClickListener(v -> {
+            haptic();
+            requestExit();
+        });
         setupCameraModeSelector();
-        watermarkContainer.setOnClickListener(v -> handleWatermarkClick());
+        watermarkContainer.setOnClickListener(v -> {
+            haptic();
+            handleWatermarkClick();
+        });
         
         watermarkLayoutListener = new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
             @Override
@@ -498,10 +543,16 @@ public class CameraActivity extends AppCompatActivity {
      */
     private void setupCameraModeSelector() {
         if (modeTabPhoto != null) {
-            modeTabPhoto.setOnClickListener(v -> switchVideoMode(false));
+            modeTabPhoto.setOnClickListener(v -> {
+                haptic();
+                switchVideoMode(false);
+            });
         }
         if (modeTabVideo != null) {
-            modeTabVideo.setOnClickListener(v -> switchVideoMode(true));
+            modeTabVideo.setOnClickListener(v -> {
+                haptic();
+                switchVideoMode(true);
+            });
         }
         updateModeTabHighlight();
     }
@@ -1190,6 +1241,7 @@ public class CameraActivity extends AppCompatActivity {
             option.setTag(ratio);
             applyZoomOptionState(option, i == checkedIndex);
             option.setOnClickListener(v -> {
+                haptic();
                 if (camera2Controller != null) {
                     camera2Controller.setZoomRatio(ratio);
                     updateZoomButtonText();
@@ -1971,6 +2023,7 @@ public class CameraActivity extends AppCompatActivity {
         builder.setView(container);
 
         builder.setPositiveButton("确定", (dialog, which) -> {
+            haptic();
             String newValue = input.getText().toString();
             
             // 1. 更新 WatermarkItem 内存中的值 (用于持久化或下次打开)
@@ -1984,7 +2037,10 @@ public class CameraActivity extends AppCompatActivity {
                 saveConfigForAutoSaveItem(item.id, newValue);
             }
         });
-        builder.setNegativeButton("取消", (dialog, which) -> dialog.cancel());
+        builder.setNegativeButton("取消", (dialog, which) -> {
+            haptic();
+            dialog.cancel();
+        });
         builder.show();
     }
     
@@ -2058,13 +2114,17 @@ public class CameraActivity extends AppCompatActivity {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("选择要输入的字段");
         builder.setItems(itemNames, (dialog, which) -> {
+            haptic();
             // 5. 获取选择项
             WatermarkItem selectedItem = inputItems.get(which);
             // 6. 显示该项的输入对话框
             showInputDialog(selectedItem);
         });
         
-        builder.setNegativeButton("取消", (dialog, which) -> dialog.cancel());
+        builder.setNegativeButton("取消", (dialog, which) -> {
+            haptic();
+            dialog.cancel();
+        });
         builder.show();
     }
 

@@ -13,6 +13,7 @@ function alert_fix(content){
 		win_set.add('alert');
 		function alert_confirm(event){
 			if(event.target.closest('#alert_confirm_button')){
+				haptic();
 				alert_text_div.textContent = "";
 				alert_div.style.display = "none"
 				win_set.delete('alert');
@@ -37,6 +38,7 @@ function confirm_fix(content){
 		win_set.add('confirm')
 		function confirm_confirm(event){
 			if(event.target.closest('#confirm_confirm_button')){
+				haptic();
 				confirm_text_div.textContent = "";
 				confirm_div.style.display = "none"
 				win_set.delete('confirm')
@@ -46,6 +48,7 @@ function confirm_fix(content){
 				confirm_div.removeEventListener('click', confirm_confirm);
 				resolve(true)
 			}else if(event.target.closest('#confirm_cance_button')){
+				haptic();
 				confirm_text_div.textContent = "";
 				confirm_div.style.display = "none"
 				win_set.delete('confirm');
@@ -70,6 +73,7 @@ function prompt_fix(content){
 		win_set.add('prompt')
 		function prompt_confirm(event){
 			if(event.target.closest('#prompt_confirm_button')){
+				haptic();
 				prompt_text_div.textContent = "";
 				prompt_div.style.display = "none"
 				win_set.delete('prompt')
@@ -81,6 +85,7 @@ function prompt_fix(content){
 				resolve(input_value)
 				document.getElementById('prompt_input').value = "";
 			}else if(event.target.closest('#prompt_cance_button')){
+				haptic();
 				prompt_text_div.textContent = "";
 				prompt_div.style.display = "none"
 				win_set.delete('prompt');
@@ -108,6 +113,7 @@ function expand_menu(dom,set){
 	set.add(dom)
 	let new_size = set.size
 	if(old_size<new_size){
+		haptic();
 		dom.classList.add('expanded');
 	}
 }

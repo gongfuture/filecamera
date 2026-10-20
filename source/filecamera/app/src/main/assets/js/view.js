@@ -230,6 +230,7 @@ function reset_image(isSmooth = true) {
     is_double_click = false;
 }
 async function open_address(){
+	haptic();
 	if(addressurl){
 		window.location.href = addressurl
 	}else{
@@ -356,6 +357,7 @@ async function fetchblob(url) {
   }
 }
 function toggle_video_play(){
+	haptic();
 	const video = document.getElementById('filevideo');
 	if(!video) return;
 	if(video.paused) {
@@ -367,6 +369,7 @@ function toggle_video_play(){
 }
 
 async function load_video(video_name){
+	haptic();
 	const videodiv = document.getElementById('videodiv');
 	const video = document.getElementById('filevideo');
 	const picturediv = document.getElementById('picturediv');
@@ -424,6 +427,7 @@ async function load_video(video_name){
 }
 
 async function load_img(picture_name){
+	haptic();
 	viewer_mode = 'image';
 	const picturediv = document.getElementById('picturediv');
 	const videodiv = document.getElementById('videodiv');
@@ -489,18 +493,21 @@ async function load_img(picture_name){
 	}
 }
 async function video_back(){
+	haptic();
 	if(video_arr.length < 2) return;
 	video_page = video_page <= 1 ? video_arr.length : video_page - 1;
 	await load_video(video_arr[video_page - 1].name);
 }
 
 async function video_forward(){
+	haptic();
 	if(video_arr.length < 2) return;
 	video_page = video_page >= video_arr.length ? 1 : video_page + 1;
 	await load_video(video_arr[video_page - 1].name);
 }
 
 async function picture_back(){
+	haptic();
 	let img = document.getElementById('fileimg')
 	if(img.src){
 		URL.revokeObjectURL(img.src)
@@ -581,6 +588,7 @@ function delay(ms) {
 }
 
 async function picture_forward(){
+	haptic();
 	if(picture_arr.length===0){
 		return;
 	}
@@ -659,6 +667,7 @@ async function picture_forward(){
 	document.getElementById('pageseqinput').textContent = String(page)+'/'+picture_arr.length
 }
 async function picture_goto_page(){
+	haptic();
 	let folderPath = await prompt_fix("请输入页码");
 	if (folderPath=="") {
 	  await alert_fix("页码不能为空");
@@ -752,6 +761,7 @@ async function picture_goto_page(){
 	document.getElementById('pageseqinput').textContent = String(page)+'/'+picture_arr.length
 }
 async function video_goto_page(){
+	haptic();
 	let folderPath = await prompt_fix("请输入页码");
 	if (folderPath=="") {
 		await alert_fix("页码不能为空");
@@ -769,6 +779,7 @@ async function video_goto_page(){
 	await load_video(video_arr[page_number - 1].name);
 }
 async function pic_download() {
+	haptic();
 	let fileimg = document.getElementById('fileimg');
 	let picture_name = "";
 	let picture_name_element = picture_arr[page-1]
@@ -786,6 +797,7 @@ async function pic_download() {
 	}
 }
 async function pic_deleteByPaths() {
+	haptic();
     if (page < 1 || picture_arr.length < 1) {
         resetPictureView(); 
         return;
@@ -815,6 +827,7 @@ async function pic_deleteByPaths() {
 }
 
 async function video_deleteByPaths() {
+	haptic();
     if (video_arr.length < 1 || video_page < 1) {
         await exit_page();
         return;
@@ -931,6 +944,7 @@ function gotoaddress2(address,name) {
 	}
 }
 async function share_picture(){
+	haptic();
 	let real_file_name = document.getElementById('picturenamespan').dataset.real_file_name
 	if(!real_file_name){
 		return;
@@ -943,6 +957,7 @@ async function share_picture(){
 }
 
 async function video_share(){
+	haptic();
 	const nameSpan = document.getElementById('videonamepan');
 	const real_file_name = nameSpan.dataset.real_file_name;
 	if(!real_file_name){
@@ -956,6 +971,7 @@ async function video_share(){
 }
 
 async function video_download(){
+	haptic();
 	const id = document.getElementById('videonamepan').dataset.id;
 	if(id){
 		await exportItems([id]);
