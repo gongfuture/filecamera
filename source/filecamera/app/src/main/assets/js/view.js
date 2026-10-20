@@ -771,6 +771,11 @@ async function pic_download() {
 	}
 }
 async function pic_deleteByPaths() {
+    // 视频浏览器和图片浏览器共用这个删除按钮，但视频的分页状态在 video_arr/video_page 里
+    if (viewer_mode === 'video') {
+        await deleteCurrentVideo();
+        return;
+    }
     if (page < 1 || picture_arr.length < 1) {
         resetPictureView(); 
         return;
@@ -797,6 +802,50 @@ async function pic_deleteByPaths() {
         page = picture_arr.length;
     }
     await updatePictureView();
+}
+
+async function deleteCurrentVideo() {
+    if (video_arr.length < 1 || video_page < 1) {
+        await exit_page();
+        return;
+    }
+    const currentIndex = video_page - 1;
+    const current = video_arr[currentIndex];
+    if (!current) {
+        await exit_page();
+        return;
+    }
+    if (!await confirm_fix(`是否删除视频 "${current.name}"?`)) {
+        return;
+    }
+
+    const video = document.getElementById('filevideo');
+    if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+    }
+
+    const isDeleted = await deletefileByid(current.id);
+    if (!isDeleted) {
+        // 删除失败时恢复当前视频，避免停在空白播放器
+        await load_video(current.name);
+        return;
+    }
+
+    const videoIndex = video_arr.findIndex(f => f.id === current.id || f.name === current.name);
+    if (videoIndex >= 0) video_arr.splice(videoIndex, 1);
+    const fileIndex = file_index_arr.findIndex(f => f.id === current.id || f.name === current.name);
+    if (fileIndex >= 0) file_index_arr.splice(fileIndex, 1);
+
+    if (video_arr.length === 0) {
+        await exit_page();
+        return;
+    }
+
+    if (video_page > video_arr.length) video_page = video_arr.length;
+    if (video_page < 1) video_page = 1;
+    await load_video(video_arr[video_page - 1].name);
 }
 async function updatePictureView() {
     const img = document.getElementById('fileimg');
