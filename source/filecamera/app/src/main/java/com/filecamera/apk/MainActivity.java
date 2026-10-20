@@ -7,6 +7,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationListener;
@@ -662,6 +663,8 @@ public class MainActivity extends AppCompatActivity {
                                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                                 | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                                 | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+                // 全屏播放时临时跟随重力旋转，横屏视频可以正常横屏播放
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR);
             }
 
             @Override
@@ -727,6 +730,8 @@ public class MainActivity extends AppCompatActivity {
             fullscreenCallback = null;
         }
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+        // 退出全屏后恢复 Web 层固定竖屏
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
     }
 
     @Override

@@ -397,6 +397,10 @@ async function load_video(video_name){
 	nameSpan.dataset.real_file_name = real_file_name;
 	const playOverlay = document.getElementById('video_play_overlay');
 	if(playOverlay) playOverlay.style.display = 'flex';
+	// H5 播放器控件只保留播放/全屏，隐藏下载和远程播放
+	video.setAttribute('controlslist', 'nodownload noremoteplayback');
+	video.disablePictureInPicture = true;
+	video.oncontextmenu = function(e){ e.preventDefault(); };
 	video.controls = false;
 	video.onplay = function(){
 		video.controls = true;
