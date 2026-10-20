@@ -376,6 +376,8 @@ async function load_video(video_name){
 	viewer_mode = 'video';
 	video_arr = file_index_arr.filter(f => isVideoFile(f.name));
 	video_page = video_arr.findIndex(f => f.name === video_name) + 1;
+	const deleteBtn = document.getElementById('pic_detelebutton');
+	if (deleteBtn) deleteBtn.onclick = video_deleteByPaths;
 	picturediv.classList.add('expanded');
 	document.getElementById('picturenamespan').textContent = video_name;
 	fileImg.style.display = 'none';
@@ -414,6 +416,8 @@ async function load_video(video_name){
 
 async function load_img(picture_name){
 	viewer_mode = 'image';
+	const deleteBtn = document.getElementById('pic_detelebutton');
+	if (deleteBtn) deleteBtn.onclick = pic_deleteByPaths;
 	const picturediv = document.getElementById('picturediv');
 	const fileImg = document.getElementById('fileimg');
 	const video = document.getElementById('filevideo');
@@ -771,11 +775,6 @@ async function pic_download() {
 	}
 }
 async function pic_deleteByPaths() {
-    // 视频浏览器和图片浏览器共用这个删除按钮，但视频的分页状态在 video_arr/video_page 里
-    if (viewer_mode === 'video') {
-        await deleteCurrentVideo();
-        return;
-    }
     if (page < 1 || picture_arr.length < 1) {
         resetPictureView(); 
         return;
@@ -804,7 +803,7 @@ async function pic_deleteByPaths() {
     await updatePictureView();
 }
 
-async function deleteCurrentVideo() {
+async function video_deleteByPaths() {
     if (video_arr.length < 1 || video_page < 1) {
         await exit_page();
         return;
