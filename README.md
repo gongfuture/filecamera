@@ -43,6 +43,7 @@
 - 图片浏览器和视频浏览器拆成两个独立页面容器
 - 图片和视频各自拥有独立的删除、分享、导出、翻页逻辑
 - 新增统一震动反馈：按钮、文件行、菜单、弹窗、相机控件均有轻震动
+- 前置预览改为单次左右翻转，去掉旋转补偿，避免旋转时方向反向
 - 前端桥接继续使用统一契约：`callAndroidMethod(task_id + JSON)` + `handlePromiseCallback`
 
 ### 安全与稳定性
@@ -178,7 +179,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## 版本说明
 
-- **v20261020-01**：Camera2 视频水印重构版，含视频水印、视频浏览器、新相机 UI 和震动反馈；建议先小范围验证
+- **v20261020-01**：Camera2 视频水印重构版，含视频水印、视频浏览器、新相机 UI、震动反馈和前置预览修复；建议先小范围验证
 - **v20260825-02**：稳定旧版，不含视频水印，建议只需要照片水印的用户使用
 - 当前源码包：[v20261020-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261020-01.zip)
 - 历史版本：[Gitee Releases](https://gitee.com/zjywchenhui/filecamera/releases)
