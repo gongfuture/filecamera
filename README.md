@@ -17,6 +17,9 @@
 >
 > [查看全部历史版本](https://gitee.com/zjywchenhui/filecamera/releases)
 
+> **当前重构版发行版：v20261020-01**
+> [下载新版 APK（视频水印重构版）](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261020-01/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20261020-01.apk)
+
 ## 相对旧版的主要变化
 
 ### 视频能力
@@ -175,7 +178,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## 版本说明
 
-- **当前 master**：Camera2 视频水印重构版，源码构建，尚未发布正式 APK
+- **v20261020-01**：Camera2 视频水印重构版，含视频水印、视频浏览器、新相机 UI 和震动反馈；建议先小范围验证
 - **v20260825-02**：稳定旧版，不含视频水印，建议只需要照片水印的用户使用
 - 历史版本：[Gitee Releases](https://gitee.com/zjywchenhui/filecamera/releases)
 

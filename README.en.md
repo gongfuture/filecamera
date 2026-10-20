@@ -17,6 +17,9 @@ No ads, no fees, no hidden terms. Photos and videos are stored in the app's priv
 >
 > [All releases](https://gitee.com/zjywchenhui/filecamera/releases)
 
+> **Current rewrite release: v20261020-01**
+> [Download the new APK (video-watermark rewrite)](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261020-01/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20261020-01.apk)
+
 ## What changed from the legacy version
 
 ### Video
@@ -173,7 +176,7 @@ Requirements: Android Studio with AGP 9.x support | SDK 34 | JDK 17+
 
 ## Version notes
 
-- **Current master**: Camera2 video-watermark rewrite; build from source, no official APK yet
+- **v20261020-01**: Camera2 video-watermark rewrite with video watermarking, video browser, new camera UI, and haptics; validate on a small scale first
 - **v20260825-02**: stable legacy version without video watermark; recommended for photo-only use
 - All versions: [Gitee Releases](https://gitee.com/zjywchenhui/filecamera/releases)
 
