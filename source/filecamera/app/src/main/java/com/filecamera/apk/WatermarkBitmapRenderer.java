@@ -112,13 +112,14 @@ public final class WatermarkBitmapRenderer {
         boolean right = anchor.startsWith("right");
         boolean topAnchor = anchor.endsWith("top");
         JSONObject pos = wm.optJSONObject("position");
-        float marginScale = (float) wm.optDouble("marginScale", 1.0);
-        float margin = 10 * density * marginScale;
+        // 视频水印的边缘距离按 1920 参考帧归一化，和照片的 placement 保持同一视觉尺度。
+        float frameScale = Math.min(1f, pictureWidth / 1920f);
+        float margin = 10 * density * frameScale;
         float offsetX = margin;
         float offsetY = margin;
         if (pos != null) {
-            offsetX = (float) pos.optDouble(right ? "right" : "left", 10) * density * scale + margin;
-            offsetY = (float) pos.optDouble(topAnchor ? "top" : "bottom", 10) * density * scale + margin;
+            offsetX = (float) pos.optDouble(right ? "right" : "left", 10) * scale * frameScale + margin;
+            offsetY = (float) pos.optDouble(topAnchor ? "top" : "bottom", 10) * scale * frameScale + margin;
         }
         float left = right ? pictureWidth - blockWidth - offsetX : offsetX;
         float top = topAnchor ? offsetY : pictureHeight - totalHeight - offsetY;
