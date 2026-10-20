@@ -734,8 +734,12 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         }
         previewView.setTransform(null);
         previewView.setRotation(0f);
-        previewView.setPivotX(0f);
-        previewView.setPivotY(0f);
+        // 镜像必须绕 View 中心翻转；pivot 为 0 时负 scaleX 会把整个预览翻到容器外，
+        // 前置摄像头就会表现为黑屏。刚布局完 getWidth() 可能还是 0，用 layoutW/H 兜底。
+        float pivotX = previewView.getWidth() > 0 ? previewView.getWidth() / 2f : layoutW / 2f;
+        float pivotY = previewView.getHeight() > 0 ? previewView.getHeight() / 2f : layoutH / 2f;
+        previewView.setPivotX(pivotX);
+        previewView.setPivotY(pivotY);
         previewView.setScaleX(lensFacing == LENS_FACING_FRONT ? -1f : 1f);
         previewView.setScaleY(1f);
     }
