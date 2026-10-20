@@ -2210,79 +2210,94 @@ public class CameraActivity extends AppCompatActivity {
             params.removeRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
             params.leftMargin = params.topMargin = params.rightMargin = params.bottomMargin = 0;
 
-            int margin = wmPx(10);
+            // 固定 10px 安全边距，不再按屏幕密度放大
+            int margin = 10;
             int width = watermarkContainer.getWidth();
             int height = watermarkContainer.getHeight();
             Position pos = watermarkConfig.position;
 
-            setHorizontalPosition(params, pos, margin, width, height, currentRotation);
-            setVerticalPosition(params, pos, margin, width, height, currentRotation);
+            applyWatermarkPosition(params, pos, margin, width, height, currentRotation);
             watermarkContainer.setLayoutParams(params);
         });
     }
 
-    private void setHorizontalPosition(RelativeLayout.LayoutParams params, Position pos, int margin, int w, int h, int rotation) {
-        int offset = (w - h) / 2;
-        switch (rotation) {
-            case Surface.ROTATION_90:
-                if (pos.left != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-                    params.topMargin = offset + Math.round(pos.left * watermarkConfig.scale) + margin;
-                } else if (pos.right != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-                    params.bottomMargin = offset - Math.round(pos.right * watermarkConfig.scale) + margin;
-                }
-                break;
-            case Surface.ROTATION_270:
-                if (pos.left != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-                    params.bottomMargin = offset - Math.round(pos.left * watermarkConfig.scale) + margin;
-                } else if (pos.right != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-                    params.topMargin = offset + Math.round(pos.right * watermarkConfig.scale) + margin;
-                }
-                break;
-            default:
-                if (pos.left != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
-                    params.leftMargin = Math.round(pos.left * watermarkConfig.scale) + margin;
-                } else if (pos.right != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
-                    params.rightMargin = Math.round(pos.right * watermarkConfig.scale) + margin;
-                }
-                break;
+    private static final int EDGE_LEFT = 0;
+    private static final int EDGE_TOP = 1;
+    private static final int EDGE_RIGHT = 2;
+    private static final int EDGE_BOTTOM = 3;
+
+    /**
+     * 按旋转后的“可视矩形”给水印定位。
+     *
+     * <p>{@link View#setRotation(float)} 只改变绘制，不改变 LayoutParams 使用的布局边界：
+     * 布局框仍是 w×h，但旋转 90/270 后屏幕上看到的是 h×w。两者中心重合，
+     * 所以可视边与布局边之间存在 (w-h)/2 的偏移。旧实现对四个角、两个旋转方向
+     * 分别手工加减 offset，符号并不一致，导致部分组合下水印离目标角落少了
+     * 一个配置偏移量（手机顺时针转 90° 时尤其明显）。
+     *
+     * <p>这里先把配置的锚边（left/right/top/bottom）换算成旋转后屏幕上的可视边，
+     * 再从可视边反推布局边距，四个角、两个旋转方向共用同一套计算。
+     */
+    private void applyWatermarkPosition(RelativeLayout.LayoutParams params, Position pos,
+                                        int margin, int w, int h, int rotation) {
+        if (pos == null) return;
+        boolean sideways = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270;
+        int visualWidth = sideways ? h : w;
+        int visualHeight = sideways ? w : h;
+        // 可视框左上角相对布局框左上角的偏移
+        int insetX = (w - visualWidth) / 2;
+        int insetY = (h - visualHeight) / 2;
+
+        if (pos.left != null) {
+            applyEdge(params, visualEdge(EDGE_LEFT, rotation), edgeDistance(pos.left, margin), insetX, insetY);
+        } else if (pos.right != null) {
+            applyEdge(params, visualEdge(EDGE_RIGHT, rotation), edgeDistance(pos.right, margin), insetX, insetY);
+        }
+        if (pos.top != null) {
+            applyEdge(params, visualEdge(EDGE_TOP, rotation), edgeDistance(pos.top, margin), insetX, insetY);
+        } else if (pos.bottom != null) {
+            applyEdge(params, visualEdge(EDGE_BOTTOM, rotation), edgeDistance(pos.bottom, margin), insetX, insetY);
         }
     }
 
-    private void setVerticalPosition(RelativeLayout.LayoutParams params, Position pos, int margin, int w, int h, int rotation) {
-        int offset = (h - w) / 2;
+    /** 配置边距（随水印缩放到 px）+ 固定的 10px 安全边距。 */
+    private int edgeDistance(float configValue, int margin) {
+        return Math.round(configValue * watermarkConfig.scale) + margin;
+    }
+
+    /**
+     * 水印内容坐标系的边在给定旋转下对应屏幕上的哪条可视边。
+     * 边编号按顺时针排列：0=left、1=top、2=right、3=bottom。
+     */
+    private static int visualEdge(int contentEdge, int rotation) {
         switch (rotation) {
-            case Surface.ROTATION_90:
-                if (pos.top != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
-                    params.rightMargin = offset - Math.round(pos.top * watermarkConfig.scale) + margin;
-                } else if (pos.bottom != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
-                    params.leftMargin = offset + Math.round(pos.bottom * watermarkConfig.scale) + margin;
-                }
+            case Surface.ROTATION_90:  return (contentEdge + 1) % 4;  // 顺时针 90°：left→top、bottom→left
+            case Surface.ROTATION_270: return (contentEdge + 3) % 4;  // 逆时针 90°：left→bottom、bottom→right
+            default:                   return contentEdge;
+        }
+    }
+
+    /** 把 10px 边距加到“可视边”上，再减去可视框与布局框的偏移。 */
+    private static void applyEdge(RelativeLayout.LayoutParams params, int edge, int distance,
+                                  int insetX, int insetY) {
+        switch (edge) {
+            case EDGE_LEFT:
+                params.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
+                params.leftMargin = distance - insetX;
                 break;
-            case Surface.ROTATION_270:
-                if (pos.top != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
-                    params.leftMargin = offset + Math.round(pos.top * watermarkConfig.scale) + margin;
-                } else if (pos.bottom != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
-                    params.rightMargin = offset - Math.round(pos.bottom * watermarkConfig.scale) + margin;
-                }
+            case EDGE_TOP:
+                params.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+                params.topMargin = distance - insetY;
+                break;
+            case EDGE_RIGHT:
+                params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
+                params.rightMargin = distance - insetX;
+                break;
+            case EDGE_BOTTOM:
+                params.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+                params.bottomMargin = distance - insetY;
                 break;
             default:
-                if (pos.top != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-                    params.topMargin = Math.round(pos.top * watermarkConfig.scale) + margin;
-                } else if (pos.bottom != null) {
-                    params.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-                    params.bottomMargin = Math.round(pos.bottom * watermarkConfig.scale) + margin;
-                }
                 break;
         }
     }
