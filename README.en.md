@@ -44,7 +44,10 @@ No ads, no fees, no hidden terms. Photos and videos are stored in the app's priv
 - Independent delete, share, export, and paging logic for photos and videos
 - Haptic feedback for buttons, file rows, menus, dialogs, and native camera controls
 - Front preview now uses a single horizontal flip with no rotation compensation, avoiding reversed rotation
-- Preview stays inside the container between the top and bottom controls and uses ratio-based cover scaling; watermarks use that container's coordinates
+- Preview is fixed to the full 4:3 sensor frame; photo/video still use the configured aspect ratio, with matrix-based cover and clipping
+- Front final photos get one horizontal mirror so they match the preview
+- Zoom capsule text auto-sizes between 9sp and 16sp; presets follow the device CONTROL_ZOOM_RATIO_RANGE
+- Watermarks use the preview container coordinates directly
 - Unified JS bridge contract remains: `callAndroidMethod(task_id + JSON)` + `handlePromiseCallback`
 
 ### Security and stability
@@ -178,7 +181,7 @@ Requirements: Android Studio with AGP 9.x support | SDK 34 | JDK 17+
 
 ## Version notes
 
-- **v20261020-01**: Camera2 video-watermark rewrite with video watermarking, video browser, new camera UI, haptics, and preview ratio/watermark-coordinate fixes; validate on a small scale first
+- **v20261020-01**: Camera2 video-watermark rewrite with video watermarking, video browser, new camera UI, haptics, 4:3 full-frame preview, decoupled photo/video ratios, and front-photo mirroring; validate on a small scale first
 - **v20260825-02**: stable legacy version without video watermark; recommended for photo-only use
 - Current source archive: [v20261020-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261020-01.zip)
 - All versions: [Gitee Releases](https://gitee.com/zjywchenhui/filecamera/releases)
