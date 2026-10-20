@@ -13,8 +13,8 @@ android {
         applicationId "com.filecamera.apk"
         minSdk = 29
         targetSdk = 34
-        versionCode = 20261020
-        versionName = "20261020-01"
+        versionCode = 20261021
+        versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
