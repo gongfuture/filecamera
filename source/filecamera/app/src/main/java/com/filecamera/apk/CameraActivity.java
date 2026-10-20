@@ -2769,7 +2769,12 @@ public class CameraActivity extends AppCompatActivity {
             return Math.min(photoWidth / 1080f, photoHeight / 1920f);
         }
         float photoLongerSide = Math.max(photoWidth, photoHeight);
-        float previewLongerSide = Math.max(previewWidth, previewHeight);
+        // 水印尺寸按“整屏长边”换算，而不是按当前取景框高度。
+        // 相机 UI 增加顶栏/底部操作区后取景框变矮，若继续用取景框长边，
+        // 同一张照片的水印会被额外放大；整屏长边保持与旧版一致。
+        android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
+        float screenLongerSide = Math.max(metrics.widthPixels, metrics.heightPixels);
+        float previewLongerSide = Math.max(Math.max(previewWidth, previewHeight), screenLongerSide);
         if (previewLongerSide > 0) {
             return photoLongerSide / previewLongerSide;
         } else {
