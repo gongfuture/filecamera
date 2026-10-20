@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
+import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
@@ -412,7 +413,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
                 postCameraError("无法读取相机配置");
                 return;
             }
-            previewSize = choosePreviewSize(map, targetAspectRatio);
+            // 预览固定使用 4:3 全画幅；拍照/录像仍按设置比例单独请求。
+            previewSize = choosePreviewSize(map, 4f / 3f);
             photoSize = choosePhotoSize(map, targetAspectRatio);
             // 录像输入按设置比例取相机画幅：4:3 或 16:9
             videoCameraSize = targetAspectRatio > 1.5f
@@ -715,39 +717,21 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         int pw = previewSize.getWidth();
         int ph = previewSize.getHeight();
 
-        // 只做等比 cover，保持相机画面比例：
-        // 容器高宽比更大 → 高度对齐；否则宽度对齐。超出容器部分由父布局裁剪。
-        float containerRatio = vh / (float) vw;
-        float pictureRatio = ph / (float) pw;
-        float scale;
-        if (containerRatio > pictureRatio) {
-            scale = vh / (float) ph;
-        } else {
-            scale = vw / (float) pw;
-        }
-        int layoutW = Math.round(pw * scale);
-        int layoutH = Math.round(ph * scale);
+        // 相机画面在显示方向下是竖向的：短边为宽，长边为高。
+        // TextureView 默认把 buffer 铺满 View；这里用矩阵做一次方向修正，
+        // 只改变内容在 View 内的显示比例，View 本身仍是 match_parent，超出部分由父容器裁剪。
+        int displayW = Math.min(pw, ph);
+        int displayH = Math.max(pw, ph);
+        float scale = Math.max(vw / (float) displayW, vh / (float) displayH);
+        float scaleX = displayW * scale / vw;
+        float scaleY = displayH * scale / vh;
 
-        ViewGroup.LayoutParams lp = previewView.getLayoutParams();
-        if (lp instanceof RelativeLayout.LayoutParams) {
-            RelativeLayout.LayoutParams rlp = (RelativeLayout.LayoutParams) lp;
-            if (rlp.width != layoutW || rlp.height != layoutH
-                    || rlp.getRules()[RelativeLayout.CENTER_IN_PARENT] == 0) {
-                rlp.width = layoutW;
-                rlp.height = layoutH;
-                rlp.addRule(RelativeLayout.CENTER_IN_PARENT);
-                previewView.setLayoutParams(rlp);
-            }
-        }
-        previewView.setTransform(null);
+        Matrix matrix = new Matrix();
+        matrix.setScale(scaleX, scaleY, vw / 2f, vh / 2f);
+        previewView.setTransform(matrix);
         previewView.setRotation(0f);
-        // 镜像必须绕 View 中心翻转；pivot 为 0 时负 scaleX 会把整个预览翻到容器外，
-        // 前置摄像头就会表现为黑屏。刚布局完 getWidth() 可能还是 0，用 layoutW/H 兜底。
-        float pivotX = previewView.getWidth() > 0 ? previewView.getWidth() / 2f : layoutW / 2f;
-        float pivotY = previewView.getHeight() > 0 ? previewView.getHeight() / 2f : layoutH / 2f;
-        previewView.setPivotX(pivotX);
-        previewView.setPivotY(pivotY);
-        // 前置只做一次左右翻转；设备前置输入本身已镜像，这里去掉原来的再次镜像。
+        previewView.setPivotX(vw / 2f);
+        previewView.setPivotY(vh / 2f);
         previewView.setScaleX(1f);
         previewView.setScaleY(1f);
     }

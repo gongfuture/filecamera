@@ -60,6 +60,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.widget.ImageViewCompat;
+import androidx.core.widget.TextViewCompat;
 import androidx.exifinterface.media.ExifInterface;
 
 import com.google.zxing.BarcodeFormat;
@@ -124,7 +125,7 @@ public class CameraActivity extends AppCompatActivity {
     private boolean zoomDockOpen = false;
     private final List<Float> availableZoomRatios = new ArrayList<>();
     // 预设变焦倍数，仅展示设备支持范围内的档位
-    private static final float[] ZOOM_PRESETS = {0.6f, 1.0f, 2.0f, 3.0f, 5.0f};
+    private static final float[] ZOOM_PRESETS = {0.5f, 0.6f, 1.0f, 2.0f, 3.0f, 5.0f, 10.0f, 20.0f, 30.0f, 50.0f, 100.0f};
     // 拍照提示音
     private MediaActionSound mediaActionSound;
 
@@ -1123,6 +1124,7 @@ public class CameraActivity extends AppCompatActivity {
         state.qrCodeConfig = qrCodeConfig;
         state.previewWidth = previewContainer != null ? previewContainer.getWidth() : 0;
         state.previewHeight = previewContainer != null ? previewContainer.getHeight() : 0;
+        state.frontCamera = currentLensFacing == Camera2Controller.LENS_FACING_FRONT;
         state.watermarkDensity = watermarkDensity();
         if (state.showWatermark && state.watermarkConfig != null) {
             state.watermarkOverlay = createBitmapFromView(watermarkContainer);
@@ -1152,8 +1154,14 @@ public class CameraActivity extends AppCompatActivity {
                 availableZoomRatios.add(preset);
             }
         }
-        // 1x 必须存在，作为基准档位
-        if (!availableZoomRatios.contains(1.0f)) {
+        // 1x 作为基准档位；但如果设备镜头范围不包含 1x，就用实际最小/最大档位兜底。
+        if (availableZoomRatios.isEmpty()) {
+            availableZoomRatios.add(minZoom);
+            if (maxZoom > minZoom + 0.01f) {
+                availableZoomRatios.add(maxZoom);
+            }
+        } else if (minZoom <= 1.0f && maxZoom >= 1.0f
+                && !availableZoomRatios.contains(1.0f)) {
             availableZoomRatios.add(1.0f);
             Collections.sort(availableZoomRatios);
         }
@@ -1233,11 +1241,15 @@ public class CameraActivity extends AppCompatActivity {
             TextView option = new TextView(this);
             option.setText(formatZoomText(ratio));
             option.setGravity(Gravity.CENTER);
-            option.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+            option.setSingleLine(true);
+            option.setMaxLines(1);
+            option.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                    option, 9, 16, 1, TypedValue.COMPLEX_UNIT_SP);
             option.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
             option.setIncludeFontPadding(false);
             option.setShadowLayer(dpToPx(2), 0f, dpToPx(1), 0x99000000);
-            option.setPadding(0, 0, 0, 0);
+            option.setPadding(dpToPx(4), 0, dpToPx(4), 0);
             option.setTag(ratio);
             applyZoomOptionState(option, i == checkedIndex);
             option.setOnClickListener(v -> {
@@ -1249,16 +1261,22 @@ public class CameraActivity extends AppCompatActivity {
                 hideZoomPanel();
             });
             LinearLayout.LayoutParams optionLp = new LinearLayout.LayoutParams(
-                    dpToPx(63), LinearLayout.LayoutParams.MATCH_PARENT);
+                    dpToPx(54), dpToPx(34));
+            optionLp.setMargins(dpToPx(2), 0, dpToPx(2), 0);
             zoomOptionsRow.addView(option, optionLp);
         }
     }
 
-    /** 纯文字档位：不画背景/边框，只靠文字颜色表示选中。 */
+    /** 档位状态：当前倍率用琥珀色低透明度胶囊，其他档位保持透明。 */
     private void applyZoomOptionState(TextView option, boolean selected) {
         if (option == null) return;
         option.setTextColor(ContextCompat.getColor(this,
                 selected ? R.color.cam_accent : R.color.cam_text_primary));
+        if (selected) {
+            option.setBackgroundResource(R.drawable.bg_cam_zoom_selected);
+        } else {
+            option.setBackground(null);
+        }
         option.setSelected(selected);
     }
 
@@ -1526,6 +1544,10 @@ public class CameraActivity extends AppCompatActivity {
             case ExifInterface.ORIENTATION_ROTATE_90: matrix.postRotate(90); break;
             case ExifInterface.ORIENTATION_ROTATE_180: matrix.postRotate(180); break;
             case ExifInterface.ORIENTATION_ROTATE_270: matrix.postRotate(270); break;
+        }
+        // 前置预览是镜像的，最终照片也必须补一次水平镜像，才能与预览一致。
+        if (state.frontCamera) {
+            matrix.postScale(-1f, 1f);
         }
         Bitmap rotatedBitmap = Bitmap.createBitmap(originalBitmap, 0, 0, originalBitmap.getWidth(), originalBitmap.getHeight(), matrix, true);
         if (rotatedBitmap != originalBitmap) {
@@ -2922,6 +2944,7 @@ public class CameraActivity extends AppCompatActivity {
         QrCodeConfig qrCodeConfig = null;
         int previewWidth = 0;
         int previewHeight = 0;
+        boolean frontCamera = false;
         float watermarkDensity = 3.0f;
     }
 
