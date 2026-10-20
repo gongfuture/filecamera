@@ -714,10 +714,17 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
 
         int pw = previewSize.getWidth();
         int ph = previewSize.getHeight();
-        // 关键：让 TextureView 的 layout 本身就是 16:9（相机 buffer 比例），
-        // 超出容器的部分由父布局裁掉。这样完全不依赖 setTransform 的 scale 语义，
-        // 画面不会被上下/左右拉伸。
-        float scale = Math.max(vw / (float) pw, vh / (float) ph);
+
+        // 只做等比 cover，保持相机画面比例：
+        // 容器高宽比更大 → 高度对齐；否则宽度对齐。超出容器部分由父布局裁剪。
+        float containerRatio = vh / (float) vw;
+        float pictureRatio = ph / (float) pw;
+        float scale;
+        if (containerRatio > pictureRatio) {
+            scale = vh / (float) ph;
+        } else {
+            scale = vw / (float) pw;
+        }
         int layoutW = Math.round(pw * scale);
         int layoutH = Math.round(ph * scale);
 
