@@ -19,6 +19,7 @@ No ads, no fees, no hidden terms. Photos and videos are stored in the app's priv
 
 > **Current rewrite release: v20261020-01**
 > [Download the new APK (video-watermark rewrite)](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261020-01/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20261020-01.apk)
+> The APK displays version **1.0**; its internal versionCode is `20261021`, so it can be installed over the previous release.
 
 ## What changed from the legacy version
 

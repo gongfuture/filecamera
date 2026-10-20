@@ -19,6 +19,7 @@
 
 > **当前重构版发行版：v20261020-01**
 > [下载新版 APK（视频水印重构版）](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261020-01/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20261020-01.apk)
+> APK 显示版本为 **1.0**，内部 versionCode 为 `20261021`，可直接覆盖已安装的旧版。
 
 ## 相对旧版的主要变化
 
