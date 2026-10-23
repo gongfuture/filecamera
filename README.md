@@ -18,7 +18,7 @@
 > [查看全部历史版本](https://gitee.com/zjywchenhui/filecamera/releases)
 
 > **当前重构版发行版：v20261023-01**
-> [下载新版 APK（视频水印重构版）](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261023-01/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20261023-01.apk)
+> [下载新版 APK（视频水印重构版）](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261023-01/FileCamera-v20261023-01.apk)
 > APK 显示版本为 **1.0**，内部 versionCode 为 `1`。如果手机上已装更高 versionCode 的版本，请使用 `adb install -r -d` 强制安装。
 
 ## 相对旧版的主要变化
