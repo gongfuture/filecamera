@@ -17,8 +17,8 @@ No ads, no fees, no hidden terms. Photos and videos are stored in the app's priv
 >
 > [All releases](https://gitee.com/zjywchenhui/filecamera/releases)
 
-> **Current rewrite release: v20261020-02**
-> [Download the new APK (video-watermark rewrite)](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261020-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20261020-02.apk)
+> **Current rewrite release: v20261023-01**
+> [Download the new APK (video-watermark rewrite)](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261023-01/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20261023-01.apk)
 > The APK displays version **1.0**; its internal versionCode is `1`. If a higher versionCode is already installed, use `adb install -r -d` to force the downgrade.
 
 ## What changed from the legacy version
@@ -184,9 +184,10 @@ Requirements: Android Studio with AGP 9.x support | SDK 34 | JDK 17+
 
 ## Version notes
 
+- **v20261023-01**: default config is now an exclusive whole-file choice between default and custom; the open-source build no longer ships custom config; server address/key configurable in key management; road-data network fetch moved to Java; auto-update checks at most once per hour; camera pinch-zoom responsiveness improved; image swipe vibration fixed
 - **v20261020-02**: Camera2 video-watermark rewrite with video watermarking, video browser, new camera UI, haptics, 4:3 full-frame preview, decoupled photo/video ratios, front-photo mirroring, and a +90° preview-watermark placement fix; validate on a small scale first
 - **v20260825-02**: stable legacy version without video watermark; recommended for photo-only use
-- Current source archive: [v20261020-02.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261020-02.zip)
+- Current source archive: [v20261023-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261023-01.zip)
 - All versions: [Gitee Releases](https://gitee.com/zjywchenhui/filecamera/releases)
 
 ## License
