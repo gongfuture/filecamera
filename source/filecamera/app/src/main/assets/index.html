@@ -2167,7 +2167,6 @@
 	let cover_display = false;
 	let ui_lock = false;
 	let auto_get_road_data = false;
-	const ONE_HOUR_IN_MS = 60 * 60 * 1000;
 
 	function formatBytes(bytes) {
 	  if (bytes === 0) return '0 Bytes';
@@ -2175,6 +2174,17 @@
 	  const k = 1024; // 1 KB = 1024 Bytes
 	  const i = Math.floor(Math.log(bytes) / Math.log(k)); // 确定单位
 	  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + units[i];
+	}
+
+	/** 上次检查时间是否落在本地时间的“今天”。 */
+	function is_checked_today(timestamp) {
+		if (!timestamp || !Number.isFinite(timestamp)) return false;
+		const last = new Date(timestamp);
+		if (Number.isNaN(last.getTime())) return false;
+		const now = new Date();
+		return last.getFullYear() === now.getFullYear()
+			&& last.getMonth() === now.getMonth()
+			&& last.getDate() === now.getDate();
 	}
 	async function get_config(){
 		// 服务器地址/密钥：优先读取用户在秘钥管理页保存的值，否则使用真默认值 + 定制覆盖后的默认值。
@@ -2197,14 +2207,14 @@
 				auto_get_road_data = true;
 			}
 		}
-		if(auto_get_road_data && server_config.url && server_config.key){
-			let last_check_time = Number(localStorage.getItem('last_checktime'));
-			const currentTime = Date.now();
-			const timeDifference = currentTime - last_check_time;
-			if(timeDifference > ONE_HOUR_IN_MS){
+		const has_server_config = !!(server_config.url && server_config.key);
+		if(auto_get_road_data && has_server_config){
+			const last_check_time = Number(localStorage.getItem('last_checktime'));
+			// 今天已经检查过就不再请求；后端地址/密钥为空时整段自动更新不执行。
+			if(!is_checked_today(last_check_time)){
 				getRoadData(server_config.url, true)
 			}
-		} else if (!server_config.url || !server_config.key) {
+		} else if (!has_server_config) {
 			auto_get_road_data = false;
 			const checkbox = document.getElementById('road_data_checkbox');
 			if (checkbox) checkbox.checked = false;
