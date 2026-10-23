@@ -2177,7 +2177,7 @@
 	  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + units[i];
 	}
 	async function get_config(){
-		// 服务器地址/密钥：优先读取用户在秘钥管理页保存的值，否则使用真默认值 + 定制覆盖后的默认值。
+		// 服务器地址/密钥：优先读取用户在秘钥管理页保存的值，否则使用当前版本选中的默认配置。
 		// 放在最前面，保证即使其他配置解析异常，路线页入口也能按配置正确显示。
 		await load_server_config();
 		const cover_display_config_json = localStorage.getItem('cover_display');

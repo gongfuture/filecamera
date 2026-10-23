@@ -122,7 +122,7 @@ public class WatermarkConfigManager {
     }
 
     /**
-     * 获取默认的水印配置 JSON 字符串（与前端共用真默认值 + 定制覆盖）。
+     * 获取默认的水印配置 JSON 字符串（与前端共用当前选中的默认配置）。
      */
     private String getDefaultWatermarkConfig() {
         return AppConfig.getDefaultConfig(appContext);

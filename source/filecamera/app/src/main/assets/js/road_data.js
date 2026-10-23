@@ -8,7 +8,7 @@ const rm_uploadInput = document.getElementById('rm_upload_input');
 const rm_listContent = document.getElementById('rm_road_list_content');
 const rm_loader = document.getElementById('rm_list_loader');
 
-// --- 服务器配置（默认值来自 config/default_config.json，定制覆盖见 config/custom_config.json） ---
+// --- 服务器配置（默认值来自当前选中的配置：有 custom_config.json 用它，否则用 default_config.json） ---
 let server_config = { url: '', key: '' };
 
 async function load_server_config() {

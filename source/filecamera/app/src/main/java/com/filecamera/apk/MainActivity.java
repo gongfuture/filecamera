@@ -456,7 +456,7 @@ public class MainActivity extends AppCompatActivity {
         initLocationServices();
         initWebView();
         initDatabaseAndBackend();
-        // 首次启动/偏好缺失时，把合并后的默认配置（含水印配置、服务器地址/密钥、高德密钥）
+        // 首次启动/偏好缺失时，把当前选中的默认配置（含水印配置、服务器地址/密钥、高德密钥）
         // 写入 SharedPreferences；后续设置页、秘钥页、相机水印都直接读偏好设置。
         AppConfig.ensureDefaults(this);
         setupWebViewClients();

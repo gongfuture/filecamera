@@ -1,6 +1,6 @@
 // --- 数据模型 (默认值) ---
-// 默认配置不写死在前端，统一从 config/default_config.json 的 default_config 读取，
-// 定制版由 config/custom_config.json 覆盖；与 Java WatermarkConfigManager 使用同一个合并结果。
+// 默认配置不写死在前端，统一从 Java 当前选中的默认配置读取：
+// 有 config/custom_config.json 就用定制默认值，否则用 config/default_config.json；两者不合并。
 // 前端通过现有 FilePicker.readConfig 桥接取默认值（Java AppConfig 读取同一份 JSON）。
 let DEFAULT_CONFIG = null;
 let default_config_promise = null;
@@ -39,7 +39,7 @@ const TYPE_OPTIONS = {
 	address: '地址 (动态，需秘钥)'
 };
 async function open_setting_page(){
-	// 默认配置与 Java 共用同一套真默认值+定制覆盖，先确保加载完成再打开设置页。
+	// 默认配置与 Java 共用同一份选中配置，先确保加载完成再打开设置页。
 	await ensure_default_config();
 	let obj = await nativeReadConfig()
 	await loadConfig(obj)

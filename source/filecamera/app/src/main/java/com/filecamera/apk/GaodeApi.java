@@ -92,7 +92,7 @@ public final class GaodeApi {
             // "" = 用户显式清空，保持空；null = 未加载，才回退默认值。
             return saved;
         }
-        // 用户未保存时使用真默认值/定制覆盖里的默认高德密钥。
+        // 用户未保存时使用当前选中默认配置里的高德密钥。
         return AppConfig.getGaodeWebKey(context);
     }
 
