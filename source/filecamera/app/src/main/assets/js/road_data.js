@@ -100,6 +100,8 @@ async function getRoadData(url,mode) {
         }
         
         const result = await get_fetch(apiUrl.toString());
+        // 记录本次检查时间：1 小时内不再自动检查；失败也计入冷却，避免反复请求。
+        localStorage.setItem('last_checktime', Date.now());
 
         // --- 处理返回结果 ---
         if (!result || !result.success) {
@@ -113,8 +115,6 @@ async function getRoadData(url,mode) {
 
         // 检查版本是否同步
         if (result.is_synced) {
-            // 校验成功即记录：今天不再自动重复请求。
-            localStorage.setItem('last_checktime', Date.now());
             rm_statusEl.textContent = '✅ 数据已是最新版本，无需更新。';
 			window.updata_load_info('')
 			document.getElementById("loadingoverlay").style.display = "none"	
@@ -145,8 +145,6 @@ async function getRoadData(url,mode) {
             });
             
             await uploadAndReplaceAllRoads(geojson);
-            // 数据写入成功后再记录，失败/格式错误下次启动还会重试。
-            localStorage.setItem('last_checktime', Date.now());
 			rm_statusEl.textContent = '✅ 更新完成，版本号：'+clientVersion;
         } else {
             const message = '服务器响应版本不同步，但未返回新数据，请稍后重试。';
