@@ -16,13 +16,12 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>默认配置是整份二选一，互斥、不合并：</p>
  * <ul>
- *     <li>config/config_source.local.txt（本机私有，可选）优先；</li>
- *     <li>否则读 config/config_source.txt；</li>
- *     <li>其内容写 custom：只读 config/custom_config.json；写 default：只读 config/default_config.json。</li>
+ *     <li>存在 config/custom_config.json：只读定制默认值；</li>
+ *     <li>不存在：只读 config/default_config.json 真默认值。</li>
  * </ul>
  *
  * <p>定制文件必须是完整配置，不会从真默认值里补缺失字段；
- * 选中的文件缺失/损坏时直接报错，不会自动回退到另一份。</p>
+ * 定制文件存在但损坏时直接报错，不会把字段回退到真默认值。</p>
  *
  * <p>前端通过 FilePicker.readConfig 的 serverUrl/serverKey/gaodeWebKey/defaultConfig
  * 取得当前选中的默认值；Java 侧 WatermarkConfigManager、GaodeApi 也读同一份配置。</p>
@@ -30,8 +29,6 @@ import java.nio.charset.StandardCharsets;
 public final class AppConfig {
 
     private static final String TAG = "AppConfig";
-    private static final String ASSET_SELECTOR_LOCAL = "config/config_source.local.txt";
-    private static final String ASSET_SELECTOR = "config/config_source.txt";
     private static final String ASSET_DEFAULT = "config/default_config.json";
     private static final String ASSET_CUSTOM = "config/custom_config.json";
 
@@ -48,8 +45,8 @@ public final class AppConfig {
     }
 
     /**
-     * 按 config_source.txt 的选择读取整份默认配置。
-     * 只读选中的那一份，不做字段合并，结果缓存。
+     * 有 custom_config.json 就整份读 custom，否则整份读 default。
+     * 不做字段合并，结果缓存。
      */
     public static synchronized JSONObject get(Context context) {
         if (cached != null) {
@@ -58,15 +55,13 @@ public final class AppConfig {
 
         JSONObject result = new JSONObject();
         if (context != null) {
-            String assetName = selectedAsset(context);
-            if (assetName != null) {
-                try {
-                    result = loadAsset(context, assetName);
-                    Log.d(TAG, "使用配置: " + assetName);
-                } catch (Exception e) {
-                    // 选中的文件必须完整有效；这里不回退到另一份配置，避免又回到隐式合并。
-                    Log.e(TAG, "读取 " + assetName + " 失败", e);
-                }
+            String assetName = hasAsset(context, ASSET_CUSTOM) ? ASSET_CUSTOM : ASSET_DEFAULT;
+            try {
+                result = loadAsset(context, assetName);
+                Log.d(TAG, "使用配置: " + assetName);
+            } catch (Exception e) {
+                // custom 存在但损坏时直接报错，不把字段回退到 default。
+                Log.e(TAG, "读取 " + assetName + " 失败", e);
             }
         }
 
@@ -153,35 +148,15 @@ public final class AppConfig {
     }
 
     /**
-     * 优先读本机私有 config_source.local.txt，其次读随包 config_source.txt。
-     * 只决定读哪一份配置，不做字段合并。
+     * 判断 Assets 中是否存在指定文件。
      */
-    private static String selectedAsset(Context context) {
-        String local = readSelector(context, ASSET_SELECTOR_LOCAL);
-        if (local != null) {
-            return local;
-        }
-        return readSelector(context, ASSET_SELECTOR);
-    }
-
-    /**
-     * 读取选择文件：custom 或 default。
-     * 文件缺失/内容非法时返回 null，不猜测、不合并配置。
-     */
-    private static String readSelector(Context context, String assetName) {
-        try {
-            String source = readAssetText(context, assetName).trim();
-            if ("custom".equalsIgnoreCase(source)) {
-                return ASSET_CUSTOM;
-            }
-            if ("default".equalsIgnoreCase(source)) {
-                return ASSET_DEFAULT;
-            }
-            Log.e(TAG, "配置来源非法: " + assetName + "=" + source);
+    private static boolean hasAsset(Context context, String assetName) {
+        try (InputStream ignored = context.getApplicationContext()
+                .getAssets().open(assetName)) {
+            return true;
         } catch (Exception e) {
-            Log.d(TAG, "读取 " + assetName + " 失败或不存在", e);
+            return false;
         }
-        return null;
     }
 
     private static JSONObject loadAsset(Context context, String assetName) throws Exception {
