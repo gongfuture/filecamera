@@ -513,11 +513,7 @@ public class CameraActivity extends AppCompatActivity {
             requestExit();
         });
         setupCameraModeSelector();
-        watermarkContainer.setOnClickListener(v -> {
-            haptic();
-            handleWatermarkClick();
-        });
-        
+
         watermarkLayoutListener = new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
             @Override
             public void onGlobalLayout() {
@@ -629,7 +625,10 @@ public class CameraActivity extends AppCompatActivity {
             }
         });
 
-        previewView.setOnTouchListener((v, event) -> {
+        // 手势统一挂在 previewContainer 上，而不是 previewView：
+        // 水印容器、计时器等浮层不再各自消费触摸，避免双指缩放起手落在水印上时被“抢手势”。
+        View gestureTarget = previewContainer != null ? previewContainer : previewView;
+        gestureTarget.setOnTouchListener((v, event) -> {
             scaleGestureDetector.onTouchEvent(event);
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
@@ -643,13 +642,42 @@ public class CameraActivity extends AppCompatActivity {
                         float dx = event.getX() - downPos[0];
                         float dy = event.getY() - downPos[1];
                         if (dx * dx + dy * dy < touchSlop * touchSlop) {
-                            performFocusOnPoint(downPos[0], downPos[1]);
+                            // 点在可点击水印上时仍然打开水印输入；其余区域单击对焦
+                            if (isPointInWatermark(downPos[0], downPos[1])) {
+                                haptic();
+                                handleWatermarkClick();
+                            } else {
+                                performFocusOnPoint(downPos[0], downPos[1]);
+                            }
                         }
                     }
                     break;
             }
             return true;
         });
+    }
+
+    /**
+     * 判断触点是否落在水印容器内（水印可能带旋转，需要反变换到容器本地坐标）。
+     * 水印不再通过 setOnClickListener 消费触摸，改为由 previewContainer 统一分发。
+     */
+    private boolean isPointInWatermark(float x, float y) {
+        if (watermarkContainer == null
+                || watermarkContainer.getVisibility() != View.VISIBLE
+                || watermarkContainer.getWidth() <= 0
+                || watermarkContainer.getHeight() <= 0) {
+            return false;
+        }
+        float localX = x - watermarkContainer.getLeft();
+        float localY = y - watermarkContainer.getTop();
+        Matrix inverse = new Matrix();
+        if (!watermarkContainer.getMatrix().invert(inverse)) {
+            return false;
+        }
+        float[] point = {localX, localY};
+        inverse.mapPoints(point);
+        return point[0] >= 0 && point[0] <= watermarkContainer.getWidth()
+                && point[1] >= 0 && point[1] <= watermarkContainer.getHeight();
     }
 
     private void initLocationServices() {
@@ -1175,7 +1203,11 @@ public class CameraActivity extends AppCompatActivity {
 
     private void updateZoomButtonText() {
         if (zoomButton == null || camera2Controller == null) return;
-        zoomButton.setText(formatZoomText(camera2Controller.getZoomRatio()));
+        String text = formatZoomText(camera2Controller.getZoomRatio());
+        CharSequence current = zoomButton.getText();
+        if (current == null || !text.contentEquals(current)) {
+            zoomButton.setText(text);
+        }
         updateZoomDockSelection();
     }
 

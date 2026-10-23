@@ -109,6 +109,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final HandlerThread cameraThread;
     private final Handler cameraHandler;
+    /** 合并连续变焦请求：触摸事件频率可能高于相机 HAL 处理能力，只保留最后一次。 */
+    private final Runnable zoomApplyRunnable = this::updateRepeatingRequest;
 
     private CameraManager cameraManager;
     private CameraDevice cameraDevice;
@@ -326,7 +328,11 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     public void setZoomRatio(float ratio) {
         float clamped = Math.max(minZoom, Math.min(maxZoom, ratio));
         currentZoom = clamped;
-        cameraHandler.post(this::updateRepeatingRequest);
+        // 不要在每次 onScale 都直接 post 一次 setRepeatingRequest：
+        // 双指缩放事件可能 120Hz，相机 HAL 处理不过来会积压，表现为变焦“慢半拍”。
+        // 移除尚未执行的旧请求，只保留最新一次；执行时读取最新的 currentZoom。
+        cameraHandler.removeCallbacks(zoomApplyRunnable);
+        cameraHandler.post(zoomApplyRunnable);
     }
 
     public void setFlashMode(int mode) {
