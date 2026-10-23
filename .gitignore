@@ -10,3 +10,8 @@ source/*.version
 
 # 根目录 IDE 配置（本机状态，不入库）
 /.idea/
+
+# 定制版本地私有默认配置/图标（不入 Gitee）
+source/filecamera/app/src/main/assets/config/custom_config.json
+source/filecamera/app/src/main/assets/config/config_source.local.txt
+source/filecamera/app/src/main/assets/custom_icon.png

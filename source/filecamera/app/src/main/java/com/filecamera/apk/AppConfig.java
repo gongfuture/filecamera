@@ -16,8 +16,9 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>默认配置是整份二选一，互斥、不合并：</p>
  * <ul>
- *     <li>config/config_source.txt 写 custom：只读 config/custom_config.json；</li>
- *     <li>config/config_source.txt 写 default：只读 config/default_config.json。</li>
+ *     <li>config/config_source.local.txt（本机私有，可选）优先；</li>
+ *     <li>否则读 config/config_source.txt；</li>
+ *     <li>其内容写 custom：只读 config/custom_config.json；写 default：只读 config/default_config.json。</li>
  * </ul>
  *
  * <p>定制文件必须是完整配置，不会从真默认值里补缺失字段；
@@ -29,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 public final class AppConfig {
 
     private static final String TAG = "AppConfig";
+    private static final String ASSET_SELECTOR_LOCAL = "config/config_source.local.txt";
     private static final String ASSET_SELECTOR = "config/config_source.txt";
     private static final String ASSET_DEFAULT = "config/default_config.json";
     private static final String ASSET_CUSTOM = "config/custom_config.json";
@@ -151,21 +153,33 @@ public final class AppConfig {
     }
 
     /**
-     * 读取 config_source.txt：custom 或 default。
-     * 文件缺失/内容非法时返回 null，不猜测、不回退。
+     * 优先读本机私有 config_source.local.txt，其次读随包 config_source.txt。
+     * 只决定读哪一份配置，不做字段合并。
      */
     private static String selectedAsset(Context context) {
+        String local = readSelector(context, ASSET_SELECTOR_LOCAL);
+        if (local != null) {
+            return local;
+        }
+        return readSelector(context, ASSET_SELECTOR);
+    }
+
+    /**
+     * 读取选择文件：custom 或 default。
+     * 文件缺失/内容非法时返回 null，不猜测、不合并配置。
+     */
+    private static String readSelector(Context context, String assetName) {
         try {
-            String source = readAssetText(context, ASSET_SELECTOR).trim();
+            String source = readAssetText(context, assetName).trim();
             if ("custom".equalsIgnoreCase(source)) {
                 return ASSET_CUSTOM;
             }
             if ("default".equalsIgnoreCase(source)) {
                 return ASSET_DEFAULT;
             }
-            Log.e(TAG, "配置来源非法: " + source);
+            Log.e(TAG, "配置来源非法: " + assetName + "=" + source);
         } catch (Exception e) {
-            Log.e(TAG, "读取 " + ASSET_SELECTOR + " 失败", e);
+            Log.d(TAG, "读取 " + assetName + " 失败或不存在", e);
         }
         return null;
     }
