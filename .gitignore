@@ -3,7 +3,6 @@
 
 # APK 安装包（历史版本通过 Gitee Release 管理，最新版保留在根目录方便下载）
 *.apk
-!巡查相机v*.apk
 
 # 版本标记文件
 source/*.version
