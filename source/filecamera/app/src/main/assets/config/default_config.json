@@ -1,0 +1,141 @@
+{
+  "server": {
+    "url": "",
+    "key": ""
+  },
+  "gaode": {
+    "web_key": ""
+  },
+  "default_config": {
+    "camera": {
+      "proportion": "16:9",
+      "sync_album": false,
+      "shutter_sound": true,
+      "save_original": false
+    },
+    "watermark": {
+      "enable": true,
+      "scale": 0.75,
+      "padding": [
+        16,
+        16,
+        16,
+        16
+      ],
+      "radius": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "position": {
+        "left": 10,
+        "bottom": 10
+      },
+      "header": {
+        "display": true,
+        "icon": {
+          "display": true,
+          "value": "file:///android_asset/icon.png",
+          "width": 48,
+          "height": 48,
+          "position": "left"
+        },
+        "title": {
+          "value": "巡查记录",
+          "color": "#FFFFFF",
+          "size": 20
+        },
+        "background": [
+          27,
+          68,
+          147,
+          255
+        ]
+      },
+      "body": {
+        "display": true,
+        "background": [
+          248,
+          250,
+          252,
+          170
+        ],
+        "content": {
+          "road_name": {
+            "name": "路线名称",
+            "type": "road",
+            "name_display": true,
+            "index": 1,
+            "color": "#2C3E50",
+            "size": 16
+          },
+          "pile": {
+            "name": "桩号",
+            "type": "camera_pile",
+            "name_display": true,
+            "index": 2,
+            "color": "#2C3E50",
+            "size": 16
+          },
+          "coord": {
+            "name": "坐标",
+            "type": "camera_coord",
+            "name_display": true,
+            "index": 3,
+            "color": "#2C3E50",
+            "size": 16
+          },
+          "time": {
+            "name": "时间",
+            "type": "time",
+            "name_display": true,
+            "index": 4,
+            "color": "#2C3E50",
+            "size": 16
+          }
+        }
+      },
+      "foot": {
+        "display": true,
+        "background": [
+          27,
+          68,
+          147,
+          255
+        ],
+        "content": {
+          "unit": {
+            "name": "责任单位",
+            "type": "string",
+            "name_display": true,
+            "value": "",
+            "index": 1,
+            "color": "#FFFFFF",
+            "size": 12
+          }
+        }
+      }
+    },
+    "qrcode": {
+      "enable": true,
+      "scale": 0.75,
+      "padding": [
+        4,
+        4,
+        4,
+        4
+      ],
+      "radius": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "position": {
+        "right": 10,
+        "top": 10
+      }
+    }
+  }
+}

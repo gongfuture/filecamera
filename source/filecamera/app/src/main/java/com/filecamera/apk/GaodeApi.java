@@ -63,8 +63,8 @@ public final class GaodeApi {
 
     // region --- API Key Management ---
 
-    private static final String PREFS_NAME = "watermark_settings";
-    public static final String KEY_GAODE_WEB_API = "gaodeWebKey";
+    private static final String PREFS_NAME = AppConfig.PREFS_NAME;
+    public static final String KEY_GAODE_WEB_API = AppConfig.KEY_GAODE_WEB_KEY;
 
     public static void saveGaodeApiKey(Context context, String apiKey) {
         if (context == null || apiKey == null) return;
@@ -87,7 +87,13 @@ public final class GaodeApi {
     public static String getGaodeApiKey(Context context) {
         if (context == null) return null;
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        return prefs.getString(KEY_GAODE_WEB_API, null);
+        String saved = prefs.getString(KEY_GAODE_WEB_API, null);
+        if (saved != null) {
+            // "" = 用户显式清空，保持空；null = 未加载，才回退默认值。
+            return saved;
+        }
+        // 用户未保存时使用真默认值/定制覆盖里的默认高德密钥。
+        return AppConfig.getGaodeWebKey(context);
     }
 
     // endregion

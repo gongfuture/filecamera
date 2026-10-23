@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!-- 路线数据校验/拉取已改由 Java 层完成，按需求不再内置服务器证书。 -->
     <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

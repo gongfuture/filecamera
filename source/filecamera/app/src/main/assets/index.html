@@ -824,6 +824,23 @@
 			color:grey;
 			margin:0 10px;
 		}
+		#key_write_button{
+			display: flex;
+			flex:1;
+			background-color: var(--dark-bg);
+			color: var(--text-light);
+			border-radius: 4px;
+			padding: 10px 0;
+			cursor: pointer;
+			font-size: 16px;
+			transition: background-color 0.2s;
+			justify-content:center;
+			align-items:center;
+			border: 1px solid var(--border-color);
+		}
+		#key_write_button.hover{
+			opacity: 0.85;
+		}
     </style>
    <style>
 	 input[type="text"], input[type="number"], select {
@@ -1242,7 +1259,7 @@
 		border-radius: 10px;
 		box-shadow: 0 4px 12px rgba(0,0,0,0.08);
 	}
-	.rm_clear_and_upload {
+	#rm_clear_and_upload {
 		display: flex;
 		flex:1;
 		background-color: var(--waring-color);
@@ -1250,12 +1267,13 @@
 		border-radius: 4px;
 		padding: 10px 0;
 		cursor: pointer;
-		font-size: 16px;
+		font-size: 14px;
 		transition: background-color 0.2s;
 		justify-content:center;
+		align-items:center;
 		border: 1px solid var(--border-color);
 	}
-	.rm_replace_and_upload {
+	#rm_replace_and_upload,#get_road_data_btn {
 		display: flex;
 		flex:1;
 		background-color: var(--dark-bg);
@@ -1263,32 +1281,34 @@
 		border-radius: 4px;
 		padding: 10px 0;
 		cursor: pointer;
-		font-size: 16px;
+		font-size: 14px;
 		transition: background-color 0.2s;
 		justify-content:center;
+		align-items:center;
 		border: 1px solid var(--border-color);
 	}
-	.rm_clear_and_upload.hover{
+	#rm_clear_and_upload.hover{
 		background-color: var(--waring-hover);
 	}
 
-	.rm_replace_and_upload:hover {
+	#rm_replace_and_upload:hover,#get_road_data_btn:hover {
 		opacity: 0.85;
 	}
-	.rm_button {
+	#rm_load_list_btn {
 		display: flex;
 		flex:1;
 		color: var(--text-light);
 		border-radius: 4px;
 		padding: 10px 0;
 		cursor: pointer;
-		font-size: 16px;
+		font-size: 14px;
 		transition: background-color 0.2s;
 		justify-content:center;
+		align-items:center;
 		border: 1px solid var(--border-color);
 		background:var(--accent-color);
 	}
-	.rm_button:hover {
+	#rm_load_list_btn:hover {
 		background:var(--accent-hover);
 	}	
 	/* 隐藏原生的文件输入框 */
@@ -2052,14 +2072,22 @@
 				<div id="rm_main_view" style="width: 100%; display:flex;flex:1; flex-direction: column;">
 					<!-- 1. 文件操作区域 -->
 					<div id="rm_upload_section" style="padding: 15px; background-color: #ffffff; border-radius: 8px; box-shadow: var(--shadow-sm);">
+						<div id="road_data_switch_row" style='width:100%; display:flex; flex-direction:row;align-items:center;margin-bottom:10px;'>
+							<span style='display:flex;color:#586069;justify-content:center;align-items:center;margin-right:10px;'>自动更新</span>
+							<label class="switch" id="road_data_switch">
+								<input type="checkbox" id="road_data_checkbox">
+								<span class="slider"></span>
+							</label>
+						</div>
 						<div style='width:100%; display:flex; flex-direction:row; gap: 3px;'>
-							<button  class="rm_replace_and_upload">增量更新</button>
-							<button class="rm_clear_and_upload">全量替换</button>
-							<button id="rm_load_list_btn" class="rm_button">刷新列表</button>							
-							<input type="file" id="rm_upload_input" accept=".geojson,.json">						
+							<button id="get_road_data_btn">立即更新</button>
+							<button id="rm_replace_and_upload">增量更新</button>
+							<button id="rm_clear_and_upload">全量替换</button>
+							<button id="rm_load_list_btn">刷新列表</button>
+							<input type="file" id="rm_upload_input" accept=".geojson,.json">
 							<input type="file" id="rm_replace_input" accept=".geojson,.json">
 						</div>
-						<div  id="rm_status_log" style="text-align: center;align-items: center; height: 20px;width:100%;">请选择 GeoJSON 文件进行操作。</div>
+						<div  id="rm_status_log" style="text-align: center;align-items: center; min-height: 20px;width:100%;">请选择 GeoJSON 文件进行操作。</div>
 					</div>
 
 					<!-- 2. 路线列表区域 -->
@@ -2084,6 +2112,14 @@
 				<div id="key_main_view" style="width: 100%; display:flex; flex:1; flex-direction: column;">
 					<div class="key_manage_card">
 						<!-- 输入区域 -->
+						<div class='key_manage_input_div'>
+							<label for="serverUrlInput">服务器地址:</label>
+							<input type="text" id="serverUrlInput" placeholder="例如 https://www.example.com:8080">
+						</div>
+						<div class='key_manage_input_div'>
+							<label for="serverKeyInput">服务器密钥:</label>
+							<input type="text" id="serverKeyInput" placeholder="服务器 API Key">
+						</div>
 						<div class='key_manage_input_div'>
 							<label for="gaodeWebKey">高德Web服务秘钥:</label>
 							<input type="text" id="gaodeWebKeyinput" placeholder="请在此输入秘钥 (Key)">
@@ -2130,6 +2166,8 @@
 	}
 	let cover_display = false;
 	let ui_lock = false;
+	let auto_get_road_data = false;
+	const ONE_HOUR_IN_MS = 60 * 60 * 1000;
 
 	function formatBytes(bytes) {
 	  if (bytes === 0) return '0 Bytes';
@@ -2139,6 +2177,9 @@
 	  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + units[i];
 	}
 	async function get_config(){
+		// 服务器地址/密钥：优先读取用户在秘钥管理页保存的值，否则使用真默认值 + 定制覆盖后的默认值。
+		// 放在最前面，保证即使其他配置解析异常，路线页入口也能按配置正确显示。
+		await load_server_config();
 		const cover_display_config_json = localStorage.getItem('cover_display');
 		if(cover_display_config_json){
 			let obj = JSON.parse(cover_display_config_json)
@@ -2147,6 +2188,26 @@
 				document.getElementById('cover_checkbox').checked = true;
 				cover_display = true;
 			}
+		}
+		const auto_get_road_data_config_json = localStorage.getItem('auto_get_road_data');
+		if(auto_get_road_data_config_json){
+			let obj = JSON.parse(auto_get_road_data_config_json)
+			if(obj&&obj.auto){
+				document.getElementById('road_data_checkbox').checked = true;
+				auto_get_road_data = true;
+			}
+		}
+		if(auto_get_road_data && server_config.url && server_config.key){
+			let last_check_time = Number(localStorage.getItem('last_checktime'));
+			const currentTime = Date.now();
+			const timeDifference = currentTime - last_check_time;
+			if(timeDifference > ONE_HOUR_IN_MS){
+				getRoadData(server_config.url, true)
+			}
+		} else if (!server_config.url || !server_config.key) {
+			auto_get_road_data = false;
+			const checkbox = document.getElementById('road_data_checkbox');
+			if (checkbox) checkbox.checked = false;
 		}
 		await updateTable("root")
 	}

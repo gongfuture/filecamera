@@ -4,7 +4,6 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Log;
 
-import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -15,12 +14,13 @@ import org.json.JSONObject;
 public class WatermarkConfigManager {
 
     private static final String TAG = "WatermarkConfigManager";
-    private static final String PREFERENCES_NAME = "watermark_settings";
-    private static final String WATERMARK_CONFIG_KEY = "watermark_config_json";
+    private static final String PREFERENCES_NAME = AppConfig.PREFS_NAME;
+    private static final String WATERMARK_CONFIG_KEY = AppConfig.KEY_WATERMARK_CONFIG;
     /** 拍照声音默认值从「关」改为「开」的一次性迁移标记 */
     private static final String KEY_SOUND_DEFAULT_APPLIED = "shutter_sound_default_on_applied";
 
     private static WatermarkConfigManager instance;
+    private final Context appContext;
     private final SharedPreferences sharedPreferences;
     
     // 内存缓存，保证读取速度
@@ -28,7 +28,8 @@ public class WatermarkConfigManager {
 
     private WatermarkConfigManager(Context context) {
         // 使用 Application Context 防止内存泄漏
-        this.sharedPreferences = context.getApplicationContext()
+        this.appContext = context.getApplicationContext();
+        this.sharedPreferences = appContext
                 .getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
     }
 
@@ -49,6 +50,8 @@ public class WatermarkConfigManager {
         }
 
         String savedConfig = sharedPreferences.getString(WATERMARK_CONFIG_KEY, null);
+        // 水印配置是整份 JSON，null/空字符串都按未加载处理；
+        // 标量设置（服务器、高德 key）才严格区分 null 和 ""。
         if (savedConfig != null && !savedConfig.isEmpty()) {
             try {
                 // 校验 JSON 格式是否有效
@@ -119,82 +122,9 @@ public class WatermarkConfigManager {
     }
 
     /**
-     * 获取默认的水印配置 JSON 字符串
+     * 获取默认的水印配置 JSON 字符串（与前端共用真默认值 + 定制覆盖）。
      */
     private String getDefaultWatermarkConfig() {
-        try {
-            JSONObject rootConfig = new JSONObject();
-
-            // --- 相机配置 ---
-            JSONObject camera = new JSONObject()
-                    .put("proportion", "16:9")
-                    .put("sync_album", false)
-                    .put("shutter_sound", true)
-                    .put("save_original", false);
-            rootConfig.put("camera", camera);
-
-            // --- 水印配置 ---
-            JSONObject watermark = new JSONObject()
-                    .put("enable", true)
-                    .put("scale", 0.75)
-                    .put("padding", new JSONArray("[16, 16, 16, 16]"))
-                    .put("radius", new JSONArray("[8, 8, 8, 8]"))
-                    .put("position", new JSONObject().put("left", 10).put("bottom", 10));
-
-            // 页眉
-            JSONObject header = new JSONObject()
-                    .put("display", true)
-                    .put("background", new JSONArray("[27, 68, 147, 255]"))
-                    .put("icon", new JSONObject()
-                            .put("display", true)
-                            .put("value", "file:///android_asset/icon.png")
-                            .put("width", 48)
-                            .put("height", 48)
-                            .put("position", "left"))
-                    .put("title", new JSONObject()
-                            .put("value", "巡查记录")
-                            .put("color", "#FFFFFF")
-                            .put("size", 20));
-
-            // 主体
-            JSONObject body = new JSONObject()
-                    .put("display", true)
-                    .put("background", new JSONArray("[248, 250, 252, 170]"))
-                    .put("content", new JSONObject()
-                            .put("road_name", new JSONObject().put("name", "路线名称").put("type", "road").put("name_display", true).put("index", 1).put("color", "#2C3E50").put("size", 16))
-                            .put("pile", new JSONObject().put("name", "桩号").put("type", "camera_pile").put("name_display", true).put("index", 2).put("color", "#2C3E50").put("size", 16))
-                            .put("coord", new JSONObject().put("name", "坐标").put("type", "camera_coord").put("name_display", true).put("index", 3).put("color", "#2C3E50").put("size", 16))
-                            .put("time", new JSONObject().put("name", "时间").put("type", "time").put("name_display", true).put("index", 4).put("color", "#2C3E50").put("size", 16))
-                    );
-
-            // 页脚
-            JSONObject foot = new JSONObject()
-                    .put("display", true)
-                    .put("background", new JSONArray("[27, 68, 147, 255]"))
-                    .put("content", new JSONObject()
-                            .put("unit", new JSONObject().put("name", "责任单位").put("type", "string").put("name_display", true).put("value", "").put("index", 1).put("color", "#FFFFFF").put("size", 12))
-                    );
-
-            watermark.put("header", header)
-                    .put("body", body)
-                    .put("foot", foot);
-
-            rootConfig.put("watermark", watermark);
-
-            // --- 二维码配置 ---
-            JSONObject qrcode = new JSONObject()
-                    .put("enable", true)
-                    .put("scale", 0.75)
-                    .put("padding", new JSONArray("[4, 4, 4, 4]"))
-                    .put("radius", new JSONArray("[8, 8, 8, 8]"))
-                    .put("position", new JSONObject().put("right", 10).put("top", 10));
-
-            rootConfig.put("qrcode", qrcode);
-
-            return rootConfig.toString();
-        } catch (JSONException e) {
-            e.printStackTrace();
-            return "{}";
-        }
+        return AppConfig.getDefaultConfig(appContext);
     }
 }

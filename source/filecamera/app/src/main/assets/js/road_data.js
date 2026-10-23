@@ -8,10 +8,159 @@ const rm_uploadInput = document.getElementById('rm_upload_input');
 const rm_listContent = document.getElementById('rm_road_list_content');
 const rm_loader = document.getElementById('rm_list_loader');
 
-// --- 核心业务逻辑函数 (保持不变) ---
+// --- 服务器配置（默认值来自 config/default_config.json，定制覆盖见 config/custom_config.json） ---
+let server_config = { url: '', key: '' };
 
+async function load_server_config() {
+    try {
+        const obj = await callAndroidMethod(window.FilePicker, 'readConfig', {
+            key_arr: ['serverUrl', 'serverKey']
+        });
+        server_config.url = (obj && obj.serverUrl) ? String(obj.serverUrl).trim() : '';
+        server_config.key = (obj && obj.serverKey) ? String(obj.serverKey).trim() : '';
+    } catch (error) {
+        console.warn('读取服务器配置失败:', error);
+    }
+    update_road_server_ui();
+    return server_config;
+}
+
+function update_road_server_ui() {
+    const configured = !!(server_config.url && server_config.key);
+    const switchRow = document.getElementById('road_data_switch_row');
+    const updateBtn = document.getElementById('get_road_data_btn');
+    if (switchRow) switchRow.style.display = configured ? 'flex' : 'none';
+    if (updateBtn) updateBtn.style.display = configured ? 'flex' : 'none';
+    if (!configured) {
+        const checkbox = document.getElementById('road_data_checkbox');
+        if (checkbox) checkbox.checked = false;
+        auto_get_road_data = false;
+    }
+}
+
+// --- 核心业务逻辑函数 (保持不变) ---
+async function get_fetch(url, timeout = 20000) {
+    console.log(url);
+    
+    try {
+        // 网络请求从 JS 的 fetch 下放到 Java 层，绕开 WebView 的证书限制。
+        // Java 返回已解析的 JSON；失败时 promise reject，错误信息来自 Java。
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('请求超时')), timeout);
+        });
+        const result = await Promise.race([
+            callAndroidMethod(window.roadApi, 'fetchRoadData', { url: url }),
+            timeoutPromise
+        ]);
+        return result;
+    } catch (error) {
+        console.error('请求错误:', error);
+        return { success: false, error: error.message || String(error) };
+    }
+}
+async function update_road_data_from_api(url){
+	await getRoadData(url || server_config.url);
+	await loadAndRenderRoads();
+}
+let is_getting_road_data = false;
+async function getRoadData(url,mode) {
+	if(is_getting_road_data){
+		return;
+	}
+    const requestUrl = (url || server_config.url || '').trim();
+    if (!requestUrl || !server_config.key) {
+        rm_statusEl.textContent = '⚠️ 未配置服务器地址或密钥';
+        return;
+    }
+    const currentTime = Date.now();
+    let road_version = null
+	if(mode){
+		road_version = localStorage.getItem('road_version');
+	}
+    const obj = {
+        key: server_config.key
+    };
+    if (road_version) {
+        obj.client_version = road_version;
+    }
+    is_getting_road_data = true;
+	window.updata_load_info('更新中...')
+	if(!mode){
+		document.getElementById("loadingoverlay").style.display = "flex"
+	}
+    try {
+        const baseUrl = new URL(requestUrl);
+        const apiUrl = new URL('/api/road_api/check', baseUrl);
+        
+        // 添加查询参数
+        if (obj.key) {
+            apiUrl.searchParams.set('key', obj.key);
+        }
+        if (obj.client_version) {
+            apiUrl.searchParams.set('client_version', obj.client_version);
+        }
+        
+        const result = await get_fetch(apiUrl.toString());
+        // 记录检查时间
+        localStorage.setItem('last_checktime', currentTime);
+
+        // --- 处理返回结果 ---
+        if (!result || !result.success) {
+            const errorMessage = `获取数据失败: ${result?.error || '未知错误'}`;
+            rm_statusEl.textContent = `❌ 错误: ${errorMessage}`;
+			window.updata_load_info('')
+			document.getElementById("loadingoverlay").style.display = "none"	
+			is_getting_road_data = false;			
+            return; 
+        }
+
+        // 检查版本是否同步
+        if (result.is_synced) {
+            rm_statusEl.textContent = '✅ 数据已是最新版本，无需更新。';
+			window.updata_load_info('')
+			document.getElementById("loadingoverlay").style.display = "none"	
+			is_getting_road_data = false;			
+            return;
+        }
+        
+        if (result.data) {
+            let clientVersion = result.server_version;
+            localStorage.setItem('road_version', clientVersion);
+            
+            const geojson = result.data;
+
+            if (!geojson.features || !Array.isArray(geojson.features)) {
+                await alert_fix('❌ 错误: 文件格式无效：缺少 "features" 数组。');
+                rm_statusEl.textContent = '❌ 错误: 文件格式无效：缺少 "features" 数组。';
+				window.updata_load_info('')
+				document.getElementById("loadingoverlay").style.display = "none"	
+				is_getting_road_data = false;				
+                return;
+            }
+            
+            geojson.features.forEach(feature => {
+                if (feature.properties && feature.properties.coord_type === 'GCJ02') {
+                    transformGeometryCoordinates(feature.geometry);
+                    feature.properties.coord_type = 'WGS84';
+                }
+            });
+            
+            await uploadAndReplaceAllRoads(geojson);
+			rm_statusEl.textContent = '✅ 更新完成，版本号：'+clientVersion;
+        } else {
+            const message = '服务器响应版本不同步，但未返回新数据，请稍后重试。';
+            rm_statusEl.textContent = message;
+            console.warn(result.message);
+        }
+    } catch (error) {
+        rm_statusEl.textContent = `❌ 错误: URL格式无效 - ${error.message}`;
+        console.error('URL解析错误:', error);
+    }
+	window.updata_load_info('')
+	document.getElementById("loadingoverlay").style.display = "none"	
+	is_getting_road_data = false;	
+}
 function uploadAndReplaceAllRoads(geoJsonObject) {
-    console.log("准备全量替换:", JSON.stringify(geoJsonObject));
     const payload = { geoJson: geoJsonObject };
     return callAndroidMethod(window.roadApi, 'replaceAllRoads', payload);
 }
@@ -166,19 +315,23 @@ function resetRoadManagerState() {
 }
 
 // --- 事件监听器设置 ---
-
-// [核心修改] 统一在父容器 roadPage 上使用事件委托处理所有点击事件
+document.getElementById("road_data_checkbox").addEventListener('change', async () => {
+	let road_data_checkbox = document.getElementById("road_data_checkbox")
+	auto_get_road_data = road_data_checkbox.checked;
+	const configToSave = { auto: auto_get_road_data };
+	localStorage.setItem('auto_get_road_data', JSON.stringify(configToSave));
+});
 roadPage.addEventListener('click', async (event) => {
     const target = event.target;
 
     // 1. 处理 "增量更新" 按钮点击
-    if (target.closest('.rm_replace_and_upload')) {
+    if (target.closest('#rm_replace_and_upload')) {
         rm_uploadInput.click();
         return;
     }
 
     // 2. 处理 "全量替换" 按钮点击
-    if (target.closest('.rm_clear_and_upload')) {
+    if (target.closest('#rm_clear_and_upload')) {
         rm_replaceInput.click();
         return;
     }
@@ -188,7 +341,10 @@ roadPage.addEventListener('click', async (event) => {
         await loadAndRenderRoads();
         return;
     }
-
+    if (target.closest('#get_road_data_btn')) {
+        await update_road_data_from_api()
+        return;
+    }
     // 4. 处理 "删除" 按钮点击
     const deleteBtn = target.closest('.road-card-delete-btn');
     if (deleteBtn) {

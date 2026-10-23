@@ -511,7 +511,7 @@ async function video_forward(){
 }
 
 async function picture_back(){
-	haptic();
+	// 滑动切图不加马达震动；按钮点击的震动由全局 click 监听负责
 	let img = document.getElementById('fileimg')
 	if(img.src){
 		URL.revokeObjectURL(img.src)
@@ -592,7 +592,7 @@ function delay(ms) {
 }
 
 async function picture_forward(){
-	haptic();
+	// 滑动切图不加马达震动；按钮点击的震动由全局 click 监听负责
 	if(picture_arr.length===0){
 		return;
 	}

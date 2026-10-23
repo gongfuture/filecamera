@@ -60,7 +60,7 @@ public class FilePickerBridge {
 
     // region --- 常量和成员变量 ---
     private static final String TAG = "FilePickerBridge";
-    private static final String PREFERENCES_NAME = "watermark_settings";
+    private static final String PREFERENCES_NAME = AppConfig.PREFS_NAME;
     
     // [MODIFIED] 去掉了 WATERMARK_CONFIG_KEY 和 cachedWatermarkConfig，由 Manager 管理
 
@@ -380,6 +380,11 @@ public class FilePickerBridge {
                 for (int i = 0; i < key_arr.length(); i++) {
                     String key = key_arr.getString(i);
                     String value = sharedPreferences.getString(key, null);
+                    // null = 未加载，回填 AppConfig 默认值；
+                    // "" = 用户显式保存的空值，原样返回，不回填。
+                    if (value == null) {
+                        value = AppConfig.getDefaultValue(activity, key);
+                    }
                     result.put(key, value);
                 }
                 call_js_callback(task_id, true, result, null);

@@ -1,54 +1,28 @@
 // --- 数据模型 (默认值) ---
-let DEFAULT_CONFIG = {
-    camera:{
-		proportion:"16:9",
-		sync_album:false,
-		shutter_sound:true,
-		save_original:false
-	},
-    watermark: {
-        enable: true,
-        scale: 0.75,
-        padding: [16, 16, 16, 16],
-        radius: [8, 8, 8, 8],
-        position: { left: 10, bottom: 10 },
-        header: {
-			display:true, // <-- 新增
-            icon: { display:true, value: "file:///android_asset/icon.png", width: 48, height: 48, position: "left" }, // <-- 新增
-            title: { value: "巡查记录", color: "#FFFFFF", size: 20 },
-            background: [27, 68, 147, 255]
-        },
-        body: {
-			display:true, // <-- 新增
-            background: [248, 250, 252, 170],
-            content: {
-                road_name: { name: "路线名称", type: "road", name_display: true, index: 1, color: "#2C3E50", size: 16 },
-                pile: { name: "桩号", type: "camera_pile", name_display: true, index: 2, color: "#2C3E50", size: 16 },
-                coord: { name: "坐标", type: "camera_coord", name_display: true, index: 3, color: "#2C3E50", size: 16 },
-                time: { name: "时间", type: "time", name_display: true, index: 4, color: "#2C3E50", size: 16 },
-				//workshop:{ name: "车间", type: "input_auto_save", name_display: true, index: 5, color: "#2C3E50", size: 16 },
-				//problem:{ name: "问题", type: "input", name_display: true, index: 5, color: "#2C3E50", size: 16 },
-				//weather:{ name: "天气", type: "weather", name_display: true, value: "",index: 6, color: "#2C3E50", size: 16 },
-				//address:{ name: "地址", type: "address", name_display: true, index: 7, color: "#2C3E50", size: 16 },
-				
-            }
-        },
-        foot: {
-			display:true, // <-- 新增
-            background: [27, 68, 147, 255],
-            content: {
-                unit: { name: "责任单位", type: "string", name_display: true, value: "", index: 1, color: "#FFFFFF", size: 12 }
-            }
-        }
-    },
-    qrcode: {
-        enable: true,
-        scale: 0.75,
-        padding: [4, 4, 4, 4],
-        radius: [8, 8, 8, 8],
-        position: { right: 10, top: 10 }
+// 默认配置不写死在前端，统一从 config/default_config.json 的 default_config 读取，
+// 定制版由 config/custom_config.json 覆盖；与 Java WatermarkConfigManager 使用同一个合并结果。
+// 前端通过现有 FilePicker.readConfig 桥接取默认值（Java AppConfig 读取同一份 JSON）。
+let DEFAULT_CONFIG = null;
+let default_config_promise = null;
+
+async function ensure_default_config() {
+    if (DEFAULT_CONFIG) return DEFAULT_CONFIG;
+    if (!default_config_promise) {
+        default_config_promise = (async () => {
+            const obj = await callAndroidMethod(window.FilePicker, 'readConfig', {
+                key_arr: ['defaultConfig']
+            });
+            const raw = obj && obj.defaultConfig;
+            DEFAULT_CONFIG = raw ? JSON.parse(raw) : {};
+            return DEFAULT_CONFIG;
+        })().catch((error) => {
+            console.error('加载默认配置失败:', error);
+            DEFAULT_CONFIG = {};
+            return DEFAULT_CONFIG;
+        });
     }
-};
+    return default_config_promise;
+}
 
 let config = null;
 let isConfigDirty = false;
@@ -65,6 +39,8 @@ const TYPE_OPTIONS = {
 	address: '地址 (动态，需秘钥)'
 };
 async function open_setting_page(){
+	// 默认配置与 Java 共用同一套真默认值+定制覆盖，先确保加载完成再打开设置页。
+	await ensure_default_config();
 	let obj = await nativeReadConfig()
 	await loadConfig(obj)
 	document.getElementById('setting_div').classList.add('expanded');
@@ -145,7 +121,7 @@ function rgbaArrayToHex(rgba) {
 async function loadConfig(obj) {
     try {
         // 兼容旧的配置文件，如果旧的里面没有camera属性，就给它加上
-        if (obj && !obj.camera) {
+        if (obj && !obj.camera && DEFAULT_CONFIG && DEFAULT_CONFIG.camera) {
             obj.camera = JSON.parse(JSON.stringify(DEFAULT_CONFIG.camera));
         }
         config = obj;
@@ -860,6 +836,11 @@ function updateConfig(path, value) {
 }
 
 async function resetToDefault() {
+    await ensure_default_config();
+    if (!DEFAULT_CONFIG || !DEFAULT_CONFIG.watermark) {
+        await alert_fix('默认配置加载失败，无法恢复默认设置');
+        return;
+    }
     if (await confirm_fix('确定要恢复默认设置吗？')) {
         config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
         isConfigDirty = true; // 标记为已更改
@@ -940,7 +921,11 @@ async function renameContentKey(path, oldKey, newKey) {
 
 function createIconPickerControl(path) {
     // Java 使用的默认路径 (存储在配置中)
-    const defaultIconPathForJava = DEFAULT_CONFIG.watermark.header.icon.value; // "file:///android_asset/icon.png"
+    const defaultIconPathForJava =
+        (DEFAULT_CONFIG && DEFAULT_CONFIG.watermark && DEFAULT_CONFIG.watermark.header &&
+         DEFAULT_CONFIG.watermark.header.icon && DEFAULT_CONFIG.watermark.header.icon.value)
+            ? DEFAULT_CONFIG.watermark.header.icon.value
+            : "file:///android_asset/icon.png";
     // JavaScript 使用的默认路径 (用于显示)
     const defaultIconPathForJS = 'icon.png';
     
