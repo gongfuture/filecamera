@@ -59,6 +59,17 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`
 
 Requirements: Android Studio with AGP 9.x support | SDK 34 | JDK 17+
 
+### Custom build (maintainers)
+
+Open-source builds contain no custom content. Keep `custom_config.json` and `custom_icon.png` in a private directory outside the repository (for example `D:\gitee\_private\filecamera\`); never commit them.
+
+To build the custom variant, temporarily copy them to (relative to the repository root):
+
+- `source/filecamera/app/src/main/assets/config/custom_config.json`
+- `source/filecamera/app/src/main/assets/custom_icon.png`
+
+Remove them immediately after the build. Before publishing an open-source release, unpack the APK and verify that neither path exists.
+
 ## Usage
 
 ### Weather and address

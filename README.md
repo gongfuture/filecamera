@@ -59,6 +59,17 @@ Windows：
 
 环境要求：Android Studio（支持 AGP 9.x）| SDK 34 | JDK 17+
 
+### 定制版构建（维护者）
+
+开源版默认不包含定制内容。`custom_config.json` 和 `custom_icon.png` 平时放在仓库外的私有目录（建议 `D:\gitee\_private\filecamera\`），不要提交到仓库。
+
+需要编译定制版时，把两个文件临时放到（相对仓库根目录）：
+
+- `source/filecamera/app/src/main/assets/config/custom_config.json`
+- `source/filecamera/app/src/main/assets/custom_icon.png`
+
+构建完成后立即移出。发布开源版前建议解包 APK，确认上述两个路径不存在。
+
 ## 使用指南
 
 ### 配置天气与地址
