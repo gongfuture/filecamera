@@ -31,8 +31,6 @@ No ads, no fees, no hidden terms. Photos and videos stay in the app's private fo
 - **Video watermarks are burned into the recorded frames**; new video browser with playback, paging, delete, share, and export.
 - Continuous photo sessions; exit the camera to deliver all new photos at once. Photo watermark scaling uses the screen's longer side.
 - Redesigned camera UI, separate photo/video viewers, and haptic feedback for controls, rows, menus, dialogs, and camera widgets.
-- Fixed 4:3 full-frame preview; photo/video ratios are configured independently; front-mirror and +90° watermark placement fixes.
-- File-path validation, legacy player cleanup, permission black-screen fix, and video-deletion fix.
 
 ## Getting started
 
