@@ -926,8 +926,13 @@ function createIconPickerControl(path) {
          DEFAULT_CONFIG.watermark.header.icon && DEFAULT_CONFIG.watermark.header.icon.value)
             ? DEFAULT_CONFIG.watermark.header.icon.value
             : "file:///android_asset/icon.png";
-    // JavaScript 使用的默认路径 (用于显示)
-    const defaultIconPathForJS = 'icon.png';
+    // JavaScript 使用的默认路径 (用于显示)：跟随当前默认配置的 asset 路径。
+    // 定制配置可能指向 custom_icon.png，不能写死为 icon.png，否则设置页预览
+    // 会和实际水印使用的定制图标不一致。
+    const ANDROID_ASSET_PREFIX = 'file:///android_asset/';
+    const defaultIconPathForJS = defaultIconPathForJava.startsWith(ANDROID_ASSET_PREFIX)
+        ? defaultIconPathForJava.slice(ANDROID_ASSET_PREFIX.length)
+        : 'icon.png';
     
     const currentUri = getValueByPath(config, path) || defaultIconPathForJava;
 
@@ -939,8 +944,9 @@ function createIconPickerControl(path) {
         properties: {
             src: '', // 初始 src 将在下面设置
             onerror: function() {
-                // 如果图片加载失败，显示一个占位符或默认图标
-                this.src = defaultIconPathForJS;
+                // 加载失败时回退到内置 icon.png，避免定制图标缺失时反复触发 onerror
+                this.onerror = null;
+                this.src = 'icon.png';
             }
         }
     });
