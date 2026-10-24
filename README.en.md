@@ -2,145 +2,46 @@
 
 An open-source watermark camera for highway patrols, bridge inspections, pipeline surveys, and similar fieldwork.
 
-No ads, no fees, no hidden terms. Photos and videos are stored in the app's private folder tree instead of the personal gallery.
+No ads, no fees, no hidden terms. Photos and videos stay in the app's private folder tree instead of the personal gallery.
 
-> ## Choose the right version first
->
-> **The current `master` branch is a large Camera2 video-watermark rewrite.** It adds video watermarking during recording, a video browser, and a redesigned camera UI.
->
-> **If you only need photo capture + photo watermarks and do not need video watermarks, use the stable legacy build:**
->
-> **[FileCamera v20260825-02 APK (stable legacy)](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk)**
->
-> The legacy version has been used in the field for a long time and is stable for photos, watermarks, route matching, weather, and folder management.
-> Validate the current rewrite on a small scale before rolling it out broadly.
->
-> [All releases](https://gitee.com/zjywchenhui/filecamera/releases)
+## Downloads
 
-> **Current rewrite release: v20261023-01**
-> [Download the new APK (video-watermark rewrite)](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261023-01/FileCamera-v20261023-01.apk)
-> The APK displays version **1.0**; its internal versionCode is `1`. If a higher versionCode is already installed, use `adb install -r -d` to force the downgrade.
+| Version | Best for | Download |
+| --- | --- | --- |
+| **v20261024-01 (current)** | Camera2 video-watermark rewrite with video watermarking, video browser, and redesigned camera UI | [FileCamera-v20261024-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261024-01/FileCamera-v20261024-01.apk) |
+| v20260825-02 (stable legacy) | Photo capture + photo watermarks only; field-proven | [FileCamera v20260825-02 APK](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk) |
 
-## What changed from the legacy version
-
-### Video
-
-- Camera pipeline migrated from CameraX to **Camera2**
-- Video encoded directly to standard MP4 with **MediaCodec + Media3 Muxer**
-- Audio, rotation metadata, and interrupted-session recovery
-- **Video watermark is burned into the recorded frames**, not overlaid during playback
-- New video browser with playback, previous/next, delete, share, and export
-
-### Photos
-
-- Photo watermarks, QR codes, GPS, weather, address, route matching, and pile numbers retained
-- Continuous capture session: take multiple photos, then deliver new records when exiting the camera
-- Photo watermark scaling now uses the screen's longer side, avoiding watermark enlargement after the new camera UI reduced the preview area
-- Video thumbnails are generated with a translucent play triangle
-
-### UI and interaction
-
-- Redesigned dark camera panel with amber shutter/mode bar and zoom capsule
-- Separate image viewer and video viewer containers
-- Independent delete, share, export, and paging logic for photos and videos
-- Haptic feedback for buttons, file rows, menus, dialogs, and native camera controls
-- Front preview now uses a single horizontal flip with no rotation compensation, avoiding reversed rotation
-- Preview is fixed to the full 4:3 sensor frame; photo/video still use the configured aspect ratio, with matrix-based cover and clipping
-- Front final photos get one horizontal mirror so they match the preview
-- Zoom capsule text auto-sizes between 9sp and 16sp; presets follow the device CONTROL_ZOOM_RATIO_RANGE
-- Video watermark margins are normalized to a 1920 reference frame to match photo edge spacing
-- Watermarks use the preview container coordinates directly
-- Preview watermark placement now uses the rotated visual rectangle, fixing +90° corner offset; the safety margin is fixed at 10px
-- Unified JS bridge contract remains: `callAndroidMethod(task_id + JSON)` + `handlePromiseCallback`
-
-### Security and stability
-
-- File-path validation
-- Removed the legacy player activity; videos now play in the WebView
-- Fixed first-permission camera black screen and video deletion incorrectly using the image array
+- `master` is the rewrite. Prefer the stable legacy build if you do not need video watermarks.
+- The rewrite changes a lot; validate on a small scale before broad rollout.
+- The APK reports version **1.0** (versionCode `1`). If a higher versionCode is already installed, use `adb install -r -d`.
+- [All releases](https://gitee.com/zjywchenhui/filecamera/releases) · [Source archive v20261024-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261024-01.zip)
 
 ## Features
 
-### Watermark
+- **Watermark**: independent header/body/footer sections with adjustable text, colors, font sizes, and icon; dynamic route name, pile number, coordinates, time, weather, and address; ZIP export/import for batch deployment.
+- **File management**: folder-tree management for photos and videos, including create, rename, move, copy, delete, sort, import/export, thumbnails, and viewers.
+- **Routes and pile numbers**: import GeoJSON from [Road Manager](https://gitee.com/zjywchenhui/road_manage); photos are matched to the nearest route and pile numbers are calculated automatically.
+- **Field data**: optional Amap Web Service key for weather and reverse geocoding; one-tap adcode lookup.
+- **QR navigation**: Amap navigation QR code with coordinates, ready to scan after sharing.
+- **Camera**: 16:9 / 4:3 / 1:1, touch focus, flash, front/rear camera, zoom presets, shutter sound, watermark-free original with EXIF/GPS, gallery copy; video as standard MP4 + audio + watermark.
 
-- Independent header, body, and footer configuration
-- Adjustable text, colors, font sizes, and icon
-- Dynamic fields: route name, pile number, coordinates, time, weather, address
-- Export/import watermark settings as ZIP for batch deployment
+## Rewrite highlights
 
-### File management
-
-- Folder-tree management for photos and videos
-- Create, rename, move, copy, delete, and sort
-- Import/export files or entire folders
-- Thumbnails, image viewer, and video browser
-- Private app storage by default, export when needed
-
-### Routes and field data
-
-- Import GeoJSON routes from [Road Manager](https://gitee.com/zjywchenhui/road_manage)
-- Automatically match the nearest route and calculate pile numbers
-- Optional Amap Web Service API key for weather and reverse geocoding
-- One-tap adcode lookup
-
-### QR navigation
-
-- Photos can include an Amap navigation QR code with coordinates
-- Scan after sharing to navigate to the capture location
-
-### Camera
-
-- 16:9 / 4:3 / 1:1 aspect ratios
-- Touch focus, flash, front/rear camera, zoom presets
-- Optional shutter sound
-- Optional watermark-free original with EXIF/GPS
-- Optional copy to the system gallery
-- Video mode with standard MP4 + audio + watermark
-
-## Architecture
-
-Hybrid WebView + Java architecture:
-
-- **WebView / H5**: file list, settings, route management, image/video viewers
-- **Java native layer**: camera, recording, watermark compositing, file index, location, weather, route calculations
-- **Unified JS bridge**: `task_id + JSON` requests; native replies through `handlePromiseCallback`
-
-```text
-WebView (HTML/CSS/JS)
-  ├─ index.html / setting.js / view.js / menu.js / file_server.js
-  ├─ Android_js_bridge      unified JS → Native bridge
-  ├─ BackServer             file index and built-in HTTP file server
-  └─ FilePickerBridge       file picking, config import/export, sharing
-
-Camera2
-  ├─ Camera2Controller      preview, capture, recording session
-  ├─ Camera2GlRenderer      camera frame + watermark → encoder Surface
-  ├─ Camera2MuxerSink       MediaCodec + Media3 Muxer → MP4
-  └─ WatermarkBitmapRenderer watermark bitmap rendering
-```
-
-## Tech stack
-
-| Category | Technology |
-|----------|------------|
-| Minimum | Android 10 (API 29) |
-| Compile/target SDK | 34 |
-| Camera | Camera2 |
-| Video encoding | MediaCodec + Media3 Muxer |
-| QR code | ZXing 3.5.3 |
-| Frontend | WebView (HTML5 / CSS3 / JavaScript) |
-| Native | Java 17 |
-| Build | AGP 9.x / Gradle 9.x |
-| Main dependencies | AppCompat 1.6.1, Material 1.11.0, ExifInterface 1.3.7, WebKit 1.11.0 |
+- Camera pipeline migrated to **Camera2**; video uses **MediaCodec + Media3 Muxer** to produce standard MP4 with audio, rotation metadata, and interrupted-session recovery.
+- **Video watermarks are burned into the recorded frames**; new video browser with playback, paging, delete, share, and export.
+- Continuous photo sessions; exit the camera to deliver all new photos at once. Photo watermark scaling uses the screen's longer side.
+- Redesigned camera UI, separate photo/video viewers, and haptic feedback for controls, rows, menus, dialogs, and camera widgets.
+- Fixed 4:3 full-frame preview; photo/video ratios are configured independently; front-mirror and +90° watermark placement fixes.
+- File-path validation, legacy player cleanup, permission black-screen fix, and video-deletion fix.
 
 ## Getting started
 
-### Install the stable legacy build (recommended if video watermark is not needed)
+### Install
 
-1. Download [FileCamera v20260825-02 APK](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk)
-2. Install on Android 10 or later
+1. Download the current or stable legacy APK above.
+2. Install on Android 10 (API 29) or later.
 
-### Build the current rewrite from source
+### Build from source
 
 ```bash
 git clone https://gitee.com/zjywchenhui/filecamera.git
@@ -154,11 +55,7 @@ Windows:
 .\gradlew.bat assembleDebug
 ```
 
-Output:
-
-```text
-app/build/outputs/apk/debug/app-debug.apk
-```
+Output: `app/build/outputs/apk/debug/app-debug.apk`
 
 Requirements: Android Studio with AGP 9.x support | SDK 34 | JDK 17+
 
@@ -166,29 +63,48 @@ Requirements: Android Studio with AGP 9.x support | SDK 34 | JDK 17+
 
 ### Weather and address
 
-1. Apply for an Amap **Web Service** API key at [Amap Open Platform](https://lbs.amap.com/)
-2. In the app, open **Settings → Key Management** and enter the key
-3. Tap **Fetch** next to the weather adcode field to resolve the city code via GPS
+1. Apply for an Amap **Web Service** API key at [Amap Open Platform](https://lbs.amap.com/).
+2. In the app, open **Settings → Key Management** and enter the **Amap Web Service key**.
+3. Tap **Fetch** next to the weather adcode field to resolve the city code via GPS.
 
 ### Routes and pile numbers
 
-1. Export GeoJSON routes from [Road Manager](https://gitee.com/zjywchenhui/road_manage)
-2. In the app, open **Route Management** and import the GeoJSON file
-3. Photos are matched to the nearest route and pile numbers are calculated automatically
+1. Export GeoJSON routes from [Road Manager](https://gitee.com/zjywchenhui/road_manage).
+2. In the app, open **Route Management** and import the GeoJSON file.
+3. Photos are matched to the nearest route and pile numbers are calculated automatically.
+
+### Automatic route-data updates
+
+The **Route Data Service Address** and **Route Data Service Key** in Key Management are used to update route data from a route data service. Leaving them blank does not affect local route import or use.
 
 ### Batch-deploy watermark settings
 
-1. Configure the watermark on one device
-2. Open **Settings → Export Settings Package** and save the ZIP
-3. On target devices, use **Settings → Import Settings Package**
+1. Configure the watermark on one device.
+2. Open **Settings → Export Settings Package** and save the ZIP.
+3. On target devices, use **Settings → Import Settings Package** and select the ZIP.
+
+## Tech stack and architecture
+
+Hybrid WebView + Java architecture: H5 handles file lists, settings, route management, and photo/video viewers; Java handles camera, recording, watermark compositing, file indexing, location, weather, and route calculations. Both sides communicate through a unified JS bridge (`task_id + JSON`).
+
+| Category | Technology |
+| --- | --- |
+| Minimum | Android 10 (API 29) |
+| Compile/target SDK | 34 |
+| Camera | Camera2 |
+| Video encoding | MediaCodec + Media3 Muxer |
+| QR code | ZXing 3.5.3 |
+| Frontend | WebView (HTML5 / CSS3 / JavaScript) |
+| Native | Java 17 |
+| Build | AGP 9.x / Gradle 9.x |
+| Main dependencies | AppCompat 1.6.1, Material 1.11.0, ExifInterface 1.3.7, WebKit 1.11.0 |
 
 ## Version notes
 
-- **v20261023-01**: default config is now an exclusive whole-file choice between default and custom; the open-source build no longer ships custom config; server address/key configurable in key management; road-data network fetch moved to Java; auto-update checks at most once per hour; camera pinch-zoom responsiveness improved; image swipe vibration fixed
-- **v20261020-02**: Camera2 video-watermark rewrite with video watermarking, video browser, new camera UI, haptics, 4:3 full-frame preview, decoupled photo/video ratios, front-photo mirroring, and a +90° preview-watermark placement fix; validate on a small scale first
-- **v20260825-02**: stable legacy version without video watermark; recommended for photo-only use
-- Current source archive: [v20261023-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261023-01.zip)
-- All versions: [Gitee Releases](https://gitee.com/zjywchenhui/filecamera/releases)
+- **v20261024-01**: key management now uses "Route Data Service Address/Key", with an optional-fill hint and a visual divider from the Amap key; the route-page warning is updated; README streamlined and the release repackaged.
+- **v20261023-01**: default config is now an exclusive whole-file choice between default and custom; the open-source build no longer ships custom config; road-data network fetch moved to Java; auto-update checks at most once per hour; zoom responsiveness and image-swipe vibration fixed.
+- **v20261020-02**: Camera2 video-watermark rewrite with video watermarking, video browser, new camera UI, haptics, and 4:3 full-frame preview; validate on a small scale first.
+- **v20260825-02**: stable legacy version with photo watermarks only; recommended if video watermarking is not needed.
 
 ## License
 

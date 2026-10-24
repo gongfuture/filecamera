@@ -1813,6 +1813,33 @@
             color: var(--text-muted);
         }
 
+        /* 分组容器：路线数据服务与高德密钥之间保持清晰的视觉分隔 */
+        .key_manage_section {
+            display: flex;
+            width: 100%;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        /* 字段说明提示 */
+        .key_manage_hint {
+            width: 100%;
+            margin: 0;
+            padding: 8px 10px;
+            border-radius: 6px;
+            background-color: rgba(3, 102, 214, 0.06);
+            border-left: 3px solid var(--accent-color);
+            color: var(--text-secondary);
+            font-size: 10px;
+            line-height: 1.5;
+        }
+
+        /* 分组之间的分隔线 */
+        .key_manage_divider {
+            width: 100%;
+            border-top: 1px solid var(--border-color);
+        }
+
         /* 按钮容器样式 */
         .key_manage_button-container {
             display: flex;
@@ -2111,18 +2138,27 @@
 			<div id = 'key_manage_page' class="child_page_content" style="padding: 10px; background-color: var(--primary-bg); display: flex;flex:1; justify-content: center;">
 				<div id="key_main_view" style="width: 100%; display:flex; flex:1; flex-direction: column;">
 					<div class="key_manage_card">
-						<!-- 输入区域 -->
-						<div class='key_manage_input_div'>
-							<label for="serverUrlInput">服务器地址:</label>
-							<input type="text" id="serverUrlInput" placeholder="例如 https://www.example.com:8080">
+						<!-- 路线数据服务（可选） -->
+						<div class="key_manage_section">
+							<div class='key_manage_input_div'>
+								<label for="serverUrlInput">路线数据服务地址:</label>
+								<input type="text" id="serverUrlInput" placeholder="例如 https://www.example.com:8080">
+							</div>
+							<div class='key_manage_input_div'>
+								<label for="serverKeyInput">路线数据服务密钥:</label>
+								<input type="text" id="serverKeyInput" placeholder="路线数据服务 API Key">
+							</div>
+							<p class="key_manage_hint">提示：以上两项用于路线数据更新，可不填。</p>
 						</div>
-						<div class='key_manage_input_div'>
-							<label for="serverKeyInput">服务器密钥:</label>
-							<input type="text" id="serverKeyInput" placeholder="服务器 API Key">
-						</div>
-						<div class='key_manage_input_div'>
-							<label for="gaodeWebKey">高德Web服务秘钥:</label>
-							<input type="text" id="gaodeWebKeyinput" placeholder="请在此输入秘钥 (Key)">
+
+						<div class="key_manage_divider"></div>
+
+						<!-- 高德 Web 服务密钥 -->
+						<div class="key_manage_section">
+							<div class='key_manage_input_div'>
+								<label for="gaodeWebKey">高德Web服务秘钥:</label>
+								<input type="text" id="gaodeWebKeyinput" placeholder="请在此输入秘钥 (Key)">
+							</div>
 						</div>
 
 						<!-- 按钮区域 -->

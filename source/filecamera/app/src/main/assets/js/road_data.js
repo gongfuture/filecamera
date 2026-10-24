@@ -69,7 +69,7 @@ async function getRoadData(url,mode) {
 	}
     const requestUrl = (url || server_config.url || '').trim();
     if (!requestUrl || !server_config.key) {
-        rm_statusEl.textContent = '⚠️ 未配置服务器地址或密钥';
+        rm_statusEl.textContent = '⚠️ 未配置路线数据服务地址或密钥';
         return;
     }
     let road_version = null
