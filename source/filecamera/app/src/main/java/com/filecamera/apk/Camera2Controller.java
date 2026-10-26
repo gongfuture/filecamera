@@ -3,6 +3,8 @@ package com.filecamera.apk;
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
 import android.graphics.Matrix;
 import android.graphics.Rect;
@@ -49,6 +51,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -944,16 +947,42 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             Size displaySize = portrait
                     ? new Size(cameraSize.getHeight(), cameraSize.getWidth())
                     : cameraSize;
-            // 相机纹理裸采样在横屏时是 180°，竖屏时是 0°；四方向按此分情况。
-            int glCameraRotation = (rotation == 90 || rotation == 270) ? 0 : 180;
+            // GL 只补偿固定的传感器安装方向；设备横竖屏由 MP4 rotation 单独处理。
+            int glCameraRotation = (360 - sensorOrientation) % 360;
             glRenderer = new Camera2GlRenderer(this::onGlError);
+            Bitmap watermarkIcon = loadWatermarkIcon(initialWatermark);
             videoCameraSurface = glRenderer.start(videoSurface, cameraSize, usedSize,
-                    glCameraRotation, displaySize, rotation, initialWatermark);
+                    glCameraRotation, displaySize, rotation, initialWatermark, watermarkIcon);
 
             captureSessionForRecording();
         } catch (Throwable e) {
             Log.e(TAG, "启动录像失败", e);
             failVideoStart(e);
+        }
+    }
+
+    private Bitmap loadWatermarkIcon(JSONObject watermark) {
+        if (watermark == null) return null;
+        String ref = watermark.optString("icon_ref", "");
+        if (ref.isEmpty()) return null;
+        try {
+            String assetPrefix = "file:///android_asset/";
+            if (ref.startsWith(assetPrefix)) {
+                try (InputStream input = context.getAssets().open(ref.substring(assetPrefix.length()))) {
+                    return BitmapFactory.decodeStream(input);
+                }
+            }
+            if (ref.startsWith("content://")) {
+                try (InputStream input = context.getContentResolver().openInputStream(
+                        android.net.Uri.parse(ref))) {
+                    return BitmapFactory.decodeStream(input);
+                }
+            }
+            String path = ref.startsWith("file://") ? ref.substring(7) : ref;
+            return BitmapFactory.decodeFile(path);
+        } catch (Exception e) {
+            Log.w(TAG, "加载录像水印图标失败", e);
+            return null;
         }
     }
 

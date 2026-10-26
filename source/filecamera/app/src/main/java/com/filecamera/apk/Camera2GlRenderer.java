@@ -84,7 +84,7 @@ final class Camera2GlRenderer {
     private SurfaceTexture cameraTexture;
     private Surface cameraSurface;
 
-    private int cameraPosLoc, cameraTexLoc, cameraMvpLoc, cameraSamplerLoc;
+    private int cameraPosLoc, cameraTexLoc, cameraMvpLoc, cameraTexMatrixLoc, cameraSamplerLoc;
     private int overlayPosLoc, overlayTexLoc, overlayMvpLoc, overlaySamplerLoc;
 
     private FloatBuffer quadBuffer;
@@ -102,6 +102,7 @@ final class Camera2GlRenderer {
     private int overlayRotation;
     private Bitmap overlayBitmap;
     private Bitmap overlayDisplayBitmap;
+    private Bitmap overlayIcon;
     private Canvas overlayCanvas;
     private boolean hasOverlay;
 
@@ -122,14 +123,16 @@ final class Camera2GlRenderer {
      * @param cameraRotation  相机帧旋转角度（0/90/180/270）
      * @param displaySize     水印的“正立”尺寸；通常等于 encoderSize，回退时可能是交换后的尺寸
      * @param overlayRotation 水印位图旋转到编码画面的角度（0/90/180/270）
+     * @param iconBitmap     已解码的水印图标，没有则为 null
      */
     Surface start(Surface encoderSurface, Size cameraSize, Size encoderSize,
                   int cameraRotation, Size displaySize, int overlayRotation,
-                  JSONObject initialWatermark) throws Exception {
+                  JSONObject initialWatermark, Bitmap iconBitmap) throws Exception {
         this.encoderSize = encoderSize;
         this.cameraSize = cameraSize;
         this.overlayDisplaySize = displaySize;
         this.overlayRotation = overlayRotation;
+        this.overlayIcon = iconBitmap;
 
         thread = new HandlerThread("Camera2Gl");
         thread.start();
@@ -256,6 +259,7 @@ final class Camera2GlRenderer {
         cameraPosLoc = GLES20.glGetAttribLocation(cameraProgram, "aPosition");
         cameraTexLoc = GLES20.glGetAttribLocation(cameraProgram, "aTexCoord");
         cameraMvpLoc = GLES20.glGetUniformLocation(cameraProgram, "uMvp");
+        cameraTexMatrixLoc = GLES20.glGetUniformLocation(cameraProgram, "uTexMatrix");
         cameraSamplerLoc = GLES20.glGetUniformLocation(cameraProgram, "sTexture");
 
         overlayPosLoc = GLES20.glGetAttribLocation(overlayProgram, "aPosition");
@@ -325,6 +329,10 @@ final class Camera2GlRenderer {
             if (overlayDisplayBitmap != null) {
                 overlayDisplayBitmap.recycle();
                 overlayDisplayBitmap = null;
+            }
+            if (overlayIcon != null) {
+                overlayIcon.recycle();
+                overlayIcon = null;
             }
         } catch (Exception ignored) {
         }
@@ -400,6 +408,7 @@ final class Camera2GlRenderer {
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId);
         GLES20.glUniform1i(cameraSamplerLoc, 0);
         GLES20.glUniformMatrix4fv(cameraMvpLoc, 1, false, mvpMatrix, 0);
+        GLES20.glUniformMatrix4fv(cameraTexMatrixLoc, 1, false, texMatrix, 0);
 
         GLES20.glEnableVertexAttribArray(cameraPosLoc);
         GLES20.glVertexAttribPointer(cameraPosLoc, 2, GLES20.GL_FLOAT, false, 0, quadBuffer);
@@ -457,12 +466,13 @@ final class Camera2GlRenderer {
             JSONObject effectiveWm = fitWatermarkScale(wm, wmWidth, wmHeight);
             if (overlayRotation == 0) {
                 WatermarkBitmapRenderer.drawWatermark(overlayCanvas,
-                        overlayBitmap.getWidth(), overlayBitmap.getHeight(), effectiveWm);
+                        overlayBitmap.getWidth(), overlayBitmap.getHeight(), effectiveWm, overlayIcon);
             } else {
                 overlayDisplayBitmap.eraseColor(Color.TRANSPARENT);
                 Canvas displayCanvas = new Canvas(overlayDisplayBitmap);
                 WatermarkBitmapRenderer.drawWatermark(displayCanvas,
-                        overlayDisplayBitmap.getWidth(), overlayDisplayBitmap.getHeight(), effectiveWm);
+                        overlayDisplayBitmap.getWidth(), overlayDisplayBitmap.getHeight(), effectiveWm,
+                        overlayIcon);
                 Canvas canvas = overlayCanvas;
                 int sw = overlayBitmap.getWidth();
                 int sh = overlayBitmap.getHeight();
@@ -584,12 +594,13 @@ final class Camera2GlRenderer {
 
     private static final String VERTEX_SHADER =
             "uniform mat4 uMvp;\n" +
+            "uniform mat4 uTexMatrix;\n" +
             "attribute vec4 aPosition;\n" +
             "attribute vec4 aTexCoord;\n" +
             "varying vec2 vTexCoord;\n" +
             "void main() {\n" +
             "  gl_Position = uMvp * aPosition;\n" +
-            "  vTexCoord = aTexCoord.xy;\n" +
+            "  vTexCoord = (uTexMatrix * aTexCoord).xy;\n" +
             "}\n";
 
     private static final String CAMERA_FRAGMENT_SHADER =

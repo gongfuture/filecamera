@@ -69,6 +69,11 @@ public final class WatermarkBitmapRenderer {
     }
     /** 把水印按画面宽高画到已有画布上（画面尺寸用于换算密度与定位）。 */
     public static void drawWatermark(Canvas canvas, int pictureWidth, int pictureHeight, JSONObject wm) {
+        drawWatermark(canvas, pictureWidth, pictureHeight, wm, null);
+    }
+
+    public static void drawWatermark(Canvas canvas, int pictureWidth, int pictureHeight,
+                                     JSONObject wm, Bitmap iconBitmap) {
         if (canvas == null || wm == null || pictureWidth <= 0 || pictureHeight <= 0) return;
         float density = pictureWidth / DESIGN_WIDTH;
         // 边距密度用短边：竖拍 1080×1920 与横拍 1920×1080 都按 1080 计算，
@@ -85,7 +90,7 @@ public final class WatermarkBitmapRenderer {
         }
 
         List<Section> sections = new ArrayList<>();
-        Section header = buildHeader(wm.optJSONObject("header"), density, scale);
+        Section header = buildHeader(wm.optJSONObject("header"), density, scale, iconBitmap);
         if (header != null) sections.add(header);
         Section body = buildContentSection(wm.optJSONObject("body"), density, scale, ctx);
         if (body != null) sections.add(body);
@@ -101,10 +106,10 @@ public final class WatermarkBitmapRenderer {
         blockWidth = Math.max(blockWidth, 1);
 
         JSONArray radiusArr = wm.optJSONArray("radius");
-        float rtl = (float) (radiusArr != null ? radiusArr.optDouble(0, 8) : 8) * density;
-        float rtr = (float) (radiusArr != null ? radiusArr.optDouble(1, 8) : 8) * density;
-        float rbr = (float) (radiusArr != null ? radiusArr.optDouble(2, 8) : 8) * density;
-        float rbl = (float) (radiusArr != null ? radiusArr.optDouble(3, 8) : 8) * density;
+        float rtl = (float) (radiusArr != null ? radiusArr.optDouble(0, 8) : 8) * density * scale;
+        float rtr = (float) (radiusArr != null ? radiusArr.optDouble(1, 8) : 8) * density * scale;
+        float rbr = (float) (radiusArr != null ? radiusArr.optDouble(2, 8) : 8) * density * scale;
+        float rbl = (float) (radiusArr != null ? radiusArr.optDouble(3, 8) : 8) * density * scale;
 
         float totalHeight = 0;
         for (Section s : sections) {
@@ -157,18 +162,23 @@ public final class WatermarkBitmapRenderer {
         int background;
         float padH;
         float padV;
+        float lineSpacing;
         final List<Row> rows = new ArrayList<>();
         float measuredHeight;
+        float textHeight;
         float maxTextWidth;
+        Bitmap icon;
+        float iconWidth;
+        float iconHeight;
+        boolean iconRight;
 
         float measureWidth() {
-            return maxTextWidth + padH * 2;
+            return maxTextWidth + padH * 2 + iconWidth;
         }
 
         void measure() {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
             maxTextWidth = 0;
-            float lineSpacing = 2;
             float total = 0;
             for (Row row : rows) {
                 paint.setTextSize(row.size);
@@ -177,7 +187,8 @@ public final class WatermarkBitmapRenderer {
                 Paint.FontMetrics fm = paint.getFontMetrics();
                 total += (fm.descent - fm.ascent) + lineSpacing;
             }
-            measuredHeight = total + padV * 2;
+            textHeight = total + padV * 2;
+            measuredHeight = Math.max(textHeight, iconHeight);
         }
 
         void draw(Canvas canvas, float left, float top, float width) {
@@ -185,9 +196,20 @@ public final class WatermarkBitmapRenderer {
             bg.setColor(background);
             canvas.drawRect(left, top, left + width, top + measuredHeight, bg);
 
+            float textLeft = left;
+            float textWidth = width;
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            float lineSpacing = 2;
-            float y = top + padV;
+            paint.setFilterBitmap(true);
+            if (icon != null) {
+                float iconLeft = iconRight ? left + width - iconWidth : left;
+                float iconTop = top + (measuredHeight - iconHeight) / 2f;
+                canvas.drawBitmap(icon, null, new RectF(iconLeft, iconTop,
+                        iconLeft + iconWidth, iconTop + iconHeight), paint);
+                textLeft = iconRight ? left : left + iconWidth;
+                textWidth = width - iconWidth;
+            }
+
+            float y = top + (measuredHeight - textHeight) / 2f + padV;
             for (Row row : rows) {
                 paint.setTextSize(row.size);
                 paint.setColor(row.color);
@@ -196,23 +218,36 @@ public final class WatermarkBitmapRenderer {
                 float baseline = y - fm.ascent;
                 if (row.center) {
                     paint.setTextAlign(Paint.Align.CENTER);
-                    canvas.drawText(row.text, left + width / 2f, baseline, paint);
+                    canvas.drawText(row.text, textLeft + textWidth / 2f, baseline, paint);
                     paint.setTextAlign(Paint.Align.LEFT);
                 } else {
                     paint.setTextAlign(Paint.Align.LEFT);
-                    canvas.drawText(row.text, left + padH, baseline, paint);
+                    canvas.drawText(row.text, textLeft + padH, baseline, paint);
                 }
                 y += (fm.descent - fm.ascent) + lineSpacing;
             }
         }
     }
 
-    private static Section buildHeader(JSONObject header, float density, float scale) {
+    private static Section buildHeader(JSONObject header, float density, float scale,
+                                       Bitmap iconBitmap) {
         if (header == null) return null;
         Section s = new Section();
         s.background = readColor(header, "background", 0xFF1B4493);
-        s.padH = 10 * density;
-        s.padV = 4 * density;
+        s.padH = 10 * density * scale;
+        s.padV = 4 * density * scale;
+        s.lineSpacing = 2 * density * scale;
+        JSONObject icon = header.optJSONObject("icon");
+        if (iconBitmap != null && icon != null && icon.optBoolean("display", true)) {
+            int width = icon.optInt("width", 0);
+            int height = icon.optInt("height", 0);
+            if (width > 0 && height > 0) {
+                s.icon = iconBitmap;
+                s.iconWidth = width * density * scale;
+                s.iconHeight = height * density * scale;
+                s.iconRight = "right".equals(icon.optString("position", "left"));
+            }
+        }
         JSONObject title = header.optJSONObject("title");
         String text = title != null ? title.optString("value", header.optString("title", "")) : "";
         if (!text.isEmpty()) {
@@ -232,8 +267,9 @@ public final class WatermarkBitmapRenderer {
         if (section == null) return null;
         Section s = new Section();
         s.background = readColor(section, "background", 0xAAF8FAFC);
-        s.padH = 10 * density;
-        s.padV = 4 * density;
+        s.padH = 10 * density * scale;
+        s.padV = 4 * density * scale;
+        s.lineSpacing = 2 * density * scale;
 
         JSONObject content = section.optJSONObject("content");
         if (content != null) {

@@ -8,13 +8,13 @@
 
 | 版本 | 适用场景 | 下载 |
 | --- | --- | --- |
-| **v20261024-02（当前版）** | Camera2 视频水印重构版，支持视频水印、视频浏览器和新相机 UI | [FileCamera-v20261024-02.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261024-02/FileCamera-v20261024-02.apk) |
+| **v20261026-01（当前版）** | 修复后置录像方向，补齐视频 Logo、圆角及整体缩放 | [FileCamera-v20261026-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261026-01/FileCamera-v20261026-01.apk) |
 | v20260825-02（稳定旧版） | 仅需拍照和照片水印，长期现场验证稳定 | [巡查相机v20260825-02.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk) |
 
 - 当前 `master` 为重构版；不需要视频水印时，优先使用稳定旧版。
 - 重构版改动较大，建议先小范围验证，再批量部署。
 - APK 显示版本为 **1.0**（versionCode `1`）；如果手机已安装更高 versionCode 的版本，请使用 `adb install -r -d` 强制安装。
-- [历史版本](https://gitee.com/zjywchenhui/filecamera/releases) · [当前源码 v20261024-02.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261024-02.zip)
+- [历史版本](https://gitee.com/zjywchenhui/filecamera/releases) · [当前源码 v20261026-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261026-01.zip)
 
 ## 核心功能
 
@@ -99,6 +99,7 @@ WebView + Java 混合架构：H5 负责文件列表、设置、路线管理和�
 
 ## 版本说明
 
+- **v20261026-01**：修复后置录像画面方向；视频水印补齐 Logo，统一 Logo、圆角、文字、内边距和行距缩放；发行 APK 不包含定制配置。
 - **v20261024-02**：修复设置页默认图标预览写死 `icon.png` 的问题；存在定制配置时，预览跟随当前配置的 `custom_icon.png`，与实际水印图标一致。
 - **v20261024-01**：密钥管理页参数改为“路线数据服务地址/密钥”，新增“用于路线数据更新”的填写提示，并与高德密钥分组；路线管理未配置提示同步；README 精简，重新打包发行版。
 - **v20261023-01**：默认配置改为 default/custom 整文件互斥选择；开源版不再携带定制配置；路线网络请求下沉 Java；自动更新改为 1 小时冷却；变焦手感与滑图震动修复。
