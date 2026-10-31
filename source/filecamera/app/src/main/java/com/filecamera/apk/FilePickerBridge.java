@@ -2,6 +2,7 @@ package com.filecamera.apk;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -249,7 +250,6 @@ public class FilePickerBridge {
             try {
                 JSONObject params = new JSONObject(json_data);
                 String targetApp = params.optString("targetApp", "all");
-                boolean multiple = params.optBoolean("multiple", false);
 
                 JSONArray filesArray = params.optJSONArray("files");
                 if (filesArray == null || filesArray.length() == 0) {
@@ -273,10 +273,13 @@ public class FilePickerBridge {
                 boolean success;
                 String errorMessage = null;
 
-                if (multiple) {
-                    success = shareMultiple(uris, names, targetApp);
-                } else {
+                // 按实际文件数量决定分享方式，而不是相信调用方固定传 true。
+                // 单文件必须用 ACTION_SEND：微信会拒绝 ACTION_SEND_MULTIPLE 中的
+                // 非照片文件，并提示“多文件分享仅支持照片格式”。
+                if (uris.size() == 1) {
                     success = shareSingle(uris.get(0), names.get(0), targetApp);
+                } else {
+                    success = shareMultiple(uris, names, targetApp);
                 }
 
                 if (!success) {
@@ -884,9 +887,12 @@ public class FilePickerBridge {
     private boolean shareSingle(Uri uri, String name, String targetApp) {
         try {
             Intent intent = new Intent(Intent.ACTION_SEND);
-            intent.setType(getMimeType(name));
+            intent.setType(getMimeType(name, uri));
             intent.putExtra(Intent.EXTRA_STREAM, uri);
             intent.putExtra(Intent.EXTRA_SUBJECT, name);
+            // ClipData 与 EXTRA_STREAM 同时设置，部分应用（含微信）只从 ClipData 取 URI；
+            // 同时保证 read 权限能完整传递给接收方。
+            intent.setClipData(ClipData.newRawUri(name, uri));
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             if ("wechat".equals(targetApp) && isAppInstalled("com.tencent.mm")) {
                 intent.setPackage("com.tencent.mm");
@@ -904,9 +910,22 @@ public class FilePickerBridge {
     private boolean shareMultiple(ArrayList<Uri> uris, ArrayList<String> names, String targetApp) {
         try {
             Intent intent = new Intent(Intent.ACTION_SEND_MULTIPLE);
-            intent.setType("*/*");
+            // 不要固定 */*：按实际文件类型设置，照片用 image/*、视频用 video/*，
+            // 接收方（尤其是微信）才能正确识别；混合类型才退回 */*。
+            intent.setType(getCommonMimeType(uris, names));
             intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
             intent.putExtra(Intent.EXTRA_SUBJECT, String.join(", ", names));
+            ClipData clipData = null;
+            for (int i = 0; i < uris.size(); i++) {
+                if (clipData == null) {
+                    clipData = ClipData.newRawUri(names.get(i), uris.get(i));
+                } else {
+                    clipData.addItem(new ClipData.Item(uris.get(i)));
+                }
+            }
+            if (clipData != null) {
+                intent.setClipData(clipData);
+            }
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             if ("wechat".equals(targetApp) && isAppInstalled("com.tencent.mm")) {
                 intent.setPackage("com.tencent.mm");
@@ -921,6 +940,35 @@ public class FilePickerBridge {
         }
     }
 
+    /** 多个文件取公共 MIME：同为大类时返回 image/*、video/* 等，混合类型返回通配类型。 */
+    private String getCommonMimeType(ArrayList<Uri> uris, ArrayList<String> names) {
+        String common = null;
+        for (int i = 0; i < uris.size(); i++) {
+            String type = getMimeType(names.get(i), uris.get(i));
+            if (common == null) {
+                common = type;
+            } else if (common.equals(type)) {
+                continue;
+            } else {
+                String commonCategory = mimeCategory(common);
+                if (commonCategory != null && commonCategory.equals(mimeCategory(type))) {
+                    common = commonCategory + "/*";
+                } else {
+                    return "*/*";
+                }
+            }
+        }
+        return common == null ? "*/*" : common;
+    }
+
+    private String mimeCategory(String mimeType) {
+        if (mimeType == null) return null;
+        int slash = mimeType.indexOf('/');
+        if (slash <= 0) return null;
+        String category = mimeType.substring(0, slash);
+        return "*".equals(category) ? null : category;
+    }
+
     private boolean isAppInstalled(String packageName) {
         try {
             activity.getPackageManager().getApplicationInfo(packageName, 0);
@@ -930,19 +978,45 @@ public class FilePickerBridge {
         }
     }
 
-    private String getMimeType(String fileName) {
+    private String getMimeType(String fileName, Uri uri) {
+        // 优先让 ContentResolver 判断（FileProvider 对 .jpg/.mp4 等会给出准确类型），
+        // 再按显示名/URI 后缀兜底。不能只看显示名：用户可能把文件重命名成无后缀。
+        if (uri != null) {
+            try {
+                String resolved = activity.getContentResolver().getType(uri);
+                if (resolved != null && !resolved.isEmpty()
+                        && !"application/octet-stream".equalsIgnoreCase(resolved)) {
+                    return resolved;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        String fromName = getMimeTypeFromName(fileName);
+        if (fromName != null) {
+            return fromName;
+        }
+        if (uri != null) {
+            String fromUri = getMimeTypeFromName(uri.getLastPathSegment());
+            if (fromUri != null) {
+                return fromUri;
+            }
+        }
+        return "*/*";
+    }
+
+    private String getMimeTypeFromName(String fileName) {
         if (fileName == null || fileName.isEmpty()) {
-            return "*/*";
+            return null;
         }
         int lastDot = fileName.lastIndexOf('.');
-        if (lastDot > 0) {
-            String extension = fileName.substring(lastDot + 1).toLowerCase();
+        if (lastDot > 0 && lastDot < fileName.length() - 1) {
+            String extension = fileName.substring(lastDot + 1).toLowerCase(Locale.US);
             String mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
             if (mimeType != null) {
                 return mimeType;
             }
         }
-        return "*/*";
+        return null;
     }
 
     private File createImageFile() throws IOException {

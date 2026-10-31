@@ -957,7 +957,9 @@ async function share_picture(){
 	let uri_arr = [];
 	let name = document.getElementById('picturenamespan').textContent;
 	uri_arr.push({uri:uri+real_file_name,name:name})
-	await nativeShareFile(uri_arr,true, 'all')
+	// 单张图片走系统「单文件分享」：微信对 ACTION_SEND_MULTIPLE 只会按
+	// 「多文件分享仅支持照片」处理，单文件分享才不会误触发该限制。
+	await nativeShareFile(uri_arr,false, 'all')
 }
 
 async function video_share(){
@@ -971,7 +973,8 @@ async function video_share(){
 	let uri_arr = [];
 	let name = nameSpan.textContent;
 	uri_arr.push({uri:uri+real_file_name,name:name});
-	await nativeShareFile(uri_arr,true, 'all');
+	// 单个视频同样走单文件分享，避免被微信当成「多文件分享」拒收。
+	await nativeShareFile(uri_arr,false, 'all');
 }
 
 async function video_download(){

@@ -298,7 +298,13 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 					uri_arr.push({uri:uri+obj.real_file_name,name:name})
 				}
 			}
-			await nativeShareFile(uri_arr,true, 'all')
+			if(uri_arr.length === 0){
+				await alert_fix("请先选择要分享的文件");
+				return;
+			}
+			// 只有一个文件时走单文件分享：微信只允许「多文件分享照片」，
+			// 单文件还走 ACTION_SEND_MULTIPLE 会被误判并提示格式不支持。
+			await nativeShareFile(uri_arr, uri_arr.length > 1, 'all')
 		}else if(event.target.id == 'movebutton'){
 			setcomfiremode("move")
 		}else if(event.target.id == 'copybutton'){
