@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  导入进度遮罩：视觉与 H5 的 #loadingoverlay 完全对齐
+  （60% 黑底 + #1a252f 圆角 8dp 卡片 + 白色太阳花旋转图标 + 白色 16sp 文案），
+  只是多了一条 4dp 细进度条来显示导入进度。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/import_overlay_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/import_scrim"
+    android:clickable="true"
+    android:focusable="true">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_import_card"
+        android:elevation="8dp"
+        android:gravity="center_horizontal"
+        android:minWidth="260dp"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <!-- 与 H5 的 loading2_icon.svg 同一个图形，2s 匀速旋转 -->
+        <ImageView
+            android:id="@+id/import_spinner"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_loading_burst" />
+
+        <TextView
+            android:id="@+id/import_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:ellipsize="middle"
+            android:maxLines="1"
+            android:text="正在导入"
+            android:textColor="@color/import_text_primary"
+            android:textSize="16sp" />
+
+        <!-- n / N · 百分比；扫描阶段是"已发现 N 个文件" -->
+        <TextView
+            android:id="@+id/import_detail"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:ellipsize="middle"
+            android:maxLines="1"
+            android:textColor="@color/import_text_secondary"
+            android:textSize="13sp" />
+
+        <!-- 当前文件名 -->
+        <TextView
+            android:id="@+id/import_file"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:ellipsize="middle"
+            android:maxLines="1"
+            android:maxWidth="220dp"
+            android:textColor="@color/import_text_muted"
+            android:textSize="12sp" />
+
+        <ProgressBar
+            android:id="@+id/import_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="220dp"
+            android:layout_height="4dp"
+            android:layout_marginTop="14dp"
+            android:max="100"
+            android:maxHeight="4dp"
+            android:minHeight="4dp"
+            android:progress="0"
+            android:progressDrawable="@drawable/import_progress_bar"
+            android:visibility="gone" />
+
+        <ProgressBar
+            android:id="@+id/import_bar_indeterminate"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="220dp"
+            android:layout_height="4dp"
+            android:layout_marginTop="14dp"
+            android:indeterminate="true"
+            android:indeterminateTint="@color/import_accent"
+            android:maxHeight="4dp"
+            android:minHeight="4dp" />
+    </LinearLayout>
+</FrameLayout>

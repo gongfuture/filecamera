@@ -122,36 +122,41 @@ public class MainActivity extends AppCompatActivity {
             finishImport("");
         }
     }
-    // 导入进度遮罩（原生侧自己显示/更新/隐藏，前端只管等结果）
+    // 导入进度遮罩：整个 App 只有这一层（原生）。H5 不再叠 loading。
     private android.view.View importOverlay;
-    private android.widget.TextView importOverlayText;
+    private android.widget.TextView importOverlayTitle;
+    private android.widget.TextView importOverlayDetail;
+    private android.widget.TextView importOverlayFile;
+    private android.widget.ImageView importOverlaySpinner;
     private android.widget.ProgressBar importOverlayBar;
-    private long lastOverlayUpdateMs = 0;
+    private android.widget.ProgressBar importOverlayBarIndeterminate;
+    private android.animation.ObjectAnimator importSpinnerAnimator;
+    private long lastProgressPostMs = 0;
+    /**
+     * 单次导入最多回传这么多条记录：前端拿到结果后本来就会 updateTable 重新拉列表，
+     * 把几万条记录再逐层拼成巨型 JSON（还要在主线程 toString + evaluateJavascript）
+     * 只会在结束时把 UI 卡死甚至 OOM，对界面没有任何用处。
+     */
+    private static final int MAX_RESULT_RECORDS = 200;
 
+    /** 前端刷新列表后收起遮罩的兜底时间：正常情况下 JS 会主动调 endImportOverlay。 */
+    private static final long OVERLAY_SAFETY_HIDE_MS = 15000L;
+
+    /** 懒加载：第一次导入时才 inflate 并挂到 Activity 最上层。 */
     private void ensureImportOverlay() {
         if (importOverlay != null) return;
-        android.widget.FrameLayout root = new android.widget.FrameLayout(this);
-        root.setBackgroundColor(0xCC000000);
-        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
-        box.setOrientation(android.widget.LinearLayout.VERTICAL);
-        box.setGravity(android.view.Gravity.CENTER);
-        android.widget.FrameLayout.LayoutParams boxLp = new android.widget.FrameLayout.LayoutParams(
-                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
-        boxLp.gravity = android.view.Gravity.CENTER;
-        importOverlayText = new android.widget.TextView(this);
-        importOverlayText.setTextColor(0xFFFFFFFF);
-        importOverlayText.setTextSize(15);
-        importOverlayText.setGravity(android.view.Gravity.CENTER);
-        importOverlayBar = new android.widget.ProgressBar(this);
-        android.widget.LinearLayout.LayoutParams barLp = new android.widget.LinearLayout.LayoutParams(
-                Math.round(220 * getResources().getDisplayMetrics().density),
-                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
-        barLp.topMargin = Math.round(16 * getResources().getDisplayMetrics().density);
-        box.addView(importOverlayText);
-        box.addView(importOverlayBar, barLp);
-        root.addView(box, boxLp);
-        root.setClickable(true);   // 挡住所有操作
+        android.view.View root = getLayoutInflater().inflate(R.layout.dialog_import_progress, null);
+        importOverlayTitle = root.findViewById(R.id.import_title);
+        importOverlayDetail = root.findViewById(R.id.import_detail);
+        importOverlayFile = root.findViewById(R.id.import_file);
+        importOverlaySpinner = root.findViewById(R.id.import_spinner);
+        importOverlayBar = root.findViewById(R.id.import_bar);
+        importOverlayBarIndeterminate = root.findViewById(R.id.import_bar_indeterminate);
+        // 与 H5 的 `#loadingimg { animation: spin 2s linear infinite }` 完全一致
+        importSpinnerAnimator = android.animation.ObjectAnimator.ofFloat(importOverlaySpinner, "rotation", 0f, 360f);
+        importSpinnerAnimator.setDuration(2000L);
+        importSpinnerAnimator.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        importSpinnerAnimator.setInterpolator(new android.view.animation.LinearInterpolator());
         root.setVisibility(android.view.View.GONE);
         addContentView(root, new android.view.ViewGroup.LayoutParams(
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
@@ -159,62 +164,131 @@ public class MainActivity extends AppCompatActivity {
         importOverlay = root;
     }
 
-    private void showImportOverlay(String text) {
+    /** 起手态：弹系统选择器 / 刚开始读取时用（不确定进度条）。 */
+    private void showImportOverlay(String title) {
+        renderImportOverlay("prepare", 0, 0, null, title);
+    }
+
+    /**
+     * 导入进度统一出口：只刷新原生遮罩。
+     *
+     * <p>H5 不再重复弹 loading：导入是原生执行的，两层遮罩叠在一起只会互相盖住。
+     * 列表刷新完成后由前端调 {@link #endImportOverlay()} 收起。
+     *
+     * @param phase "scan" 扫描文件夹；"import" 逐个入库；"done" 收尾刷新列表
+     * @param force true 时忽略节流（首条/末条必须立刻发）
+     */
+    private synchronized void reportImportProgress(String phase, int done, int total, String name, boolean force) {
+        long now = System.currentTimeMillis();
+        if (!force && now - lastProgressPostMs < 250) return;
+        lastProgressPostMs = now;
+        renderImportOverlay(phase, done, total, name, null);
+    }
+
+    /** 按 H5 遮罩的信息层级渲染：标题 / 进度明细 / 当前文件名 / 细进度条。 */
+    private void renderImportOverlay(String phase, int done, int total, String name, String prepareTitle) {
+        final String title;
+        final String detail;
+        final String fileLine;
+        final boolean indeterminate;
+
+        if ("scan".equals(phase)) {
+            title = "正在扫描文件夹";
+            detail = "已发现 " + formatCount(done) + " 个文件";
+            fileLine = null;
+            indeterminate = true;
+        } else if ("done".equals(phase)) {
+            title = "导入完成";
+            detail = total > 0 ? formatCount(done) + " / " + formatCount(total) + " · 100%" : null;
+            fileLine = "正在刷新列表…";
+            indeterminate = false;
+        } else if ("prepare".equals(phase)) {
+            title = (prepareTitle == null || prepareTitle.isEmpty()) ? "准备导入…" : prepareTitle;
+            detail = null;
+            fileLine = null;
+            indeterminate = true;
+        } else {
+            title = "正在导入";
+            int percent = total > 0 ? Math.round(done * 100f / total) : 0;
+            detail = formatCount(done) + " / " + formatCount(total) + " · " + percent + "%";
+            fileLine = name;
+            indeterminate = false;
+        }
+
         runOnUiThread(() -> {
             ensureImportOverlay();
-            importOverlayText.setText(text);
-            importOverlayBar.setIndeterminate(true);
             importOverlay.setVisibility(android.view.View.VISIBLE);
+            importOverlayTitle.setText(title);
+            setVisibleText(importOverlayDetail, detail);
+            setVisibleText(importOverlayFile, fileLine);
+            importOverlayBar.setVisibility(indeterminate ? android.view.View.GONE : android.view.View.VISIBLE);
+            importOverlayBarIndeterminate.setVisibility(indeterminate ? android.view.View.VISIBLE : android.view.View.GONE);
+            if (!indeterminate && total > 0) {
+                importOverlayBar.setMax(Math.max(1, total));
+                importOverlayBar.setProgress(Math.min(Math.max(done, 0), total));
+            }
+            if (importSpinnerAnimator != null && !importSpinnerAnimator.isStarted()) {
+                importSpinnerAnimator.start();
+            }
         });
     }
 
-    /** 进度按 1 秒节流刷新，避免高频 setText 拖慢导入。 */
-    private void updateImportOverlay(int done, int total, String name) {
-        long now = System.currentTimeMillis();
-        if (now - lastOverlayUpdateMs < 1000 && done != total) return;
-        lastOverlayUpdateMs = now;
-        runOnUiThread(() -> {
-            if (importOverlay == null) return;
-            importOverlayBar.setIndeterminate(false);
-            importOverlayBar.setMax(Math.max(1, total));
-            importOverlayBar.setProgress(done);
-            importOverlayText.setText("导入中 " + done + "/" + total + (name == null ? "" : "：" + name));
-        });
+    /** 文本为空时连 View 一起收起来，避免卡片里留一块空白。 */
+    private static void setVisibleText(android.widget.TextView view, String text) {
+        if (text == null || text.isEmpty()) {
+            view.setText("");
+            view.setVisibility(android.view.View.GONE);
+        } else {
+            view.setText(text);
+            view.setVisibility(android.view.View.VISIBLE);
+        }
     }
+
+    /** 千分位，几千上万条时更容易读。 */
+    private static String formatCount(int value) {
+        return String.format(java.util.Locale.US, "%,d", value);
+    }
+
+    /** 前端刷新完列表后调用：收起导入遮罩。 */
+    public void endImportOverlay() {
+        hideImportOverlay();
+    }
+
+    private final Runnable hideOverlayTask = () -> {
+        if (importOverlay != null) importOverlay.setVisibility(android.view.View.GONE);
+        if (importSpinnerAnimator != null) importSpinnerAnimator.cancel();
+    };
 
     private void hideImportOverlay() {
         runOnUiThread(() -> {
-            if (importOverlay != null) importOverlay.setVisibility(android.view.View.GONE);
+            if (importOverlay == null) return;
+            // 取消兜底定时器，避免它稍后再补一次隐藏
+            importOverlay.removeCallbacks(hideOverlayTask);
+            hideOverlayTask.run();
         });
     }
 
-    /** 选完文件：后台线程导入（主线程只负责刷遮罩），完成后再回调前端。 */
-    private void runImportFiles(java.util.List<android.net.Uri> uris) {
-        if (uris == null || uris.isEmpty()) {
-            finishImport("");
-            return;
+    /**
+     * 导入线程结束时把遮罩切到"导入完成，正在刷新列表…"并继续留着，
+     * 等前端 updateTable 完成回调 endImportOverlay 再收。
+     * 兜底：万一前端没回调（页面异常/WebView 挂了），15 秒后强制收起，避免遮罩永久挡住界面。
+     */
+    private void scheduleImportOverlaySafetyHide() {
+        runOnUiThread(() -> {
+            if (importOverlay == null) return;
+            importOverlay.removeCallbacks(hideOverlayTask);
+            importOverlay.postDelayed(hideOverlayTask, OVERLAY_SAFETY_HIDE_MS);
+        });
+    }
+
+    /** 内部存储是否已低于安全余量（低于就停止导入，避免把系统盘写满）。 */
+    private boolean isStorageLow() {
+        try {
+            long usable = getFilesDir().getUsableSpace();
+            return usable > 0 && usable < FileImporter.MIN_FREE_BYTES;
+        } catch (Throwable e) {
+            return false;
         }
-        final java.util.List<android.net.Uri> list = new java.util.ArrayList<>(uris);
-        showImportOverlay("准备导入…");
-        new Thread(() -> {
-            org.json.JSONArray records = new org.json.JSONArray();
-            FileImporter importer = new FileImporter(this);
-            int total = list.size();
-            int done = 0;
-            for (android.net.Uri uri : list) {
-                String name = queryDisplayName(uri);
-                done++;
-                updateImportOverlay(done, total, name);
-                try {
-                    org.json.JSONObject record = importer.importFromContentUri(uri.toString(), pendingImportDirId, name);
-                    if (record != null) records.put(record);
-                } catch (Exception e) {
-                    android.util.Log.e("MainActivity", "导入文件失败: " + uri, e);
-                }
-            }
-            hideImportOverlay();
-            finishImportWithRecords(records);
-        }, "import-files").start();
     }
 
     /** 选完目录：后台线程递归导入。 */
@@ -228,90 +302,281 @@ public class MainActivity extends AppCompatActivity {
                     android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (Exception ignored) {
         }
-        showImportOverlay("正在扫描文件夹…");
+        showImportOverlay("正在扫描文件夹");
         new Thread(() -> {
-            org.json.JSONArray records = new org.json.JSONArray();
-            try {
-                androidx.documentfile.provider.DocumentFile root =
-                        androidx.documentfile.provider.DocumentFile.fromTreeUri(this, treeUri);
-                if (root != null) {
-                    java.util.List<androidx.documentfile.provider.DocumentFile> files = new java.util.ArrayList<>();
-                    collectFiles(root, files);          // 先扫出所有文件，才能显示 n/N
-                    int total = files.size();
-                    int done = 0;
-                    java.util.Map<String, String> dirIdCache = new java.util.HashMap<>();
-                    FileImporter importer = new FileImporter(this);
-                    for (androidx.documentfile.provider.DocumentFile file : files) {
-                        done++;
-                        updateImportOverlay(done, total, file.getName());
-                        try {
-                            String parentId = ensureParentDir(file, pendingImportDirId, dirIdCache);
-                            org.json.JSONObject record = importer.importFromContentUri(
-                                    file.getUri().toString(), parentId, file.getName());
-                            if (record != null) records.put(record);
-                        } catch (Exception e) {
-                            android.util.Log.e("MainActivity", "导入文件失败: " + file.getName(), e);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                android.util.Log.e("MainActivity", "导入文件夹失败", e);
-            }
-            hideImportOverlay();
-            finishImportWithRecords(records);
+            androidx.documentfile.provider.DocumentFile root =
+                    androidx.documentfile.provider.DocumentFile.fromTreeUri(this, treeUri);
+            importTree(root);
         }, "import-dir").start();
     }
 
-    /** 收集所有文件：显式栈迭代（不用递归，避免深层目录爆栈），跳过点开头的隐藏项。 */
-    private void collectFiles(androidx.documentfile.provider.DocumentFile root,
-                              java.util.List<androidx.documentfile.provider.DocumentFile> out) {
-        java.util.ArrayDeque<androidx.documentfile.provider.DocumentFile> stack = new java.util.ArrayDeque<>();
-        stack.push(root);
+    /**
+     * 从一棵 DocumentFile 树导入整棵树：
+     * ① 一次 DFS 扫完整棵树（只读一次目录）→ ② 一次性建好 dir 记录 → ③ 多 worker 并行入库。
+     */
+    private void importTree(androidx.documentfile.provider.DocumentFile root) {
+        java.util.List<ImportFile> files = new java.util.ArrayList<>();
+        try {
+            if (root != null) {
+                DirNode rootNode = scanTree(root);
+                buildDirTree(rootNode, pendingImportDirId, files);
+            }
+        } catch (Throwable e) {
+            // 扫描/建目录失败时清单不可信（目录可能没提交），整批放弃，别让每个文件都去报"文件夹不存在"
+            files.clear();
+            android.util.Log.e("MainActivity", "扫描/建目录失败", e);
+        }
+        importFileList(files);
+    }
+
+    /** 文件模式：选中的一批文件也走同一条并行导入。 */
+    private void runImportFiles(java.util.List<android.net.Uri> uris) {
+        if (uris == null || uris.isEmpty()) {
+            finishImport("");
+            return;
+        }
+        final java.util.List<android.net.Uri> list = new java.util.ArrayList<>(uris);
+        showImportOverlay("准备导入…");
+        new Thread(() -> {
+            java.util.List<ImportFile> files = new java.util.ArrayList<>(list.size());
+            for (android.net.Uri uri : list) {
+                ImportFile item = new ImportFile(uri, queryDisplayName(uri));
+                item.parentDirId = pendingImportDirId;
+                files.add(item);
+            }
+            importFileList(files);
+        }, "import-files").start();
+    }
+
+    /**
+     * 统一的导入收尾：多 worker 并行跑完后汇总进度/结果，再回调前端。
+     */
+    private void importFileList(java.util.List<ImportFile> files) {
+        final int total = files.size();
+        ImportOutcome outcome = new ImportOutcome();
+        if (total > 0) {
+            runImportWorkers(files, outcome);
+        }
+        org.json.JSONArray records = new org.json.JSONArray();
+        synchronized (outcome.records) {
+            for (org.json.JSONObject record : outcome.records) {
+                records.put(record);
+            }
+        }
+        reportImportProgress("done", outcome.ok.get(), total, null, true);
+        // 有前端在等结果才需要停在"正在刷新列表…"等它回 ack；
+        // 没有前端（页面已销毁等极端情况）就别干等兜底定时器了，直接收。
+        if (pendingImportResult == null) {
+            hideImportOverlay();
+        } else {
+            scheduleImportOverlaySafetyHide();
+        }
+        finishImportWithRecords(records, total, outcome.ok.get(), outcome.failed.get(), outcome.storageFull);
+    }
+
+    /**
+     * 多 worker 并行导入。
+     *
+     * <p>拷贝是 IO 密集、缩略图是 CPU 密集，可以并行；SQLite 的写由它自己的连接池串行化，
+     * 不需要我们再加锁。真正需要互斥的只有「查重命名 + 写 pending_file」那一段，
+     * 锁在 {@link FileImporter} 里（NAME_LOCK），并且 pending 行也算占名。
+     * id 全部走 {@link IdGenerator#get_id_by_time()}，它自己 synchronized，并发调用也唯一。
+     */
+    private void runImportWorkers(java.util.List<ImportFile> files, ImportOutcome outcome) {
+        final int total = files.size();
+        // 2~4 个：拷贝吃 IO、缩略图吃 CPU，再多只会抢内存（大图解码峰值会叠加）
+        int workers = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
+        workers = Math.min(workers, total);
+        final java.util.concurrent.atomic.AtomicInteger nextIndex = new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicInteger finished = new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(workers);
+        final FileImporter importer = new FileImporter(this);
+        for (int w = 0; w < workers; w++) {
+            new Thread(() -> {
+                try {
+                    while (!outcome.storageFull) {
+                        int index = nextIndex.getAndIncrement();
+                        if (index >= total) break;
+                        ImportFile item = files.get(index);
+                        if (isStorageLow()) {
+                            outcome.storageFull = true;
+                            break;
+                        }
+                        try {
+                            org.json.JSONObject record = importer.importFromContentUri(
+                                    item.uri.toString(), item.parentDirId, item.name);
+                            if (record != null) outcome.addRecord(record);
+                        } catch (Throwable e) {
+                            // 单个文件失败（含 OOM）只跳过它，继续导后面的
+                            outcome.failed.incrementAndGet();
+                            android.util.Log.e("MainActivity", "导入文件失败: " + item.name, e);
+                        } finally {
+                            // 按"已完成数"报进度，多线程下也保持单调
+                            reportImportProgress("import", finished.incrementAndGet(), total, item.name, false);
+                        }
+                    }
+                } finally {
+                    latch.countDown();
+                }
+            }, "import-worker-" + w).start();
+        }
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** 并行导入的共享结果：worker 只往里追加，收尾时单线程读。 */
+    private static final class ImportOutcome {
+        final java.util.concurrent.atomic.AtomicInteger ok = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger failed = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.List<org.json.JSONObject> records =
+                java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        /** 存储不足时置位，所有 worker 立刻停下 */
+        volatile boolean storageFull;
+
+        void addRecord(org.json.JSONObject record) {
+            ok.incrementAndGet();
+            synchronized (records) {
+                if (records.size() < MAX_RESULT_RECORDS) records.add(record);
+            }
+        }
+    }
+
+    /** 扫描结果里的一个文件：Uri、显示名、所属目录 id 都在扫描阶段定好，导入时不再查 SAF。 */
+    private static final class ImportFile {
+        final android.net.Uri uri;
+        final String name;
+        /** 建目录记录时回填；文件模式固定是当前文件夹 */
+        String parentDirId;
+
+        ImportFile(android.net.Uri uri, String name) {
+            this.uri = uri;
+            this.name = name;
+        }
+    }
+
+    /** 目录树节点：扫描阶段只读一次目录，之后全是内存遍历。 */
+    private static final class DirNode {
+        final androidx.documentfile.provider.DocumentFile dir;
+        final String name;
+        final java.util.List<DirNode> children = new java.util.ArrayList<>();
+        final java.util.List<ImportFile> files = new java.util.ArrayList<>();
+        /** 本目录（含子树）里是否有文件：没有就不建 dir 记录，保持"不导入空目录"的旧行为 */
+        boolean hasContent;
+        /** 建好后的库记录 id（文件挂到它下面） */
+        String dbId;
+        /** 建之前先记好父目录 id，自顶向下逐个落库 */
+        String parentDbId;
+
+        DirNode(androidx.documentfile.provider.DocumentFile dir, String name) {
+            this.dir = dir;
+            this.name = name;
+        }
+    }
+
+    /**
+     * 一次 DFS 把整棵树读进内存：每个目录只调一次 {@code listFiles()}，
+     * 顺带按已发现文件数报扫描进度（16G 目录扫描本身就要很久）。
+     */
+    private DirNode scanTree(androidx.documentfile.provider.DocumentFile root) {
+        DirNode rootNode = new DirNode(root, dirNameOf(root));
+        java.util.ArrayDeque<DirNode> stack = new java.util.ArrayDeque<>();
+        stack.push(rootNode);
+        int scanned = 0;
         while (!stack.isEmpty()) {
-            androidx.documentfile.provider.DocumentFile node = stack.pop();
-            androidx.documentfile.provider.DocumentFile[] children = node.listFiles();
+            DirNode node = stack.pop();
+            androidx.documentfile.provider.DocumentFile[] children = node.dir.listFiles();
             if (children == null) continue;
             for (androidx.documentfile.provider.DocumentFile child : children) {
                 String name = child.getName();
                 if (name == null || name.startsWith(".")) continue;
                 if (child.isDirectory()) {
-                    stack.push(child);          // 入栈继续展开
+                    DirNode sub = new DirNode(child, name);
+                    node.children.add(sub);
+                    stack.push(sub);              // 入栈继续展开
                 } else {
-                    out.add(child);
+                    node.files.add(new ImportFile(child.getUri(), name));
+                    if (++scanned % 100 == 0) {
+                        reportImportProgress("scan", scanned, 0, null, false);
+                    }
                 }
             }
         }
+        reportImportProgress("scan", scanned, 0, null, true);
+        return rootNode;
     }
 
-    /** 确保文件的父目录在库里存在：先把祖先链压栈，再自顶向下逐个建（迭代，无递归）。 */
-    private String ensureParentDir(androidx.documentfile.provider.DocumentFile file,
-                                   String rootDirId, java.util.Map<String, String> cache) throws Exception {
-        java.util.ArrayDeque<androidx.documentfile.provider.DocumentFile> chain = new java.util.ArrayDeque<>();
-        androidx.documentfile.provider.DocumentFile parent = file.getParentFile();
-        while (parent != null) {
-            chain.push(parent);                  // push 后 pop 就是自顶向下
-            parent = parent.getParentFile();
+    /**
+     * 用扫描结果一次性建好 dir 记录，并产出「文件 → 目录 id」清单。
+     *
+     * <p>旧实现是每个文件都从自己往上走一遍父链（每层一次 SAF 查询），几千张图就是几万次查询；
+     * 这里改成：
+     * <pre>
+     *   ① 先序收集节点，倒序即为后序 → 标出"子树里真的有文件"的目录（空目录/空子树不建）
+     *   ② 自顶向下按父 id 建记录，全部 INSERT 放在一个事务里（几千个目录也只有一次 fsync）
+     *   ③ 顺手把每个文件的 parentDirId 填好
+     * </pre>
+     */
+    private void buildDirTree(DirNode rootNode, String rootParentId, java.util.List<ImportFile> out) {
+        // ① 先序列表（父一定在子之前），倒序遍历即为后序
+        java.util.List<DirNode> preOrder = new java.util.ArrayList<>();
+        java.util.ArrayDeque<DirNode> stack = new java.util.ArrayDeque<>();
+        stack.push(rootNode);
+        while (!stack.isEmpty()) {
+            DirNode node = stack.pop();
+            preOrder.add(node);
+            for (DirNode child : node.children) stack.push(child);
         }
-        String parentId = rootDirId;
-        while (!chain.isEmpty()) {
-            androidx.documentfile.provider.DocumentFile dir = chain.pop();
-            String key = dir.getUri().toString();
-            String cached = cache.get(key);
-            if (cached != null) {
-                parentId = cached;                // 已经建过，直接复用
-                continue;
+        for (int i = preOrder.size() - 1; i >= 0; i--) {
+            DirNode node = preOrder.get(i);
+            boolean has = !node.files.isEmpty();
+            if (!has) {
+                for (DirNode child : node.children) {
+                    if (child.hasContent) {
+                        has = true;
+                        break;
+                    }
+                }
             }
-            String name = dir.getName();
-            if (name == null) name = "文件夹";
-            String dirId = IdGenerator.get_id_by_time();
-            DatabaseHelper.getInstance(this).db_run(
-                    "INSERT INTO dir (id, name, parent_dir_id, type, createtime, filesortmode, dirsortmode, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    new org.json.JSONArray().put(dirId).put(name).put(parentId)
-                            .put("dir").put(System.currentTimeMillis()).put(2).put(2).put(0L));
-            cache.put(key, dirId);
-            parentId = dirId;
+            node.hasContent = has;
         }
-        return parentId;
+        if (!rootNode.hasContent) return;
+
+        // ② 自顶向下建记录 + 收文件清单，一个事务搞定
+        android.database.sqlite.SQLiteDatabase db = DatabaseHelper.getInstance(this).getWritableDatabase();
+        db.beginTransaction();
+        try {
+            rootNode.parentDbId = rootParentId;    // 树的根在库里是"当前文件夹"的子目录
+            java.util.ArrayDeque<DirNode> queue = new java.util.ArrayDeque<>();
+            queue.push(rootNode);
+            while (!queue.isEmpty()) {
+                DirNode node = queue.pop();
+                node.dbId = IdGenerator.get_id_by_time();
+                db.execSQL("INSERT INTO dir (id, name, parent_dir_id, type, createtime, filesortmode, dirsortmode, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        new Object[]{node.dbId, node.name, node.parentDbId, "dir",
+                                System.currentTimeMillis(), 2, 2, 0L});
+                for (ImportFile file : node.files) {
+                    file.parentDirId = node.dbId;
+                    out.add(file);
+                }
+                for (DirNode child : node.children) {
+                    if (!child.hasContent) continue;
+                    child.parentDbId = node.dbId;
+                    queue.push(child);
+                }
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    /** 目录显示名：拿不到就给个兜底名。 */
+    private static String dirNameOf(androidx.documentfile.provider.DocumentFile dir) {
+        String name = dir.getName();
+        return (name == null || name.isEmpty()) ? "文件夹" : name;
     }
 
     /** 取文件显示名（拿不到就用 uri 末段）。 */
@@ -330,11 +595,16 @@ public class MainActivity extends AppCompatActivity {
         return last == null ? "imported" : last;
     }
 
-    private void finishImportWithRecords(org.json.JSONArray records) {
+    private void finishImportWithRecords(org.json.JSONArray records, int total, int ok, int failed,
+                                         boolean storageFull) {
         try {
             org.json.JSONObject payload = new org.json.JSONObject();
+            // records 只带回前 MAX_RESULT_RECORDS 条（前端用不上全量，刷新列表走 updateTable）
             payload.put("records", records == null ? new org.json.JSONArray() : records);
-            payload.put("count", records == null ? 0 : records.length());
+            payload.put("count", ok);
+            payload.put("total", total);
+            payload.put("failed", failed);
+            if (storageFull) payload.put("storageFull", true);
             finishImport(payload.toString());
         } catch (Exception e) {
             finishImport("");
@@ -476,6 +746,8 @@ public class MainActivity extends AppCompatActivity {
         // 启动修复未完成的入库：主线程同步执行，且必须在加载页面前完成，
         // 这样首屏列表就已经包含"上次被打断、这次被补提交"的那张照片（全程无任何提示，用户只会看到多了一张图）
         repairPendingImports();
+        // 修复之后再清导入中转目录（顺序不能反：修复要靠 pending 行里的 tmp_photo_path 补主图）
+        cleanImportTempDir();
 
         webView.loadUrl(indexurl);
     }
@@ -492,6 +764,18 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Throwable e) {
             Log.e(TAG, "启动修复未完成的入库记录失败", e);
+        }
+    }
+
+    /** 清掉导入中转目录里没人认领的 .tmp（被杀在拷贝阶段留下的孤儿文件）。 */
+    private void cleanImportTempDir() {
+        try {
+            int removed = new FileImporter(this).cleanImportTempDir();
+            if (removed > 0) {
+                Log.i(TAG, "启动清理导入临时文件: " + removed + " 个");
+            }
+        } catch (Throwable e) {
+            Log.e(TAG, "清理导入临时文件失败", e);
         }
     }
 

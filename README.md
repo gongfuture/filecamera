@@ -8,13 +8,13 @@
 
 | 版本 | 适用场景 | 下载 |
 | --- | --- | --- |
-| **v20261031-01（当前版）** | 修复单个文件分享被微信误判为“多文件分享”的问题 | [FileCamera-v20261031-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261031-01/FileCamera-v20261031-01.apk) |
+| **v20261104-01（当前版）** | 批量导入重构：万级素材导入更快、不再闪退，进度实时可见 | [FileCamera-v20261104-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261104-01/FileCamera-v20261104-01.apk) |
 | v20260825-02（稳定旧版） | 仅需拍照和照片水印，长期现场验证稳定 | [巡查相机v20260825-02.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk) |
 
 - 当前 `master` 为重构版；不需要视频水印时，优先使用稳定旧版。
 - 重构版改动较大，建议先小范围验证，再批量部署。
 - APK 显示版本为 **1.0**（versionCode `1`）；如果手机已安装更高 versionCode 的版本，请使用 `adb install -r -d` 强制安装。
-- [历史版本](https://gitee.com/zjywchenhui/filecamera/releases) · [当前源码 v20261031-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261031-01.zip)
+- [历史版本](https://gitee.com/zjywchenhui/filecamera/releases) · [当前源码 v20261104-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261104-01.zip)
 
 ## 核心功能
 
@@ -30,6 +30,7 @@
 - 相机管线由 CameraX 迁移到 **Camera2**，录像使用 **MediaCodec + Media3 Muxer** 直接输出标准 MP4，支持音频、方向元数据和中断恢复。
 - **视频水印在录制时烧进画面**，新增视频浏览器，支持播放、翻页、删除、分享和导出。
 - 拍照会话支持连续拍摄，退出相机时统一交付新增照片；照片水印尺寸按整屏长边换算。
+- **文件导入重构**：流式落盘 + 多线程并行 + 目录一次性预建，17G / 3.7 万文件级别的目录可一次导入；导入过程有原生进度遮罩，意外中断后下次启动自动修复。
 - 相机 UI 重做，图片/视频浏览器拆分，按钮、文件行、菜单、弹窗和相机控件统一震动反馈。
 
 ## 快速开始
@@ -99,6 +100,7 @@ WebView + Java 混合架构：H5 负责文件列表、设置、路线管理和�
 
 ## 版本说明
 
+- **v20261104-01**：文件/文件夹导入重构——改为流式落盘（不再整文件读入内存，批量导入不再 OOM 闪退）、4 个 worker 并行导入、目录一次性预建（去掉逐文件的 SAF 父链查询）、导入结果只回传前 200 条记录；新增原生导入进度遮罩（与 H5 同款样式，含扫描/导入/收尾三阶段）；启动自愈补强：缩略图损坏自动重建、自动清理导入临时文件。
 - **v20261031-01**：修复单个视频或非图片文件分享到微信时被误判为“多文件分享”并提示「仅支持照片格式」的问题；单个文件改走系统单文件分享，多文件按实际类型分享。
 - **v20261026-01**：修复后置录像画面方向；视频水印补齐 Logo，统一 Logo、圆角、文字、内边距和行距缩放；发行 APK 不包含定制配置。
 - **v20261024-02**：修复设置页默认图标预览写死 `icon.png` 的问题；存在定制配置时，预览跟随当前配置的 `custom_icon.png`，与实际水印图标一致。

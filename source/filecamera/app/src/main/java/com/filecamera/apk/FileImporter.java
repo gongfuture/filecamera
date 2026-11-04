@@ -19,7 +19,6 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -53,6 +52,12 @@ public class FileImporter {
     private static final String COLUMNS =
             "id,name,parent_dir_id,type,real_file_name,real_icon_name,createtime,seqnumber,size,extension";
 
+    /**
+     * 「查重命名 + 写 pending_file」的临界区锁：多 worker 并行导入时保证同目录下
+     * 不会有两份文件同时拿到同一个名字（pending 行也算占用，见 {@link #nameTaken}）。
+     */
+    private static final Object NAME_LOCK = new Object();
+
     private final Context context;
     private final DatabaseHelper dbHelper;
 
@@ -72,28 +77,30 @@ public class FileImporter {
      * @return 与 backServer.upload_file 完全一致的记录对象
      */
     public JSONObject importLocalFile(File sourceFile, String dirId, String displayName) throws Exception {
-        return doImport(sourceFile, dirId, displayName);
+        return doImport(IdGenerator.get_id_by_time(), sourceFile, dirId, displayName);
     }
 
     /**
      * Web 路径：从 content URI 读出内容后入库（「菜单 → 导入文件 / 导入文件夹」使用）。
+     *
+     * <p>id 在这里就先定下来，草稿文件直接用「最终 id + 扩展名」命名，
+     * 这样一次导入只消耗一个 id，后面的 rename 只是把同一个文件从草稿目录挪到 app_data。
      */
     public JSONObject importFromContentUri(String contentUri, String dirId, String displayName) throws Exception {
-        byte[] bytes = copyFileFromUri(contentUri);
-        if (bytes == null || bytes.length == 0) {
+        String fileId = IdGenerator.get_id_by_time();
+        String extension = extensionOf(displayName);
+        File temp = new File(tempDirectory(),
+                extension.isEmpty() ? fileId + ".tmp" : fileId + "." + extension);
+        // 流式落盘：不再把整份文件读进 byte[]。批量导入大图时，
+        // 「整文件 byte[] + ByteArrayOutputStream 翻倍扩容」是内存峰值最高、最先 OOM 的地方。
+        if (!copyUriToFile(contentUri, temp)) {
+            deleteQuietly(temp);
             throw new IOException("读取文件内容失败");
         }
-        File temp = new File(tempDirectory(), IdGenerator.get_id_by_time() + ".tmp");
-        if (!saveFile(bytes, temp)) {
-            throw new IOException("临时文件写入失败");
-        }
         try {
-            return doImport(temp, dirId, displayName);
+            return doImport(fileId, temp, dirId, displayName);
         } finally {
-            if (temp.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                temp.delete();
-            }
+            deleteQuietly(temp);
         }
     }
 
@@ -129,7 +136,7 @@ public class FileImporter {
 
     // region --- 入库主流程 ---
 
-    private JSONObject doImport(File sourceFile, String dirId, String displayName) throws Exception {
+    private JSONObject doImport(String fileId, File sourceFile, String dirId, String displayName) throws Exception {
         if (sourceFile == null || !sourceFile.isFile() || sourceFile.length() <= 0) {
             throw new IOException("源文件不可用");
         }
@@ -141,34 +148,51 @@ public class FileImporter {
             displayName = sourceFile.getName();
         }
 
-        String finalName = dedupeName(targetDirId, displayName);
-        String extension = extensionOf(finalName);
-        String namePart = baseNameOf(finalName);
-        String fileId = IdGenerator.get_id_by_time();
-        String realFileName = extension.isEmpty() ? fileId : fileId + "." + extension;
-        boolean isImage = isImageFile(finalName);
-        String realIconName = isImage ? fileId + "_icon.png" : "";
+        // 查重命名 + 写 pending 必须原子：多 worker 并行导入时，同目录的两个文件
+        // 不能各自查到"没人占用"而拿到同一个名字（pending 里的行也算占用，见 dedupeName）。
+        String finalName;
+        String extension;
+        String namePart;
+        String realFileName;
+        boolean isImage;
+        String realIconName;
+        long createTime;
+        long seqNumber;
         long size = sourceFile.length();
-        long createTime = System.currentTimeMillis();
-        long seqNumber = getSeqNumberFromString(namePart);
+        synchronized (NAME_LOCK) {
+            finalName = dedupeName(targetDirId, displayName);
+            extension = extensionOf(finalName);
+            namePart = baseNameOf(finalName);
+            realFileName = extension.isEmpty() ? fileId : fileId + "." + extension;
+            isImage = isImageFile(finalName);
+            realIconName = isImage ? fileId + "_icon.png" : "";
+            createTime = System.currentTimeMillis();
+            seqNumber = getSeqNumberFromString(namePart);
+
+            // ① 未就绪记录：对外不可见，崩溃后由 repairPendingImports 处理
+            dbHelper.db_run("INSERT INTO pending_file (" + COLUMNS + ",tmp_photo_path,tmp_icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    new JSONArray()
+                            .put(fileId).put(finalName).put(targetDirId).put("file")
+                            .put(realFileName).put(realIconName).put(createTime).put(seqNumber)
+                            .put(size).put(extension).put(sourceFile.getAbsolutePath()).put(""));
+        }
 
         File dataDir = dataDirectory();
         File iconDir = iconDirectory();
         File targetFile = new File(dataDir, realFileName);
         File iconFile = isImage ? new File(iconDir, realIconName) : null;
-
-        // ① 未就绪记录：对外不可见，崩溃后由 repairPendingImports 处理
-        dbHelper.db_run("INSERT INTO pending_file (" + COLUMNS + ",tmp_photo_path,tmp_icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                new JSONArray()
-                        .put(fileId).put(finalName).put(targetDirId).put("file")
-                        .put(realFileName).put(realIconName).put(createTime).put(seqNumber)
-                        .put(size).put(extension).put(sourceFile.getAbsolutePath()).put(""));
+        final boolean image = isImage;
 
         boolean promoted = false;
         try {
             // ② 主图落位（同分区 rename；跨分区自动退化为复制）
             if (!dataDir.isDirectory() && !dataDir.mkdirs()) {
                 throw new IOException("无法创建数据目录");
+            }
+            // 大容量导入最容易踩的坑：内部存储被塞满后所有写入都会失败，
+            // 系统侧的 WebView/SQLite 也会跟着出问题，所以在落盘前就拦住，留出安全余量。
+            if (!hasEnoughSpace(dataDir, size)) {
+                throw new IOException("存储空间不足，剩余 " + (dataDir.getUsableSpace() / (1024 * 1024)) + "MB");
             }
             syncFile(sourceFile);
             if (!moveFile(sourceFile, targetFile) || !targetFile.isFile()) {
@@ -177,12 +201,12 @@ public class FileImporter {
 
             // ③ 主图已就位 → 直接按目标文件夹里的主图生成缩略图（失败不阻塞入库，前端有默认图标兜底）
             String iconWritten = null;
-            if (isImage) {
+            if (image) {
                 if (!iconDir.isDirectory()) {
                     //noinspection ResultOfMethodCallIgnored
                     iconDir.mkdirs();
                 }
-                byte[] iconBytes = iconMake(readAll(targetFile), finalName);
+                byte[] iconBytes = iconMake(targetFile, finalName);
                 if (iconBytes != null && saveFile(iconBytes, iconFile)) {
                     iconWritten = realIconName;
                 }
@@ -307,15 +331,15 @@ public class FileImporter {
                 }
             }
 
-            // 缩略图缺失：重新生成；生成失败就把 real_icon_name 置空（前端回退默认图标）
-            if (isImageFile(displayName) && (iconFile == null || !iconFile.isFile())) {
+            // 缩略图缺失或损坏：重新生成；生成失败就把 real_icon_name 置空（前端回退默认图标）
+            if (isImageFile(displayName) && !isIconUsable(iconFile)) {
                 String iconName = (iconFile == null) ? (id + "_icon.png") : iconFile.getName();
                 File iconDir = iconDirectory();
                 if (!iconDir.isDirectory()) {
                     //noinspection ResultOfMethodCallIgnored
                     iconDir.mkdirs();
                 }
-                byte[] iconBytes = iconMake(readAll(targetFile), displayName);
+                byte[] iconBytes = iconMake(targetFile, displayName);
                 String written = null;
                 if (iconBytes != null && saveFile(iconBytes, new File(iconDir, iconName))) {
                     written = iconName;
@@ -329,6 +353,26 @@ public class FileImporter {
             return true;
         } catch (Exception e) {
             Log.e(TAG, "修复未就绪记录失败: " + id, e);
+            return false;
+        }
+    }
+
+    /**
+     * 缩略图是否可用：文件存在、非空、而且能解出宽高。
+     *
+     * <p>只判 {@code isFile()} 不够——进程被杀在 {@code saveFile} 中间时，会留下 0 字节
+     * 或者半截的 PNG，那时 isFile() 为真但图是坏的，前端只会一直显示默认图标。
+     * 这里用 {@code inJustDecodeBounds} 读一下头，几十微秒，不会真的解码像素。
+     */
+    private static boolean isIconUsable(File iconFile) {
+        if (iconFile == null || !iconFile.isFile() || iconFile.length() <= 0) return false;
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(iconFile.getAbsolutePath(), bounds);
+            return bounds.outWidth > 0 && bounds.outHeight > 0;
+        } catch (Throwable e) {
+            // 损坏的图、极端情况下解码头就 OOM，都按"不可用"处理，让调用方重建
             return false;
         }
     }
@@ -728,6 +772,47 @@ public class FileImporter {
         return dir;
     }
 
+    /**
+     * 清理导入中转目录（启动时调用）。
+     *
+     * <p>进程被杀在「content URI → 临时文件」这段拷贝里时，还没有 pending_file 行，
+     * 这些 .tmp 不会被任何流程引用或复用，只会白占空间（大图能占几十 MB，反复强杀会累积）。
+     *
+     * <p><b>必须在 {@link #repairPendingImports()} 之后调用</b>：修复时要靠 pending 行里的
+     * tmp_photo_path 把主图补回来，先删了就等于把唯一的副本删掉。
+     *
+     * @return 删除的临时文件数
+     */
+    public int cleanImportTempDir() {
+        File dir = new File(context.getFilesDir(), "import_tmp");
+        File[] children = dir.listFiles();
+        if (children == null) return 0;
+        int removed = 0;
+        for (File child : children) {
+            if (child.isFile() && child.delete()) {
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            Log.i(TAG, "已清理导入临时文件: " + removed + " 个");
+        }
+        return removed;
+    }
+
+    /** 内部存储安全余量：可用空间低于它就不再继续导入，避免把系统盘写满后整机异常。 */
+    public static final long MIN_FREE_BYTES = 64L * 1024 * 1024;
+
+    /** 是否还有空间放下 size 字节并保留安全余量。 */
+    static boolean hasEnoughSpace(File dir, long size) {
+        try {
+            long usable = dir.getUsableSpace();
+            // 拿不到值（返回 0）时不拦，交给真实写入去报错
+            return usable <= 0 || usable > size + MIN_FREE_BYTES;
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
     /** 同分区用 rename（原子），跨分区退化为复制+删除。 */
     static boolean moveFile(File source, File target) {
         if (source == null || target == null) return false;
@@ -774,31 +859,28 @@ public class FileImporter {
         }
     }
 
-    static byte[] readAll(File file) {
-        try (FileInputStream in = new FileInputStream(file);
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) > 0) {
-                out.write(buffer, 0, read);
-            }
-            return out.toByteArray();
-        } catch (IOException e) {
-            return null;
-        }
-    }
-
-    private byte[] copyFileFromUri(String contentUri) throws IOException {
+    /**
+     * 把 content URI 的内容流式写进临时文件（固定 64KB 缓冲，内存占用与文件大小无关）。
+     * 写完后 fsync，保证后续 rename 进 app_data 的是完整内容。
+     */
+    private boolean copyUriToFile(String contentUri, File target) {
         Uri uri = Uri.parse(contentUri);
         try (InputStream input = context.getContentResolver().openInputStream(uri);
-             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            if (input == null) throw new IOException("无法打开文件");
-            byte[] buffer = new byte[8192];
+             FileOutputStream output = new FileOutputStream(target)) {
+            if (input == null) return false;
+            byte[] buffer = new byte[64 * 1024];
+            long total = 0;
             int read;
             while ((read = input.read(buffer)) != -1) {
                 output.write(buffer, 0, read);
+                total += read;
             }
-            return output.toByteArray();
+            output.flush();
+            output.getFD().sync();
+            return total > 0;
+        } catch (Exception e) {
+            Log.e(TAG, "读取 content URI 失败: " + contentUri, e);
+            return false;
         }
     }
 
@@ -807,12 +889,23 @@ public class FileImporter {
         String base = baseNameOf(name);
         String extension = extensionOf(name);
         int counter = 1;
-        while (dbHelper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?",
-                new JSONArray().put(dirId).put(candidate)) != null) {
+        while (nameTaken(dirId, candidate)) {
             candidate = base + "(" + counter + ")" + (extension.isEmpty() ? "" : "." + extension);
             counter++;
         }
         return candidate;
+    }
+
+    /**
+     * 名字是否已被占用。并行导入时 file 表里看不到那些"还在导"的文件，
+     * 所以 pending_file 也要一起查，否则两个 worker 会给两份文件挑到同一个新名字。
+     */
+    private boolean nameTaken(String dirId, String candidate) throws JSONException {
+        JSONArray args = new JSONArray().put(dirId).put(candidate);
+        if (dbHelper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", args) != null) {
+            return true;
+        }
+        return dbHelper.db_get("SELECT id FROM pending_file WHERE parent_dir_id = ? AND name = ?", args) != null;
     }
 
     static String extensionOf(String name) {
@@ -867,29 +960,36 @@ public class FileImporter {
 
     /**
      * 生成 256px 缩略图（按 EXIF 方向旋转）。失败返回 null，由调用方决定是否阻塞入库。
+     *
+     * <p>直接按文件路径解码（两遍：先读边界、再降采样），不再先把整份图片读成 byte[]：
+     * 大图批量导入时，那一步的 byte[] + ByteArrayOutputStream 扩容才是真正的内存杀手。
+     * 任何 Throwable（含 OutOfMemoryError）都只让这一张缩略图失败，绝不能让导入线程/进程挂掉。
      */
-    static byte[] iconMake(byte[] fileData, String filename) {
-        if (fileData == null || !isImageFile(filename)) return null;
+    static byte[] iconMake(File file, String filename) {
+        if (file == null || !file.isFile() || !isImageFile(filename)) return null;
+        Bitmap decoded = null;
+        Bitmap oriented = null;
+        Bitmap scaled = null;
         try {
             // 先只解码边界获取尺寸，再按比例降采样解码，避免全尺寸解码（如 50MP 照片约 200MB）把内存挤爆
             BitmapFactory.Options boundsOptions = new BitmapFactory.Options();
             boundsOptions.inJustDecodeBounds = true;
-            BitmapFactory.decodeByteArray(fileData, 0, fileData.length, boundsOptions);
+            BitmapFactory.decodeFile(file.getAbsolutePath(), boundsOptions);
             int srcWidth = boundsOptions.outWidth;
             int srcHeight = boundsOptions.outHeight;
             if (srcWidth <= 0 || srcHeight <= 0) return null;
 
             BitmapFactory.Options decodeOptions = new BitmapFactory.Options();
             decodeOptions.inSampleSize = Math.max(1, Math.min(srcWidth, srcHeight) / 512);
-            Bitmap decoded = BitmapFactory.decodeByteArray(fileData, 0, fileData.length, decodeOptions);
+            decoded = BitmapFactory.decodeFile(file.getAbsolutePath(), decodeOptions);
             if (decoded == null) return null;
 
             // 相机直出的原图像素未旋转，方向记录在 EXIF 中，不处理会导致缩略图方向错误
             int orientation = ExifInterface.ORIENTATION_NORMAL;
-            try (ByteArrayInputStream exifStream = new ByteArrayInputStream(fileData)) {
-                orientation = new ExifInterface(exifStream)
+            try {
+                orientation = new ExifInterface(file.getAbsolutePath())
                         .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-            } catch (Exception ignored) {
+            } catch (Throwable ignored) {
             }
             Matrix matrix = new Matrix();
             switch (orientation) {
@@ -898,31 +998,39 @@ public class FileImporter {
                 case ExifInterface.ORIENTATION_ROTATE_270: matrix.postRotate(270); break;
                 default: break;
             }
-            Bitmap oriented = decoded;
+            oriented = decoded;
             if (!matrix.isIdentity()) {
                 oriented = Bitmap.createBitmap(decoded, 0, 0, decoded.getWidth(), decoded.getHeight(), matrix, true);
-                if (oriented != decoded) decoded.recycle();
+                if (oriented != decoded) {
+                    decoded.recycle();
+                    decoded = null;
+                }
             }
 
             int width = oriented.getWidth();
             int height = oriented.getHeight();
+            if (width <= 0 || height <= 0) return null;
             float aspect = (float) width / (float) height;
             int newWidth, newHeight;
             if (width >= height) {
                 newWidth = 256;
-                newHeight = Math.round(256 / aspect);
+                newHeight = Math.max(1, Math.round(256 / aspect));
             } else {
                 newHeight = 256;
-                newWidth = Math.round(256 * aspect);
+                newWidth = Math.max(1, Math.round(256 * aspect));
             }
-            Bitmap scaled = Bitmap.createScaledBitmap(oriented, newWidth, newHeight, true);
+            scaled = Bitmap.createScaledBitmap(oriented, newWidth, newHeight, true);
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             scaled.compress(Bitmap.CompressFormat.PNG, 100, output);
-            oriented.recycle();
-            scaled.recycle();
             return output.toByteArray();
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // 超大图/损坏图可能抛 OutOfMemoryError（属于 Error，不是 Exception），必须在这里兜住
+            Log.w(TAG, "生成缩略图失败: " + filename, e);
             return null;
+        } finally {
+            if (scaled != null && scaled != oriented && !scaled.isRecycled()) scaled.recycle();
+            if (oriented != null && !oriented.isRecycled()) oriented.recycle();
+            if (decoded != null && !decoded.isRecycled()) decoded.recycle();
         }
     }
 

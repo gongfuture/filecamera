@@ -171,33 +171,56 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 			await menui_creat_dir()
 		}else if(event.target.id == "inputbutton"){
 			//menu_upload_file()
-			window.Android.startwakelock()			
+			window.Android.startwakelock()
 			// 统一交给原生层：弹系统选择器 → 走入库流程 → 返回新增记录（取消也会返回，锁能释放）
-			let res = await callAndroidMethod(window.FilePicker, 'importPath', { dirId: open_dir.id, mode: 'file' });
-			window.Android.endwakelock();
-			document.getElementById("loadingoverlay").style.display = "none";
-			window.updata_load_info("");
+			// 导入进度只显示原生遮罩，这里不再叠 H5 loading
+			let res = null
+			try{
+				res = await callAndroidMethod(window.FilePicker, 'importPath', { dirId: open_dir.id, mode: 'file' });
+			}catch(err){
+				endImportOverlay()
+				window.Android.endwakelock()
+				await alert_fix('导入文件出错：' + (err && err.message ? err.message : err))
+				return
+			}
 			if (res && res.canceled) {
+				endImportOverlay()
+				window.Android.endwakelock()
 				return;
 			}
-			await updateTable(open_dir.id);
-			window.Android.endwakelock()
-		}else if(event.target.id == "uploadirbutton"){
+			// 原生遮罩会一直停在"导入完成，正在刷新列表…"，刷完再收
 			try{
-				window.Android.startwakelock()
-				let res = await callAndroidMethod(window.FilePicker, 'importPath', { dirId: open_dir.id, mode: 'dir' });
-				window.Android.endwakelock();
-				document.getElementById("loadingoverlay").style.display = "none";
-				window.updata_load_info("");
-				if (res && res.canceled) {
-					return;
-				}
-				await updateTable(open_dir.id);	
-			}catch(err){
-				await alert_fix('导入文件夹出错')
+				await updateTable(open_dir.id);
+			}finally{
+				endImportOverlay()
+				window.Android.endwakelock()
 			}
-			document.getElementById("loadingoverlay").style.display = "none";			
-			window.Android.endwakelock()
+			await notifyImportResult(res)
+		}else if(event.target.id == "uploadirbutton"){
+			window.Android.startwakelock()
+			// 导入进度只显示原生遮罩，这里不再叠 H5 loading
+			let res = null
+			try{
+				res = await callAndroidMethod(window.FilePicker, 'importPath', { dirId: open_dir.id, mode: 'dir' });
+			}catch(err){
+				endImportOverlay()
+				window.Android.endwakelock()
+				await alert_fix('导入文件夹出错：' + (err && err.message ? err.message : err))
+				return
+			}
+			if (res && res.canceled) {
+				endImportOverlay()
+				window.Android.endwakelock()
+				return;
+			}
+			// 原生遮罩会一直停在"导入完成，正在刷新列表…"，刷完再收
+			try{
+				await updateTable(open_dir.id);
+			}finally{
+				endImportOverlay()
+				window.Android.endwakelock()
+			}
+			await notifyImportResult(res)
 		}
 	}else if(sortmenu.contains(event.target)){
 		close_opening_menu(menu_set)

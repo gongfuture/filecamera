@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 与 H5 遮罩的 #loading-text 一致：#1a252f、8px 圆角、20px 内边距 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/import_card_bg" />
+    <corners android:radius="8dp" />
+</shape>

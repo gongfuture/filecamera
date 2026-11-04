@@ -106,6 +106,17 @@ public class Android_js_bridge {
         });
     }
 
+    /**
+     * 导入结束、前端刷新完列表后收起原生导入进度遮罩。
+     * 导入由原生执行，进度只保留原生这一层遮罩，H5 不再弹 loading。
+     */
+    @JavascriptInterface
+    public void endImportOverlay() {
+        if (activity instanceof MainActivity) {
+            ((MainActivity) activity).endImportOverlay();
+        }
+    }
+
     /** 原生内部复用：执行一次短震动；没有马达或系统禁用时静默忽略。 */
     private void performVibration(int ms) {
         try {

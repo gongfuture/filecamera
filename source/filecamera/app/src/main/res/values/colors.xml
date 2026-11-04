@@ -15,4 +15,14 @@
     <color name="cam_accent_pressed">#FFB74D</color>
     <color name="cam_danger">#D73A49</color>
     <color name="cam_danger_bright">#FF5252</color>
+
+    <!-- 导入进度遮罩：与 H5 的 #loadingoverlay 完全同一套值 -->
+    <!-- 导入进度遮罩：与 H5 的 #loadingoverlay 完全同一套值 -->
+    <color name="import_scrim">#99000000</color>
+    <color name="import_card_bg">#FF1A252F</color>
+    <color name="import_text_primary">#FFFFFFFF</color>
+    <color name="import_text_secondary">#FFB3B3B3</color>
+    <color name="import_text_muted">#FF7F8C9B</color>
+    <color name="import_accent">#FF0366D6</color>
+    <color name="import_track">#FF2C3E50</color>
 </resources>

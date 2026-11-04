@@ -165,17 +165,58 @@ stop → signalEndOfInputStream / 音频 EOS
      a. id 已在 file 表 → 删目录（入库成功但没删干净）
      b. 视频可播        → 补做收尾并入库 → 删目录
      c. 视频不可播/没有 → 丢弃目录 + 删 pending 行
-② repairPendingImports()  照片等遗留 pending 行（跳过 .part/录像行）：主文件在→补提交；缺失→丢弃
+② repairPendingImports()  照片等遗留 pending 行（跳过 .part/录像行）：
+     a. 目录没了       → 丢弃
+     b. 主文件在       → 继续；不在 → 用 tmp_photo_path 补，补不回 → 丢弃
+     c. 缩略图不可用   → 用 app_data 里的主图重建
+        （判定 = 存在 + length>0 + inJustDecodeBounds 能读出宽高；
+          只判 isFile() 会漏掉"被杀在 saveFile 中间"留下的 0 字节/半截 PNG）
+     d. 齐了           → 补提交（pending → file）
+③ cleanImportTempDir()    清 import_tmp 里的孤儿 .tmp（被杀在"URI→临时文件"拷贝阶段，
+                          那时还没有 pending 行，没人引用）
+                          ★ 必须在 ② 之后：修复要靠 pending 行里的 tmp_photo_path 补主图
 ```
 
 ### 5.4 文件 / 文件夹导入（原生统一入口）
 ```
 JS: await callAndroidMethod(FilePicker, 'importPath', {dirId, mode:'file'|'dir'})
  → MainActivity.beginImport() → 系统选择器（OpenMultipleDocuments / OpenDocumentTree）
- → 原生弹进度遮罩（1 秒节流刷新 "导入中 n/N：文件名"）
- → 后台线程导入（文件夹用显式栈迭代收集；ensureParentDir 也用栈，自顶向下建目录）
- → 回调 {records, count} 或 {canceled:true} → JS updateTable
+ → 文件夹：MainActivity.importTree(DocumentFile root)
+     ① scanTree()：一次 DFS 读完整棵树（每个目录只 listFiles 一次），只放内存，不碰库
+     ② buildDirTree()：后序标出"子树里真的有文件"的目录（空目录/空子树不建记录），
+        再自顶向下、按父 id 一次性 INSERT（单个事务，几千个目录也只有一次 fsync），
+        同时产出「文件 → 已建好的 parentDirId」清单
+     ③ 逐文件 importFromContentUri(uri, 清单里的 parentDirId, name)
+        → 导入阶段不再为每个文件沿父链做 SAF 查询（旧实现每张图都要 getParentFile 好几层）
+ → 文件：逐个 importFromContentUri，目录用当前打开的 dirId
+ → 进度只显示原生遮罩（250ms 节流；H5 不再叠 loading）：
+     prepare 准备导入…            （不确定进度条 + "正在读取选中的文件…"）
+     scan    正在扫描文件夹        （不确定进度条 + "已发现 N 个文件"）
+     import  正在导入 n/N          大数字 + 百分比 + 确定进度条 + 当前文件名
+     done    导入完成 100%         "正在刷新列表…"，遮罩继续留着
+ → 回调 {records(最多 200 条), count, total, failed[, storageFull]} 或 {canceled:true}
+ → JS updateTable(open_dir.id) → 完成后调 window.Android.endImportOverlay() 收起遮罩
+   （原生侧另有 15s 兜底，前端没回调也会自动收，避免永久挡住界面）
 ```
+
+遮罩实现：`res/layout/dialog_import_progress.xml`，**视觉直接对齐 H5 的 `#loadingoverlay`**：
+60% 黑底 + `#1a252f` 卡片（8dp 圆角、20dp 内边距）+ 白色 `loading2_icon` 太阳花图标
+（2s 匀速旋转，与 H5 的 `animation: spin 2s linear infinite` 一致）+ 白色 16sp 文案，
+只多了一条 4dp 细进度条。`MainActivity.renderImportOverlay()` 负责四个状态，
+`addContentView` 挂到最上层并 `clickable` 挡触摸。
+
+关键约束（**改动前务必看**）：
+- **单文件不做整文件 byte[]**：`importFromContentUri` 用 64KB 缓冲流式写 `import_tmp/`，
+  缩略图用 `iconMake(File)` 走 `BitmapFactory.decodeFile` 两遍解码（先 `inJustDecodeBounds`）。
+  16G 图片批量导入时，旧实现「整文件 byte[] + ByteArrayOutputStream 翻倍扩容」是首要 OOM 源。
+- **单个文件失败必须吞掉**：导入循环 `catch (Throwable)`——`OutOfMemoryError` 是 `Error`，
+  `catch (Exception)` 接不住，会直接 FATAL 闪退。缩略图内部同样 `catch (Throwable)`。
+- **回传记录有上限**：`MAX_RESULT_RECORDS = 200`。前端刷新列表靠 `updateTable`；
+  把几万条记录逐层拼巨型 JSON（主线程 `toString` + `evaluateJavascript`）只会在结束时卡死/OOM。
+- **存储余量保护**：`FileImporter.MIN_FREE_BYTES = 64MB`，每个文件前查 `getUsableSpace()`，
+  低于余量就停下并回 `storageFull:true`。导入是复制进 `files/app_data`，16G 素材会实打实占内部存储。
+- **不要恢复 H5 的导入 loading**：两层遮罩会叠在一起（原生在上、H5 在下），
+  导入进度只保留原生这一层；H5 侧只留 `endImportOverlay()` 和失败数提示。
 
 ### 5.5 播放器（VideoPlayerActivity）
 - 自定义控制层（不用 Media3 默认控制条）：顶部返回+文件名、中央播放键、底部音量行 + 进度行
@@ -338,19 +379,45 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
   水印用与编码画面同尺寸的透明位图，每秒重绘一次。EGL 要带 `EGL_RECORDABLE_ANDROID`，
   每帧 `eglPresentationTimeANDROID` 必须设置，否则编码器 PTS 不对。
 
+### 10.5 批量导入（16G 图片压测）踩坑
+- **闪退主因是内存，不是"文件太多"**：旧 `importFromContentUri` 先 `copyFileFromUri` 拿整份
+  `byte[]`，再 `iconMake(readAll(targetFile), ...)` 又读一整份；`ByteArrayOutputStream` 还会
+  翻倍扩容。一张 100MB 的图，峰值就是 3~4 份文件体量，`largeHeap` 也顶不住。
+  现在全程流式（64KB 缓冲 + `decodeFile` 两遍解码），内存占用与文件大小无关。
+- **`OutOfMemoryError` 不是 `Exception`**：`catch (Exception)` 接不住，导入线程直接 FATAL。
+  所以导入循环/缩略图都改成 `catch (Throwable)`，单张失败只跳过这一张。
+- **结束时也会 OOM**：把 N 万条记录 `records` 从 Java → `JSONObject.toString()`（主线程）
+  → `evaluateJavascript` 字符串，再到 WebView 解析，是 4 份全量副本。现在只回传 200 条，
+  列表刷新交给 `updateTable`。
+- **进度只在原生遮罩上显示**（`res/layout/dialog_import_progress.xml`，样式对齐 H5 的 `#loadingoverlay`）。
+  遮罩会停在「导入完成，正在刷新列表…」，等前端 `updateTable` 完成调 `endImportOverlay()` 再收；
+  原生侧 15s 兜底。**不要再给 H5 加导入 loading**，两层会叠在一起。
+- **多 worker 并行**：拷贝吃 IO、缩略图吃 CPU，SQLite 写由连接池串行化。真正要互斥的是
+  「查重命名 + 写 pending」（`FileImporter.NAME_LOCK`），且 `dedupeName` 要同时查 `pending_file`。
+  id 走 `IdGenerator.get_id_by_time()`，它本身 `synchronized`，并且防了时钟回拨。
+- **目录一次性预建**：扫描阶段 `buildDirTree()` 后序遍历、一个事务写完所有 dir 行，
+  导入阶段直接用清单里的 `parentDirId`，不再逐文件走 SAF 父链。代价：中断会留下空壳目录（允许存在）。
+- **16G 是复制进内部存储**：`files/app_data`，不是移动、不是引用原目录。压测前先确认
+  内部存储余量；导入中每张图前查 `getUsableSpace()`，低于 64MB 就停并回 `storageFull:true`。
+- **还有一处已知上限**：`updateTable` 会把当前目录的所有行一次性建成 DOM。单个目录上万项时
+  WebView 渲染会很重（这是列表渲染的问题，与导入无关），要做虚拟滚动再动它。
+
 ---
 
 ## 11. Git 状态
 
 ```
-分支：master
-状态：领先 origin/master 约 51 个提交，从未推送；工作区干净
-最近提交：
-  b4aad81 录像改为 Camera2 边录边烧：标准 MP4 + 音频 + 强杀恢复
-  3bca2f8 新增交接文档 HANDOVER.md
-  9bbbe92 录像改为"持久待入库目录 + meta.jsonl 流式水印 + 启动扫描恢复"
+分支：master（推送到 Gitee：https://gitee.com/zjywchenhui/filecamera.git）
+最新发布：v20261104-01（批量导入重构 + 原生进度遮罩 + 启动自愈）
 ```
-如需推远端：`git push origin master`（用户未要求，先别推）。
+
+发布流程（沿用之前的做法）：
+1. `.\gradlew.bat :app:assembleRelease` → `app-release-unsigned.apk`；
+2. 用 `~/.android/debug.keystore`（alias `androiddebugkey`，密码 `android`）签名成
+   `FileCamera-v<版本>.apk`——**必须和线上包同一张证书**，否则覆盖安装会签名冲突；
+3. 改 `README.md` / `README.en.md` 的版本行与源码包链接，补一条"版本说明"；
+4. `git commit` + `git tag v<版本>` + `git push origin master --tags`；
+5. APK 只能手工上传到 Gitee Release（git 推不了附件），上传后 README 里的下载链接才有效。
 
 ---
 

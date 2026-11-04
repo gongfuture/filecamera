@@ -1095,6 +1095,27 @@ window.updata_load_info = function(str){
 	document.getElementById("loadingmessage").innerText = str;
 }
 
+// 导入进度只由原生遮罩显示（H5 不再叠一层 loading）。
+// 列表刷新完成后调这个通知原生收起遮罩；原生侧还有 15 秒兜底，不会永久挡住界面。
+function endImportOverlay(){
+	try{
+		if (window.Android && typeof window.Android.endImportOverlay === 'function') {
+			window.Android.endImportOverlay();
+		}
+	}catch(e){
+	}
+}
+
+// 导入结束后的结果提示：失败数和存储不足必须让用户看到，否则"少了几百张"会变成无从排查的问题
+async function notifyImportResult(res){
+	if (!res) return;
+	if (res.storageFull) {
+		await alert_fix('存储空间不足，导入已停止\n已成功导入 ' + (res.count || 0) + ' 个文件');
+	} else if (res.failed > 0) {
+		await alert_fix('导入完成：成功 ' + (res.count || 0) + ' 个，失败 ' + res.failed + ' 个');
+	}
+}
+
 async function back(){
 	haptic();
 	if(ui_lock){
