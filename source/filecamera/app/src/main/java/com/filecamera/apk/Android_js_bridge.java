@@ -117,6 +117,24 @@ public class Android_js_bridge {
         }
     }
 
+    // ===== 通用原生进度遮罩（H5 驱动、但没有逐项进度的操作：单文件删除 / 路线更新）=====
+
+    /** 弹出（或切到）不确定进度的原生遮罩。 */
+    @JavascriptInterface
+    public void showProgress(String title, String detail) {
+        if (activity instanceof MainActivity) {
+            ((MainActivity) activity).showProgress(title, detail);
+        }
+    }
+
+    /** 收起原生遮罩；任何失败路径都要调用，否则界面会被一直挡住。 */
+    @JavascriptInterface
+    public void hideProgress() {
+        if (activity instanceof MainActivity) {
+            ((MainActivity) activity).hideProgress();
+        }
+    }
+
     /** 原生内部复用：执行一次短震动；没有马达或系统禁用时静默忽略。 */
     private void performVibration(int ms) {
         try {

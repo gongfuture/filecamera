@@ -339,13 +339,13 @@ document.getElementById('index_div').addEventListener('click', async (event) => 
 			}
 			let id_arr = Array.from(id_set)
 			
-			document.getElementById("loadingoverlay").style.display = "flex"
-			window.updata_load_info("文件导出中......")
-			window.Android.startwakelock()				
-			await exportItems(id_arr);
-			window.Android.endwakelock()
-			document.getElementById("loadingoverlay").style.display = "none";
-			window.updata_load_info("")
+			// 进度由原生 export_items 驱动（原生遮罩），这里不再叠 H5 loading
+			window.Android.startwakelock()
+			try {
+				await exportItems(id_arr);
+			} finally {
+				window.Android.endwakelock()
+			}
 		}
 	}else if(document.getElementById("comfirediv").contains(event.target)){
 		close_opening_menu(menu_set)
@@ -381,13 +381,11 @@ function cancework(){
 }
 async function comfirework(){
 	let target_arr = 当前文件夹路径_arr.slice()
-	if(comfiremode == 'move'){
-		window.updata_load_info('移动中...')
-		document.getElementById("loadingoverlay").style.display = "flex"
-		await moveall(source_arr, workselectmap, target_arr)
-	}else if(comfiremode == 'copy'){
-		window.updata_load_info('复制中...')
-		document.getElementById("loadingoverlay").style.display = "flex"
+	const mode = comfiremode
+	let move_ok = false
+	if(mode == 'move'){
+		move_ok = await moveall(source_arr, workselectmap, target_arr)
+	}else if(mode == 'copy'){
 		await copyall(source_arr, workselectmap, target_arr)
 	}
 	close_opening_menu(comfire_menu_set)
@@ -395,8 +393,11 @@ async function comfirework(){
 	let scrollTop = table1tbody.scrollTop||0;
 	await updateTable(open_dir.id);
 	table1tbody.scrollTop = scrollTop;
-	document.getElementById("loadingoverlay").style.display = "none";
-	window.updata_load_info('')
+	native_progress_hide();
+	// 移动完成提示放在收遮罩之后，否则遮罩会挡住提示框
+	if(mode == 'move' && move_ok){
+		await alert_fix('移动完成！')
+	}
 }
 document.getElementById("table1tbody").addEventListener('contextmenu', function(e) {
     e.preventDefault();

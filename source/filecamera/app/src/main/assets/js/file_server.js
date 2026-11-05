@@ -307,8 +307,7 @@ async function deleteByPaths(map) {
     if (!await confirm_fix("确定要删除所选的文件吗？")) {
         return false;
     }
-    window.updata_load_info('删除中...');
-    document.getElementById("loadingoverlay").style.display = "flex";
+    // 进度由原生 delete_items 驱动（原生遮罩），这里只负责在刷新完列表后收起
     let success = false;
     const items = Array.from(map).map(([name, { type }]) => ({ name, type }));
     
@@ -321,20 +320,19 @@ async function deleteByPaths(map) {
 		let scrollTop = table1tbody.scrollTop||0;
         await updateTable(open_dir.id);
 		table1tbody.scrollTop = scrollTop;
+        native_progress_hide(); // 先收遮罩，否则会挡住下面的提示框
         await alert_fix("删除成功！");
         success = true;
         
     } catch (error) {
+        native_progress_hide();
         console.error('删除失败:', error);
         await alert_fix("删除失败：" + error);
     }
-    document.getElementById("loadingoverlay").style.display = "none";
-    window.updata_load_info('');
     return success;
 }
 async function deletefileByid(file_id) {
-    window.updata_load_info('删除中...');
-    document.getElementById("loadingoverlay").style.display = "flex";
+    native_progress_show('正在删除…', '');
     
     let success = false;
     try {
@@ -343,16 +341,15 @@ async function deletefileByid(file_id) {
 		let scrollTop = table1tbody.scrollTop||0;
         await updateTable(open_dir.id);
 		table1tbody.scrollTop = scrollTop;		
+        native_progress_hide();
         await alert_fix("删除成功！");
         success = true;
     } catch (error) {
+        native_progress_hide();
         console.error('删除失败:', error);
         await alert_fix("删除失败：" + error);
         success = false;
     }
-
-    document.getElementById("loadingoverlay").style.display = "none";
-    window.updata_load_info('');
 
     return success;
 }
@@ -409,6 +406,52 @@ async function rename(arr) {
         await alert_fix("请选择一个文件或文件夹进行重命名");
     }
 }
+//批量移动/复制：整批只调原生一次，进度和遮罩全在 Java 侧；这里只处理"覆盖确认"和单项失败。
+async function runBatchWithConfirm(method, ctx, items) {
+	let done = 0;
+	let remaining = items;
+	let forceFirst = false;
+	while (remaining.length > 0) {
+		const payload = {
+			items: remaining,
+			done: done,
+			total: ctx.total,
+			forceFirst: forceFirst
+		};
+		if (ctx.sourcePath) payload.sourcePath = ctx.sourcePath;
+		if (ctx.targetPath) payload.targetPath = ctx.targetPath;
+		if (ctx.sourceArray) payload.sourceArray = ctx.sourceArray;
+		if (ctx.targetArray) payload.targetArray = ctx.targetArray;
+		try {
+			await callAndroidMethod(window.backServer, method, payload);
+			return true; // 整批完成
+		} catch (err) {
+			const resp = (err && typeof err === 'object') ? err : {};
+			done = resp.done || 0;
+			// 复制时总量是原生按"文件/目录节点数"算出来的，续跑时要沿用同一个值
+			if (resp.total) ctx.total = resp.total;
+			const rest = Array.isArray(resp.remaining) ? resp.remaining : [];
+			if (resp.needConfirm) {
+				// 原生遮罩在返回前已经收起，这里可以直接弹确认框
+				const overwrite = await confirm_fix(resp.message || '目标位置已存在同名项，是否覆盖？');
+				if (overwrite) {
+					remaining = rest;
+					forceFirst = true;
+				} else {
+					remaining = rest.slice(1); // 拒绝覆盖：跳过这一项
+					forceFirst = false;
+				}
+				continue;
+			}
+			// 单项失败：提示后跳过，继续处理剩下的条目
+			await alert_fix(resp.message || String(err || '操作失败'));
+			remaining = rest.slice(1);
+			forceFirst = false;
+		}
+	}
+	return false;
+}
+
 //移动函数
 async function moveall(source_arr, map, target_arr) {
 	let nowsource_arr = source_arr.slice();
@@ -417,143 +460,78 @@ async function moveall(source_arr, map, target_arr) {
 	let targetPath = nowtarget_arr.join('/') + '/';
 	
 	if (sourcePath === targetPath) {
-		return;
+		return false;
 	}
 	
-	let fileseq = 0;
-	let filecount = map.size;
+	const items = Array.from(map).map(([name, {type}]) => ({ name, type }));
 	
-	document.getElementById("loadingoverlay").style.display = "flex"
+	// 先检查路径冲突（纯路径判断，不需要原生参与）
+	for (const item of items) {
+		if (item.type === 'dir') {
+			let path1 = sourcePath + item.name + '/';
+			let path2 = targetPath + item.name;
+			if (path2.indexOf(path1) === 0) {
+				await alert_fix('目标路径不能在源路径中');
+				return false;
+			}
+		}
+	}
+	
 	window.Android.startwakelock();
+	let ok = false;
 	try {
-		// 转换map为数组格式
-		const items = Array.from(map).map(([name, {type}]) => ({ name, type }));
-		
-		// 先检查路径冲突
-		for (const item of items) {
-			if (item.type === 'dir') {
-				let path1 = sourcePath + item.name + '/';
-				let path2 = targetPath + item.name;
-				if (path2.indexOf(path1) === 0) {
-					await alert_fix('目标路径不能在源路径中');
-					document.getElementById("loadingoverlay").style.display = "none";
-					window.Android.endwakelock();						
-					return;
-				}
-			}
-		}
-		
-		// 逐个移动项目
-		for (const item of items) {
-			fileseq++;
-			document.getElementById("loadingmessage").innerText = 
-				"移动中..." + String(fileseq) + '/' + String(filecount);
-			
-			try {
-				await callAndroidMethod(window.backServer,'move_item', {
-					item: item,
-					sourcePath: nowsource_arr,
-					targetPath: nowtarget_arr
-				});
-			} catch (error) {
-				// 检查是否需要用户确认
-				if (error && typeof error === 'object' && error.needConfirm) {
-					// 需要用户确认覆盖
-					if (await confirm_fix(error.message)) {
-						// 用户确认覆盖，重新请求
-						try {
-							await callAndroidMethod(window.backServer,'move_item', {
-								item: item,
-								sourcePath: nowsource_arr,
-								targetPath: nowtarget_arr,
-								forceOverwrite: true
-							});
-							await alert_fix('移动完成！');
-						} catch (confirmError) {
-							console.error('移动失败:', confirmError);
-							await alert_fix('移动失败: ' + confirmError);
-						}
-					}
-					// 用户拒绝覆盖，跳过这个项目
-				} else {
-					console.error('移动失败:', error);
-					await alert_fix('移动失败: ' + error);
-				}
-			}
-		}
-		await alert_fix('移动完成！');		
+		ok = await runBatchWithConfirm('move_items', {
+			sourcePath: nowsource_arr,
+			targetPath: nowtarget_arr,
+			total: items.length
+		}, items);
 	} catch (error) {
 		console.error('移动过程中发生错误:', error);
 		await alert_fix('移动失败: ' + error);
+	} finally {
+		window.Android.endwakelock();
 	}
-	document.getElementById("loadingoverlay").style.display = "none";
-	window.Android.endwakelock();	
+	return ok;
 }
 //复制函数
 async function copyall(source_arr, map, target_arr) {
-    let nowsource_arr = source_arr.slice();
-    let nowtarget_arr = target_arr.slice();
-    let sourcePath = nowsource_arr.join('/') + '/';
-    let targetPath = nowtarget_arr.join('/') + '/';
-    
-    if (sourcePath === targetPath) {
-        return;
-    }
-    let fileseq = 0;
-    let filecount = map.size;
+	let nowsource_arr = source_arr.slice();
+	let nowtarget_arr = target_arr.slice();
+	let sourcePath = nowsource_arr.join('/') + '/';
+	let targetPath = nowtarget_arr.join('/') + '/';
 	
-    document.getElementById("loadingoverlay").style.display = "flex"
-    window.Android.startwakelock();
-    document.getElementById("loadingmessage").innerText = "复制中..." + String(fileseq) + '/' + String(filecount);
-    
-    for (const [name, value] of map) {
-        fileseq++;
-        let type = value.type;
-        let path1 = sourcePath + name + '/';
-        let path2 = targetPath + name;
-        
-        if (path2.indexOf(path1) == 0) {
-            await alert_fix('目标路径不能在源路径中');
-            continue;
-        }
-        
-        try {
-            // 调用后端复制API
-            await callAndroidMethod(window.backServer,'copy_item', {
-                name: name,
-                type: type,
-                sourceArray: nowsource_arr,
-                targetArray: nowtarget_arr
-            });
-            
-        } catch (error) {
-            // 检查是否需要用户确认
-            if (error && typeof error === 'object' && error.needConfirm) {
-                // 需要用户确认是否覆盖
-                if (await confirm_fix(error.message)) {
-                    // 用户确认覆盖，重新调用API
-                    try {
-                        await callAndroidMethod(window.backServer,'copy_item', {
-                            name: name,
-                            type: type,
-                            sourceArray: nowsource_arr,
-                            targetArray: nowtarget_arr,
-                            forceOverwrite: true
-                        });
-                    } catch (retryError) {
-                        await alert_fix(`复制 ${name} 失败: ${retryError}`);
-                    }
-                }
-            } else {
-                await alert_fix(`复制 ${name} 失败: ${error}`);
-            }
-        }
-        
-        document.getElementById("loadingmessage").innerText = "复制中..." + String(fileseq) + '/' + String(filecount);
-    }
-    
-    document.getElementById("loadingoverlay").style.display = "none";
-    window.Android.endwakelock();
+	if (sourcePath === targetPath) {
+		return false;
+	}
+	
+	const items = Array.from(map).map(([name, {type}]) => ({ name, type }));
+	
+	for (const item of items) {
+		if (item.type === 'dir') {
+			let path1 = sourcePath + item.name + '/';
+			let path2 = targetPath + item.name;
+			if (path2.indexOf(path1) === 0) {
+				await alert_fix('目标路径不能在源路径中');
+				return false;
+			}
+		}
+	}
+	
+	window.Android.startwakelock();
+	let ok = false;
+	try {
+		ok = await runBatchWithConfirm('copy_items', {
+			sourceArray: nowsource_arr,
+			targetArray: nowtarget_arr,
+			total: 0 // 让 Java 按"文件/目录节点数"算总进度
+		}, items);
+	} catch (error) {
+		console.error('复制过程中发生错误:', error);
+		await alert_fix('复制失败: ' + error);
+	} finally {
+		window.Android.endwakelock();
+	}
+	return ok;
 }
 function exportItems(ids) {
   if (!Array.isArray(ids) || ids.length === 0) {

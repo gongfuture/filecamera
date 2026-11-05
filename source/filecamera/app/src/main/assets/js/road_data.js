@@ -83,10 +83,9 @@ async function getRoadData(url,mode) {
         obj.client_version = road_version;
     }
     is_getting_road_data = true;
-	window.updata_load_info('更新中...')
-	if(!mode){
-		document.getElementById("loadingoverlay").style.display = "flex"
-	}
+	// 进度只走原生遮罩；自动检查（mode=true，启动时静默）不弹
+	const show_overlay = !mode;
+	if (show_overlay) native_progress_show('正在更新路线数据…', '正在检查服务器版本');
     try {
         const baseUrl = new URL(requestUrl);
         const apiUrl = new URL('/api/road_api/check', baseUrl);
@@ -107,8 +106,7 @@ async function getRoadData(url,mode) {
         if (!result || !result.success) {
             const errorMessage = `获取数据失败: ${result?.error || '未知错误'}`;
             rm_statusEl.textContent = `❌ 错误: ${errorMessage}`;
-			window.updata_load_info('')
-			document.getElementById("loadingoverlay").style.display = "none"	
+			if (show_overlay) native_progress_hide();
 			is_getting_road_data = false;			
             return; 
         }
@@ -116,8 +114,7 @@ async function getRoadData(url,mode) {
         // 检查版本是否同步
         if (result.is_synced) {
             rm_statusEl.textContent = '✅ 数据已是最新版本，无需更新。';
-			window.updata_load_info('')
-			document.getElementById("loadingoverlay").style.display = "none"	
+			if (show_overlay) native_progress_hide();
 			is_getting_road_data = false;			
             return;
         }
@@ -129,10 +126,9 @@ async function getRoadData(url,mode) {
             const geojson = result.data;
 
             if (!geojson.features || !Array.isArray(geojson.features)) {
+                if (show_overlay) native_progress_hide();
                 await alert_fix('❌ 错误: 文件格式无效：缺少 "features" 数组。');
                 rm_statusEl.textContent = '❌ 错误: 文件格式无效：缺少 "features" 数组。';
-				window.updata_load_info('')
-				document.getElementById("loadingoverlay").style.display = "none"	
 				is_getting_road_data = false;				
                 return;
             }
@@ -144,19 +140,24 @@ async function getRoadData(url,mode) {
                 }
             });
             
+            if (show_overlay) native_progress_show('正在更新路线数据…', '正在写入路线数据');
             await uploadAndReplaceAllRoads(geojson);
 			rm_statusEl.textContent = '✅ 更新完成，版本号：'+clientVersion;
+			if (show_overlay) {
+				native_progress_show('更新完成', '版本号：' + clientVersion);
+				setTimeout(function(){ native_progress_hide(); }, 1200);
+			}
         } else {
             const message = '服务器响应版本不同步，但未返回新数据，请稍后重试。';
             rm_statusEl.textContent = message;
             console.warn(result.message);
+            if (show_overlay) native_progress_hide();
         }
     } catch (error) {
         rm_statusEl.textContent = `❌ 错误: URL格式无效 - ${error.message}`;
         console.error('URL解析错误:', error);
+        if (show_overlay) native_progress_hide();
     }
-	window.updata_load_info('')
-	document.getElementById("loadingoverlay").style.display = "none"	
 	is_getting_road_data = false;	
 }
 function uploadAndReplaceAllRoads(geoJsonObject) {

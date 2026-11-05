@@ -199,14 +199,29 @@ JS: await callAndroidMethod(FilePicker, 'importPath', {dirId, mode:'file'|'dir'}
      done    导入完成 100%         "正在刷新列表…"，遮罩继续留着
  → 回调 {records(最多 200 条), count, total, failed[, storageFull]} 或 {canceled:true}
  → JS updateTable(open_dir.id) → 完成后调 window.Android.endImportOverlay() 收起遮罩
-   （原生侧另有 15s 兜底，前端没回调也会自动收，避免永久挡住界面）
+   （**没有超时兜底**：遮罩完全由调用方负责收起，导入/导出视频再久也不会被定时器打断）
 ```
 
 遮罩实现：`res/layout/dialog_import_progress.xml`，**视觉直接对齐 H5 的 `#loadingoverlay`**：
 60% 黑底 + `#1a252f` 卡片（8dp 圆角、20dp 内边距）+ 白色 `loading2_icon` 太阳花图标
 （2s 匀速旋转，与 H5 的 `animation: spin 2s linear infinite` 一致）+ 白色 16sp 文案，
-只多了一条 4dp 细进度条。`MainActivity.renderImportOverlay()` 负责四个状态，
-`addContentView` 挂到最上层并 `clickable` 挡触摸。
+只多了一条 4dp 细进度条。`MainActivity.showProgress / updateProgress / finishProgress / hideProgress`
+是唯一的渲染入口，`addContentView` 挂到最上层并 `clickable` 挡触摸。
+
+**这层遮罩现在是全局通用的**（2026-11-05 起）：导入、导出、删除、移动、复制、路线更新
+都用它，H5 的 `#loadingoverlay` 仅作历史保留，不再驱动这些操作：
+
+| 操作 | 谁刷进度 | 入口 |
+|---|---|---|
+| 导入文件/文件夹 | Java | `MainActivity.reportImportProgress()` |
+| 导出 | Java | `BackServer.export_items()` 逐项 `updateProgress` |
+| 删除 | Java | `BackServer.delete_items()` 统计/删除两阶段 |
+| 移动 / 复制 | Java | `move_items` / `copy_items` 整批循环（见下） |
+
+移动/复制协议：整批只调一次原生；进度按「选中项」（移动）或「文件/目录节点数」（复制）计。
+遇到同名冲突时 Java 先收遮罩、返回 `needConfirm + remaining + done + total`，JS 弹 H5 确认框；
+确认后带 `forceFirst=true` 重调，拒绝则跳过该项继续。**遮罩会挡触摸，所以任何确认/提示框
+弹出前必须先收起遮罩**。
 
 关键约束（**改动前务必看**）：
 - **单文件不做整文件 byte[]**：`importFromContentUri` 用 64KB 缓冲流式写 `import_tmp/`，
@@ -394,7 +409,7 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
   列表刷新交给 `updateTable`。
 - **进度只在原生遮罩上显示**（`res/layout/dialog_import_progress.xml`，样式对齐 H5 的 `#loadingoverlay`）。
   遮罩会停在「导入完成，正在刷新列表…」，等前端 `updateTable` 完成调 `endImportOverlay()` 再收；
-  原生侧 15s 兜底。**不要再给 H5 加导入 loading**，两层会叠在一起。
+  **没有超时兜底**（按用户要求去掉），前端不回调就一直挡着。**不要再给 H5 加 loading**，两层会叠在一起。
 - **多 worker 并行**：拷贝吃 IO、缩略图吃 CPU，SQLite 写由连接池串行化。真正要互斥的是
   「查重命名 + 写 pending」（`FileImporter.NAME_LOCK`），且 `dedupeName` 要同时查 `pending_file`。
   id 走 `IdGenerator.get_id_by_time()`，它本身 `synchronized`，并且防了时钟回拨。

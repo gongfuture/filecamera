@@ -22,6 +22,24 @@ function haptic(duration_ms = 12) {
 }
 window.haptic = haptic;
 
+// ===== 通用原生进度遮罩 =====
+// 导入/导出/删除/移动/复制/路线更新共用原生这一层（H5 不再叠 #loadingoverlay）。
+// 老版本 APK 没有这些方法时静默降级，不影响业务。
+function native_progress_show(title, detail) {
+    try {
+        if (window.Android && typeof window.Android.showProgress === 'function') {
+            window.Android.showProgress(title || '', detail || '');
+        }
+    } catch (e) { }
+}
+function native_progress_hide() {
+    try {
+        if (window.Android && typeof window.Android.hideProgress === 'function') {
+            window.Android.hideProgress();
+        }
+    } catch (e) { }
+}
+
 // 所有按钮、带 onclick 的控件、文件行、菜单项、复选框等统一给轻震动。
 // 具体业务函数里还有显式 haptic() 的调用，靠 40ms 合并去重。
 document.addEventListener('click', function (event) {

@@ -122,7 +122,8 @@ public class MainActivity extends AppCompatActivity {
             finishImport("");
         }
     }
-    // 导入进度遮罩：整个 App 只有这一层（原生）。H5 不再叠 loading。
+    // 通用原生进度遮罩：导入 / 导出 / 删除 / 移动 / 复制 / 路线更新共用这一层（原生）。
+    // H5 不再为这些操作叠 loading，双方都通过 show/update/finish/hide 驱动同一套 UI。
     private android.view.View importOverlay;
     private android.widget.TextView importOverlayTitle;
     private android.widget.TextView importOverlayDetail;
@@ -132,15 +133,15 @@ public class MainActivity extends AppCompatActivity {
     private android.widget.ProgressBar importOverlayBarIndeterminate;
     private android.animation.ObjectAnimator importSpinnerAnimator;
     private long lastProgressPostMs = 0;
+    /** 最近一次的进度值，finishProgress() 用它把进度条顶到 100%。 */
+    private int lastDone = 0;
+    private int lastTotal = 0;
     /**
      * 单次导入最多回传这么多条记录：前端拿到结果后本来就会 updateTable 重新拉列表，
      * 把几万条记录再逐层拼成巨型 JSON（还要在主线程 toString + evaluateJavascript）
      * 只会在结束时把 UI 卡死甚至 OOM，对界面没有任何用处。
      */
     private static final int MAX_RESULT_RECORDS = 200;
-
-    /** 前端刷新列表后收起遮罩的兜底时间：正常情况下 JS 会主动调 endImportOverlay。 */
-    private static final long OVERLAY_SAFETY_HIDE_MS = 15000L;
 
     /** 懒加载：第一次导入时才 inflate 并挂到 Activity 最上层。 */
     private void ensureImportOverlay() {
@@ -164,9 +165,61 @@ public class MainActivity extends AppCompatActivity {
         importOverlay = root;
     }
 
+    // ===== 通用进度遮罩 API：Java 侧与 JS 桥都调这几个 =====
+
+    /** 不确定进度：一行标题 + 一句说明，进度条用不定态样式。 */
+    public synchronized void showProgress(String title, String detail) {
+        // 归零节流时间戳：否则紧接着的第一条 updateProgress 会被 250ms 节流吞掉，
+        // 界面会一直停在"不确定进度"的样子（复制文件夹时尤其明显）。
+        lastProgressPostMs = 0;
+        lastDone = 0;
+        lastTotal = 0;
+        // 取消可能还挂着的"延时收起"，避免把新弹出来的遮罩收掉（与下面的 render 保持投递顺序）
+        runOnUiThread(() -> {
+            if (importOverlay != null) importOverlay.removeCallbacks(hideOverlayTask);
+        });
+        renderOverlayState(title, detail, null, true, 0, 0);
+    }
+
+    /** 确定进度：标题 + "n/N · 百分比" + 当前条目名；250ms 节流。 */
+    public synchronized void updateProgress(String title, int done, int total, String name) {
+        lastDone = done;
+        lastTotal = total;
+        long now = System.currentTimeMillis();
+        if (now - lastProgressPostMs < 250) return;
+        lastProgressPostMs = now;
+        renderOverlayState(title, progressDetail(done, total), name, false, done, total);
+    }
+
+    /** 收尾：进度顶到 100%，下面一行换成"正在刷新列表…"之类的说明，等前端收遮罩。 */
+    public synchronized void finishProgress(String title, String fileLine) {
+        boolean indeterminate = lastTotal <= 0;
+        renderOverlayState(title, progressDetail(lastDone, lastTotal), fileLine, indeterminate, lastDone, lastTotal);
+    }
+
+    /** 收起遮罩。任何失败路径都必须走到这里，否则界面会一直被挡住。 */
+    public void hideProgress() {
+        hideImportOverlay();
+    }
+
+    /** 收尾文案展示一小会儿再收起：用于没有"刷新列表"这一步的操作（导出、路线更新）。 */
+    public void hideProgressAfter(long delayMs) {
+        runOnUiThread(() -> {
+            if (importOverlay == null) return;
+            importOverlay.removeCallbacks(hideOverlayTask);
+            importOverlay.postDelayed(hideOverlayTask, Math.max(200L, delayMs));
+        });
+    }
+
+    private static String progressDetail(int done, int total) {
+        if (total <= 0) return null;
+        int percent = Math.round(done * 100f / total);
+        return formatCount(done) + " / " + formatCount(total) + " · " + percent + "%";
+    }
+
     /** 起手态：弹系统选择器 / 刚开始读取时用（不确定进度条）。 */
     private void showImportOverlay(String title) {
-        renderImportOverlay("prepare", 0, 0, null, title);
+        showProgress(title, null);
     }
 
     /**
@@ -182,11 +235,9 @@ public class MainActivity extends AppCompatActivity {
         long now = System.currentTimeMillis();
         if (!force && now - lastProgressPostMs < 250) return;
         lastProgressPostMs = now;
-        renderImportOverlay(phase, done, total, name, null);
-    }
+        lastDone = done;
+        lastTotal = total;
 
-    /** 按 H5 遮罩的信息层级渲染：标题 / 进度明细 / 当前文件名 / 细进度条。 */
-    private void renderImportOverlay(String phase, int done, int total, String name, String prepareTitle) {
         final String title;
         final String detail;
         final String fileLine;
@@ -199,22 +250,22 @@ public class MainActivity extends AppCompatActivity {
             indeterminate = true;
         } else if ("done".equals(phase)) {
             title = "导入完成";
-            detail = total > 0 ? formatCount(done) + " / " + formatCount(total) + " · 100%" : null;
+            detail = progressDetail(done, total);
             fileLine = "正在刷新列表…";
             indeterminate = false;
-        } else if ("prepare".equals(phase)) {
-            title = (prepareTitle == null || prepareTitle.isEmpty()) ? "准备导入…" : prepareTitle;
-            detail = null;
-            fileLine = null;
-            indeterminate = true;
         } else {
             title = "正在导入";
-            int percent = total > 0 ? Math.round(done * 100f / total) : 0;
-            detail = formatCount(done) + " / " + formatCount(total) + " · " + percent + "%";
+            detail = progressDetail(done, total);
             fileLine = name;
             indeterminate = false;
         }
 
+        renderOverlayState(title, detail, fileLine, indeterminate, done, total);
+    }
+
+    /** 按 H5 遮罩的信息层级渲染：标题 / 进度明细 / 当前文件名 / 细进度条。 */
+    private void renderOverlayState(String title, String detail, String fileLine,
+                                    boolean indeterminate, int done, int total) {
         runOnUiThread(() -> {
             ensureImportOverlay();
             importOverlay.setVisibility(android.view.View.VISIBLE);
@@ -265,19 +316,6 @@ public class MainActivity extends AppCompatActivity {
             // 取消兜底定时器，避免它稍后再补一次隐藏
             importOverlay.removeCallbacks(hideOverlayTask);
             hideOverlayTask.run();
-        });
-    }
-
-    /**
-     * 导入线程结束时把遮罩切到"导入完成，正在刷新列表…"并继续留着，
-     * 等前端 updateTable 完成回调 endImportOverlay 再收。
-     * 兜底：万一前端没回调（页面异常/WebView 挂了），15 秒后强制收起，避免遮罩永久挡住界面。
-     */
-    private void scheduleImportOverlaySafetyHide() {
-        runOnUiThread(() -> {
-            if (importOverlay == null) return;
-            importOverlay.removeCallbacks(hideOverlayTask);
-            importOverlay.postDelayed(hideOverlayTask, OVERLAY_SAFETY_HIDE_MS);
         });
     }
 
@@ -364,12 +402,10 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         reportImportProgress("done", outcome.ok.get(), total, null, true);
-        // 有前端在等结果才需要停在"正在刷新列表…"等它回 ack；
-        // 没有前端（页面已销毁等极端情况）就别干等兜底定时器了，直接收。
+        // 有前端在等结果时才需要停在"正在刷新列表…"等它回 ack；没有前端（页面已销毁等极端情况）
+        // 就直接收。这里不再做超时兜底：导入/导出视频可能很久，遮罩只由调用方负责收起。
         if (pendingImportResult == null) {
             hideImportOverlay();
-        } else {
-            scheduleImportOverlaySafetyHide();
         }
         finishImportWithRecords(records, total, outcome.ok.get(), outcome.failed.get(), outcome.storageFull);
     }

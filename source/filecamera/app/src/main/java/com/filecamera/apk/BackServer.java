@@ -373,6 +373,11 @@ public class BackServer {
 		}).start();
 	}
 
+	/** 进度遮罩宿主：BackServer 由 MainActivity 构造，context 就是它；找不到就退化为不显示进度。 */
+	private MainActivity getOverlayHost() {
+		return (context instanceof MainActivity) ? (MainActivity) context : null;
+	}
+
 	/**
 	 * 一次性给子目录列表补封面：一条 SQL 查出当前目录下所有子目录的封面。
 	 *
@@ -614,6 +619,7 @@ public class BackServer {
 	@JavascriptInterface
 	public void delete_items(String task_id, String json_data) {
 		new Thread(() -> {
+			MainActivity overlay = getOverlayHost();
 			try {
 				JSONObject data = new JSONObject(json_data);
 				JSONArray items = data.getJSONArray("items");
@@ -624,6 +630,10 @@ public class BackServer {
                     call_js_callback(task_id, false, null, "父文件夹不存在");
                     return;
                 }
+
+				// 进度只走原生遮罩，H5 不再叠一层 loading
+				final int totalItems = items.length();
+				if (overlay != null) overlay.showProgress("正在删除…", "正在统计要删除的内容");
 
                 List<String> all_file_ids = new ArrayList<>();
                 List<String> all_dir_ids = new ArrayList<>();
@@ -651,6 +661,12 @@ public class BackServer {
                             all_file_ids.add(fileInfo.getString("id"));
                         }
                     }
+                    if (overlay != null) overlay.updateProgress("正在删除", i + 1, totalItems, name);
+                }
+
+                if (overlay != null) {
+                    overlay.showProgress("正在删除…",
+                            "共 " + all_file_ids.size() + " 个文件、" + all_dir_ids.size() + " 个文件夹");
                 }
 
                 db_helper.db_run("BEGIN TRANSACTION", new JSONArray());
@@ -663,6 +679,7 @@ public class BackServer {
                         batchDeleteDirectories(all_dir_ids);
                     }
                     db_helper.db_run("COMMIT", new JSONArray());
+                    if (overlay != null) overlay.finishProgress("删除完成", "正在刷新列表…");
                     call_js_callback(task_id, true, null, null);
                 } catch (Exception e) {
                     db_helper.db_run("ROLLBACK", new JSONArray());
@@ -670,6 +687,7 @@ public class BackServer {
                 }
 
 			} catch (Exception e) {
+				if (overlay != null) overlay.hideProgress();
 				call_js_callback(task_id, false, null, e.getMessage());
 			}
 		}).start();
@@ -902,56 +920,201 @@ public class BackServer {
     }
 
 
-	@JavascriptInterface
-	public void move_item(String task_id, String json_data) {
-		new Thread(() -> {
-			try {
-				JSONObject data = new JSONObject(json_data);
-				JSONObject item = data.getJSONObject("item");
-				JSONArray sourcePath = data.getJSONArray("sourcePath");
-				JSONArray targetPath = data.getJSONArray("targetPath");
-				boolean forceOverwrite = data.optBoolean("forceOverwrite", false);
+	/** 单项操作结果：批量循环里用，避免每个条目都往 JS 回一次回调。 */
+	private static final class ItemResult {
+		static final int CODE_OK = 0;
+		static final int CODE_NEED_CONFIRM = 1;
+		static final int CODE_ERROR = 2;
+		static final ItemResult OK = new ItemResult(CODE_OK, null);
 
-				String itemName = item.getString("name");
-				String itemType = item.getString("type");
+		final int code;
+		final String message;
 
-				JSONObject source_dir = getDirByPath(sourcePath);
-				JSONObject target_dir = getDirByPath(targetPath);
+		ItemResult(int code, String message) {
+			this.code = code;
+			this.message = message;
+		}
 
-				if (source_dir == null || target_dir == null) {
-					call_js_callback(task_id, false, null, "源路径或目标路径不存在");
-					return;
-				}
+		static ItemResult needConfirm(String message) {
+			return new ItemResult(CODE_NEED_CONFIRM, message);
+		}
 
-                String sourceDirId = source_dir.getString("id");
-                String targetDirId = target_dir.getString("id");
-
-                if(sourceDirId.equals(targetDirId)) {
-                    call_js_callback(task_id, true, null, null); // 移动到相同位置，操作成功
-                    return;
-                }
-
-                if (itemType.equals("file")) {
-                    moveFile(task_id, itemName, sourceDirId, targetDirId, forceOverwrite);
-                } else if (itemType.equals("dir")) {
-                    moveDirectory(task_id, itemName, sourceDirId, targetDirId, forceOverwrite);
-                } else {
-                    call_js_callback(task_id, false, null, "未知的项目类型");
-                }
-
-			} catch (Exception e) {
-				call_js_callback(task_id, false, null, e.getMessage());
-			}
-		}).start();
+		static ItemResult error(String message) {
+			return new ItemResult(CODE_ERROR, message);
+		}
 	}
 
-    private void moveFile(String task_id, String file_name, String source_dir_id, String target_dir_id, boolean force_overwrite) throws JSONException {
+	private static JSONArray sliceFrom(JSONArray arr, int from) throws JSONException {
+		JSONArray out = new JSONArray();
+		for (int i = Math.max(0, from); i < arr.length(); i++) {
+			out.put(arr.get(i));
+		}
+		return out;
+	}
+
+	/** 批量操作的进度计数器：只往原生遮罩上报，不经过 JS。 */
+	private static final class BatchProgress {
+		private final MainActivity overlay;
+		private final String title;
+		private final int total;
+		private int done;
+
+		BatchProgress(MainActivity overlay, String title, int total, int done) {
+			this.overlay = overlay;
+			this.title = title;
+			this.total = Math.max(1, total);
+			this.done = done;
+		}
+
+		void tick(String name) {
+			done++;
+			if (overlay != null) overlay.updateProgress(title, done, total, name);
+		}
+
+		int done() {
+			return done;
+		}
+
+		int total() {
+			return total;
+		}
+	}
+
+	/** 统计一个目录在"复制"时的工作量：目录自身 + 所有子孙目录 + 所有子孙文件。 */
+	private int countCopyUnits(String parentDirId, String dirName) throws JSONException {
+		JSONObject dir = db_helper.db_get("SELECT id FROM dir WHERE parent_dir_id = ? AND name = ?",
+				new JSONArray().put(parentDirId).put(dirName));
+		if (dir == null) return 1; // 源目录不存在时按 1 个单元算，交给 copyDirectory 报错
+
+		int units = 1;
+		Queue<String> queue = new LinkedList<>();
+		queue.offer(dir.getString("id"));
+		while (!queue.isEmpty()) {
+			String currentId = queue.poll();
+			JSONArray files = db_helper.db_all("SELECT id FROM file WHERE parent_dir_id = ?", new JSONArray().put(currentId));
+			units += files.length();
+			JSONArray subDirs = db_helper.db_all("SELECT id FROM dir WHERE parent_dir_id = ?", new JSONArray().put(currentId));
+			for (int i = 0; i < subDirs.length(); i++) {
+				units += 1;
+				queue.offer(subDirs.getJSONObject(i).getString("id"));
+			}
+		}
+		return units;
+	}
+
+	/**
+	 * 批量移动：整批只调用一次，进度全部在 Java 侧刷原生遮罩。
+	 *
+	 * <p>冲突协议：遇到同名文件/目录时立即停下，把 needConfirm + 剩余项 + 已完成数回给 JS；
+	 * JS 弹确认框后带 forceFirst=true 重新调用，剩下的条目里只有第一条按"覆盖/合并"处理。
+	 */
+	@JavascriptInterface
+	public void move_items(String task_id, String json_data) {
+		new Thread(() -> runBatchOps(task_id, json_data, true)).start();
+	}
+
+	/** 批量复制：与 move_items 同一套协议，进度同样只在 Java 侧更新。 */
+	@JavascriptInterface
+	public void copy_items(String task_id, String json_data) {
+		new Thread(() -> runBatchOps(task_id, json_data, false)).start();
+	}
+
+	private void runBatchOps(String task_id, String json_data, boolean is_move) {
+		MainActivity overlay = getOverlayHost();
+		String action = is_move ? "移动" : "复制";
+		String title = "正在" + action;
+		try {
+			JSONObject data = new JSONObject(json_data);
+			JSONArray items = data.getJSONArray("items");
+			JSONArray sourcePath = data.getJSONArray(is_move ? "sourcePath" : "sourceArray");
+			JSONArray targetPath = data.getJSONArray(is_move ? "targetPath" : "targetArray");
+			int done = data.optInt("done", 0);
+			int total = data.optInt("total", 0);
+			boolean forceFirst = data.optBoolean("forceFirst", false);
+
+			JSONObject source_dir = getDirByPath(sourcePath);
+			JSONObject target_dir = getDirByPath(targetPath);
+			if (source_dir == null || target_dir == null) {
+				call_js_callback(task_id, false, null, is_move ? "源路径或目标路径不存在" : "源目录或目标目录不存在");
+				return;
+			}
+			String sourceDirId = source_dir.getString("id");
+			String targetDirId = target_dir.getString("id");
+
+			if (is_move && sourceDirId.equals(targetDirId)) {
+				call_js_callback(task_id, true, null, null); // 移动到相同位置，视为成功
+				return;
+			}
+
+			if (overlay != null) overlay.showProgress(title + "…", "");
+
+			// 首次调用时算总工作量：移动按"选中项"计，复制按"文件/目录节点数"计（文件夹内部也推进度）
+			if (total <= 0) {
+				if (is_move) {
+					total = items.length();
+				} else {
+					if (overlay != null) overlay.showProgress(title + "…", "正在统计要复制的文件");
+					for (int i = 0; i < items.length(); i++) {
+						JSONObject item = items.getJSONObject(i);
+						total += "file".equals(item.getString("type"))
+								? 1
+								: countCopyUnits(sourceDirId, item.getString("name"));
+					}
+				}
+			}
+			BatchProgress progress = new BatchProgress(overlay, title, total, done);
+
+			for (int i = 0; i < items.length(); i++) {
+				JSONObject item = items.getJSONObject(i);
+				String name = item.getString("name");
+				String type = item.getString("type");
+				boolean force = forceFirst && i == 0;
+
+				ItemResult result;
+				if (is_move) {
+					result = "file".equals(type)
+							? moveFile(name, sourceDirId, targetDirId, force)
+							: moveDirectory(name, sourceDirId, targetDirId, force);
+					progress.tick(name);
+				} else {
+					if ("file".equals(type)) {
+						result = copyFile(name, sourceDirId, targetDirId, force);
+						progress.tick(name);
+					} else {
+						result = copyDirectory(name, sourceDirId, targetDirId, force, progress);
+					}
+				}
+
+				if (result.code != ItemResult.CODE_OK) {
+					if (overlay != null) overlay.hideProgress();
+					JSONObject response = new JSONObject()
+							.put("remaining", sliceFrom(items, i))
+							.put("done", progress.done())
+							.put("total", total)
+							.put("message", result.message);
+					if (result.code == ItemResult.CODE_NEED_CONFIRM) {
+						response.put("needConfirm", true);
+					}
+					call_js_callback(task_id, false, response, result.message);
+					return;
+				}
+			}
+
+			if (overlay != null) overlay.finishProgress(action + "完成", "正在刷新列表…");
+			call_js_callback(task_id, true, null, null);
+
+		} catch (Exception e) {
+			if (overlay != null) overlay.hideProgress();
+			call_js_callback(task_id, false, null, e.getMessage());
+		}
+	}
+
+    private ItemResult moveFile(String file_name, String source_dir_id, String target_dir_id, boolean force_overwrite) throws JSONException {
         // 查找源文件
         JSONArray findSourceParams = new JSONArray().put(source_dir_id).put(file_name);
         JSONObject sourceFile = db_helper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", findSourceParams);
         if (sourceFile == null) {
-            call_js_callback(task_id, false, null, "源文件不存在");
-            return;
+            return ItemResult.error("源文件不存在");
         }
         String fileId = sourceFile.getString("id");
 
@@ -961,10 +1124,7 @@ public class BackServer {
 
         if (targetFile != null) {
             if (!force_overwrite) {
-                // 需要前端确认覆盖
-                JSONObject response = new JSONObject().put("needConfirm", true).put("message", "目标位置已存在同名文件，是否覆盖？");
-                call_js_callback(task_id, false, response, null);
-                return;
+                return ItemResult.needConfirm("目标位置已存在同名文件，是否覆盖？");
             } else {
                 // 强制覆盖，删除目标位置的旧文件
                 String oldFileId = targetFile.getString("id");
@@ -975,23 +1135,21 @@ public class BackServer {
         // 移动文件：只需更新其 parent_dir_id
         JSONArray updateParams = new JSONArray().put(target_dir_id).put(fileId);
         db_helper.db_run("UPDATE file SET parent_dir_id = ? WHERE id = ?", updateParams);
-        call_js_callback(task_id, true, null, null);
+        return ItemResult.OK;
     }
 
-    private void moveDirectory(String task_id, String dir_name, String source_dir_id, String target_dir_id, boolean force_overwrite) throws JSONException {
+    private ItemResult moveDirectory(String dir_name, String source_dir_id, String target_dir_id, boolean force_overwrite) throws JSONException {
         // 查找源目录
         JSONArray findSourceParams = new JSONArray().put(source_dir_id).put(dir_name);
         JSONObject sourceDir = db_helper.db_get("SELECT id FROM dir WHERE parent_dir_id = ? AND name = ?", findSourceParams);
         if (sourceDir == null) {
-            call_js_callback(task_id, false, null, "源目录不存在");
-            return;
+            return ItemResult.error("源目录不存在");
         }
         String dirId = sourceDir.getString("id");
 
         // 防止将父目录移动到子目录中
         if (isAncestor(dirId, target_dir_id)) {
-            call_js_callback(task_id, false, null, "不能将目录移动到其自身或子目录中");
-            return;
+            return ItemResult.error("不能将目录移动到其自身或子目录中");
         }
 
         // 检查目标位置是否存在同名目录
@@ -1000,9 +1158,7 @@ public class BackServer {
 
         if (targetDir != null) { // 存在同名目录，需要合并
             if(!force_overwrite){
-                JSONObject response = new JSONObject().put("needConfirm", true).put("message", "目标位置已存在同名目录，是否合并？");
-                call_js_callback(task_id, false, response, null);
-                return;
+                return ItemResult.needConfirm("目标位置已存在同名目录，是否合并？");
             }
             String targetSubDirId = targetDir.getString("id");
             mergeDirectories(dirId, targetSubDirId, force_overwrite); // 递归合并
@@ -1013,7 +1169,7 @@ public class BackServer {
             JSONArray updateParams = new JSONArray().put(target_dir_id).put(dirId);
             db_helper.db_run("UPDATE dir SET parent_dir_id = ? WHERE id = ?", updateParams);
         }
-        call_js_callback(task_id, true, null, null);
+        return ItemResult.OK;
     }
 
     private void mergeDirectories(String source_dir_id, String target_dir_id, boolean force_overwrite) throws JSONException {
@@ -1056,59 +1212,18 @@ public class BackServer {
         }
     }
 
-	@JavascriptInterface
-	public void copy_item(String task_id, String json_data) {
-		new Thread(() -> {
-			try {
-				JSONObject data = new JSONObject(json_data);
-				String name = data.getString("name");
-				String type = data.getString("type");
-				JSONArray sourceArray = data.getJSONArray("sourceArray");
-				JSONArray targetArray = data.getJSONArray("targetArray");
-				boolean forceOverwrite = data.optBoolean("forceOverwrite", false);
-
-				JSONObject source_dir = getDirByPath(sourceArray);
-				JSONObject target_dir = getDirByPath(targetArray);
-
-				if (source_dir == null || target_dir == null) {
-					call_js_callback(task_id, false, null, "源目录或目标目录不存在");
-					return;
-				}
-
-                String sourceDirId = source_dir.getString("id");
-                String targetDirId = target_dir.getString("id");
-
-				if (type.equals("file")) {
-                    copyFile(task_id, name, sourceDirId, targetDirId, forceOverwrite);
-				} else if (type.equals("dir")) {
-                    copyDirectory(task_id, name, sourceDirId, targetDirId, forceOverwrite);
-				} else {
-					call_js_callback(task_id, false, null, "未知的项目类型");
-				}
-			} catch (Exception e) {
-				android.util.Log.e("CopyItemError", "复制操作顶层异常", e);
-				call_js_callback(task_id, false, null, e.getMessage());
-			}
-		}).start();
-	}
-
-    private void copyFile(String task_id, String file_name, String source_dir_id, String target_dir_id, boolean force_overwrite) throws Exception {
+    private ItemResult copyFile(String file_name, String source_dir_id, String target_dir_id, boolean force_overwrite) throws Exception {
         // 查找源文件
         JSONObject source_file_db = db_helper.db_get("SELECT * FROM file WHERE parent_dir_id = ? AND name = ?", new JSONArray().put(source_dir_id).put(file_name));
         if (source_file_db == null) {
-            if (task_id != null) call_js_callback(task_id, false, null, "源文件不存在");
-            return;
+            return ItemResult.error("源文件不存在");
         }
 
         // 检查目标位置是否存在同名文件
         JSONObject target_file_exist = db_helper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", new JSONArray().put(target_dir_id).put(file_name));
         if (target_file_exist != null) {
             if (!force_overwrite) {
-                if (task_id != null) {
-                    JSONObject response = new JSONObject().put("needConfirm", true).put("message", "目标位置已存在同名文件，是否覆盖？");
-                    call_js_callback(task_id, false, response, null);
-                }
-                return;
+                return ItemResult.needConfirm("目标位置已存在同名文件，是否覆盖？");
             } else {
                 // 覆盖：删除旧文件
                 batchDeleteFiles(new ArrayList<String>() {{ add(target_file_exist.getString("id")); }});
@@ -1123,8 +1238,7 @@ public class BackServer {
         String extension = source_file_db.optString("extension", "");
         String new_real_name = new_file_id + (extension.isEmpty() ? "" : "." + extension);
         if (!copyPhysicalFile(source_real_name, new_real_name, false)) {
-            if (task_id != null) call_js_callback(task_id, false, null, "物理文件复制失败");
-            return;
+            return ItemResult.error("物理文件复制失败");
         }
 
         // 复制图标（如果存在）
@@ -1151,33 +1265,26 @@ public class BackServer {
             .put(extension);
         db_helper.db_run("INSERT INTO file (id, name, parent_dir_id, type, real_file_name, real_icon_name, createtime, seqnumber, size, extension) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", insert_file_params);
 
-        if (task_id != null) {
-            JSONObject new_file_info = db_helper.db_get("SELECT * from file where id = ?", new JSONArray().put(new_file_id));
-            call_js_callback(task_id, true, new_file_info, null);
-        }
+        return ItemResult.OK;
     }
 
-    private void copyDirectory(String task_id, String dir_name, String source_dir_id, String target_dir_id, boolean force_overwrite) throws Exception {
+    private ItemResult copyDirectory(String dir_name, String source_dir_id, String target_dir_id, boolean force_overwrite, BatchProgress progress) throws Exception {
         // 查找源目录
         JSONObject source_dir = db_helper.db_get("SELECT * FROM dir WHERE parent_dir_id = ? AND name = ?", new JSONArray().put(source_dir_id).put(dir_name));
         if (source_dir == null) {
-            call_js_callback(task_id, false, null, "源目录不存在");
-            return;
+            return ItemResult.error("源目录不存在");
         }
         String source_root_id = source_dir.getString("id");
 
         // 检查目标位置是否存在同名目录
         JSONObject target_dir_exist = db_helper.db_get("SELECT id FROM dir WHERE parent_dir_id = ? AND name = ?", new JSONArray().put(target_dir_id).put(dir_name));
         if (target_dir_exist != null && !force_overwrite) {
-            JSONObject response = new JSONObject().put("needConfirm", true).put("message", "目标位置已存在同名目录，是否合并？");
-            call_js_callback(task_id, false, response, null);
-            return;
+            return ItemResult.needConfirm("目标位置已存在同名目录，是否合并？");
         }
 
         // 防止将父目录复制到子目录中
         if (isAncestor(source_root_id, target_dir_id)) {
-            call_js_callback(task_id, false, null, "不能将目录复制到其自身或子目录中");
-            return;
+            return ItemResult.error("不能将目录复制到其自身或子目录中");
         }
 
         // 使用队列进行广度优先复制
@@ -1202,6 +1309,7 @@ public class BackServer {
         }
 
         copy_queue.offer(new Pair<>(source_root_id, target_root_id));
+        if (progress != null) progress.tick(dir_name); // 根目录本身算一个单元
 
         while (!copy_queue.isEmpty()) {
             Pair<String, String> current = copy_queue.poll();
@@ -1212,8 +1320,9 @@ public class BackServer {
             JSONArray files_to_copy = db_helper.db_all("SELECT name FROM file WHERE parent_dir_id = ?", new JSONArray().put(current_source_id));
             for(int i=0; i < files_to_copy.length(); i++) {
                 String file_name_to_copy = files_to_copy.getJSONObject(i).getString("name");
-                // 调用文件复制，传入null task_id，因为它在循环内部
-                copyFile(null, file_name_to_copy, current_source_id, current_target_parent_id, force_overwrite);
+                // 递归复制单个文件；冲突在合并模式下按 force_overwrite 处理，结果忽略
+                copyFile(file_name_to_copy, current_source_id, current_target_parent_id, force_overwrite);
+                if (progress != null) progress.tick(file_name_to_copy);
             }
 
             // 复制当前目录下的所有子目录
@@ -1242,9 +1351,10 @@ public class BackServer {
                     db_helper.db_run("INSERT INTO dir (id, name, parent_dir_id, type, createtime, filesortmode, dirsortmode, seqnumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", create_sub_params);
                 }
                 copy_queue.offer(new Pair<>(old_sub_dir_id, new_sub_dir_id));
+                if (progress != null) progress.tick(sub_dir_name);
             }
         }
-        call_js_callback(task_id, true, null, null);
+        return ItemResult.OK;
     }
 
 	private boolean copyPhysicalFile(String source_name, String target_name, boolean is_icon) {
@@ -1437,6 +1547,7 @@ public class BackServer {
 	@JavascriptInterface
 	public void export_items(String task_id, String json_data) {
 		new Thread(() -> {
+			MainActivity overlay = getOverlayHost();
 			try {
 				JSONObject data = new JSONObject(json_data);
 				JSONArray ids = data.getJSONArray("ids");
@@ -1445,18 +1556,20 @@ public class BackServer {
 				String targetDirPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) + "/filecamera/";
 				File exportDir = new File(targetDirPath);
 
+				if (overlay != null) overlay.showProgress("正在导出…", "正在准备导出目录");
 				if (!ensureDirectoryExists(exportDir)) {
 					throw new IOException("无法创建导出目录: " + targetDirPath);
 				}
 				checkAndCreateDirectoryStructure(exportDir);
-				showToast("正在导出中......");
                 for (int i = 0; i < totalItems; i++) {
                     String id = ids.getString(i);
                     final int currentProgress = i + 1;
+                    String currentName = "";
 
                     JSONObject dirData = getDataById(id, "dir");
                     if (dirData != null) {
                         String dirName = dirData.getString("name");
+                        currentName = dirName;
                         String zipFileName = dirName + ".zip";
                         String finalZipFileName = getFinalZipFileName(exportDir, zipFileName);
 
@@ -1469,17 +1582,22 @@ public class BackServer {
                         JSONObject fileData = getDataById(id, "file");
                         if (fileData != null) {
                             moveFileToTarget(fileData, exportDir);
+                            currentName = fileData.optString("name", "");
                         } else {
                             android.util.Log.w("Export", "ID为 " + id + " 的项目未找到，已跳过。");
                         }
                     }
+                    if (overlay != null) overlay.updateProgress("正在导出", currentProgress, totalItems, currentName);
                 }
-				showToast("导出完成");
+				if (overlay != null) {
+					overlay.finishProgress("导出完成", "已保存到 Download/filecamera/");
+					overlay.hideProgressAfter(1500L);
+				}
 				call_js_callback(task_id, true, "已导出到 " + targetDirPath, null);
 
 			} catch (Exception e) {
 				android.util.Log.e("ExportError", "导出项目时发生错误", e);
-				showToast("导出失败: " + e.getMessage());
+				if (overlay != null) overlay.hideProgress();
 				call_js_callback(task_id, false, null, e.getMessage());
 			}
 		}).start();
