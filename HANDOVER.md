@@ -1,6 +1,6 @@
 # 巡查相机 · 交接文档（新会话从这里开始）
 
-> 最后更新：2026-10-19（本地 `master` @ `b4aad81`）
+> 最后更新：2026-11-05（本地 `master` @ `v20261105-01`）
 > 当前状态：**Camera2 迁移 + 边录边烧已完成**；录像直接输出标准 `.mp4`（带水印 + 音频），
 > 分片封装保证录制中被杀也能恢复。旧的 `.wmp4` 只保留只读播放兼容。
 > 下一步：真机回归竖拍/横拍/前后摄/闪光/变焦，以及第 13 节的收尾项。
@@ -59,11 +59,11 @@ WebView(assets/index.html + js)  ── bridge ──┐
   WatermarkBitmapRenderer 把水印画到 Bitmap（拍照缩略图 + 录像边录边烧）
   WatermarkFileCodec 旧 .wmp4 尾部水印数据只读兼容（不再写入）
   CameraSessionStore 拍照会话临时目录
-  DatabaseHelper     SQLite（v4）
+  DatabaseHelper     SQLite（v5）
   IdGenerator        get_id_by_time() → "<毫秒时间戳>-<同毫秒序号>"
 ```
 
-### 数据库（v4，4 张表）
+### 数据库（v5，4 张表）
 
 | 表 | 用途 |
 |---|---|
@@ -73,6 +73,9 @@ WebView(assets/index.html + js)  ── bridge ──┐
 | `android_metadata` | SQLite 内置 |
 
 **重要：`file_watermark` 表已在 v4 删除**，视频水印数据只存在 `.wmp4` 文件尾部，数据库不保存任何水印信息（这是用户明确要求）。
+
+v5 只补索引（`idx_dir_parent_dir_id` / `idx_file_parent_dir_id` / `idx_file_seqnumber`），不改表结构；
+`get_index_by_id` 的封面查询用 `CROSS JOIN ... INDEXED BY idx_file_parent_dir_id` 固定计划，索引必须先存在。
 
 ---
 
@@ -408,7 +411,7 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
 
 ```
 分支：master（推送到 Gitee：https://gitee.com/zjywchenhui/filecamera.git）
-最新发布：v20261104-01（批量导入重构 + 原生进度遮罩 + 启动自愈）
+最新发布：v20261105-01（封面加载改为单条 JOIN + 数据库 v5 补索引）
 ```
 
 发布流程（沿用之前的做法）：

@@ -12,7 +12,9 @@ import org.json.JSONObject;
 public class DatabaseHelper extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "backserver.db";
     // v2：新增 pending_file（入库预备表，对现有表零侵入）
-    private static final int DATABASE_VERSION = 4;
+    // v5：补齐 parent_dir_id / seqnumber 索引（老版本升级上来的库可能没有；
+    //     封面查询用 INDEXED BY 固定执行计划，要求索引确实存在）
+    private static final int DATABASE_VERSION = 5;
 
     private static volatile DatabaseHelper instance;
 
@@ -88,6 +90,12 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         // 只做增量建表/加列，不改老表结构，升级不会与现有数据冲突
         if (oldVersion < 2) {
             db.execSQL(CREATE_PENDING_FILE);
+        }
+        if (oldVersion < 5) {
+            // 早期版本的 onCreate 未必建过这些索引，这里统一补上（已存在则是空操作）。
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_dir_parent_dir_id ON dir (parent_dir_id)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_file_parent_dir_id ON file (parent_dir_id)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_file_seqnumber ON file (seqnumber)");
         }
     }
     // 通用数据库操作函数 - 类似Node.js的db_get

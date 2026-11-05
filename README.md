@@ -8,13 +8,13 @@
 
 | 版本 | 适用场景 | 下载 |
 | --- | --- | --- |
-| **v20261104-01（当前版）** | 批量导入重构：万级素材导入更快、不再闪退，进度实时可见 | [FileCamera-v20261104-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261104-01/FileCamera-v20261104-01.apk) |
+| **v20261105-01（当前版）** | 封面加载优化：打开文件夹只查一条 SQL，子目录多时明显更快 | [FileCamera-v20261105-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261105-01/FileCamera-v20261105-01.apk) |
 | v20260825-02（稳定旧版） | 仅需拍照和照片水印，长期现场验证稳定 | [巡查相机v20260825-02.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk) |
 
 - 当前 `master` 为重构版；不需要视频水印时，优先使用稳定旧版。
 - 重构版改动较大，建议先小范围验证，再批量部署。
 - APK 显示版本为 **1.0**（versionCode `1`）；如果手机已安装更高 versionCode 的版本，请使用 `adb install -r -d` 强制安装。
-- [历史版本](https://gitee.com/zjywchenhui/filecamera/releases) · [当前源码 v20261104-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261104-01.zip)
+- [历史版本](https://gitee.com/zjywchenhui/filecamera/releases) · [当前源码 v20261105-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261105-01.zip)
 
 ## 核心功能
 
@@ -100,6 +100,7 @@ WebView + Java 混合架构：H5 负责文件列表、设置、路线管理和�
 
 ## 版本说明
 
+- **v20261105-01**：打开文件夹时的封面加载由「每个子文件夹一条 SQL」改为一条 JOIN 查询（520 个子目录的文件夹实测 98 ms → 5 ms），缩略图缺失时不再显示碎图；主图缺失记录的清理改为批量删除；数据库升级到 v5，补齐 `parent_dir_id` / `seqnumber` 索引。
 - **v20261104-01**：文件/文件夹导入重构——改为流式落盘（不再整文件读入内存，批量导入不再 OOM 闪退）、4 个 worker 并行导入、目录一次性预建（去掉逐文件的 SAF 父链查询）、导入结果只回传前 200 条记录；新增原生导入进度遮罩（与 H5 同款样式，含扫描/导入/收尾三阶段）；启动自愈补强：缩略图损坏自动重建、自动清理导入临时文件。
 - **v20261031-01**：修复单个视频或非图片文件分享到微信时被误判为“多文件分享”并提示「仅支持照片格式」的问题；单个文件改走系统单文件分享，多文件按实际类型分享。
 - **v20261026-01**：修复后置录像画面方向；视频水印补齐 Logo，统一 Logo、圆角、文字、内边距和行距缩放；发行 APK 不包含定制配置。

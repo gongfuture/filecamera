@@ -8,13 +8,13 @@ No ads, no fees, no hidden terms. Photos and videos stay in the app's private fo
 
 | Version | Best for | Download |
 | --- | --- | --- |
-| **v20261104-01 (current)** | Bulk-import rewrite: faster, crash-free large imports with live progress | [FileCamera-v20261104-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261104-01/FileCamera-v20261104-01.apk) |
+| **v20261105-01 (current)** | Cover loading: one query per folder instead of one per subfolder; noticeably faster with many subfolders | [FileCamera-v20261105-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261105-01/FileCamera-v20261105-01.apk) |
 | v20260825-02 (stable legacy) | Photo capture + photo watermarks only; field-proven | [FileCamera v20260825-02 APK](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk) |
 
 - `master` is the rewrite. Prefer the stable legacy build if you do not need video watermarks.
 - The rewrite changes a lot; validate on a small scale before broad rollout.
 - The APK reports version **1.0** (versionCode `1`). If a higher versionCode is already installed, use `adb install -r -d`.
-- [All releases](https://gitee.com/zjywchenhui/filecamera/releases) · [Source archive v20261104-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261104-01.zip)
+- [All releases](https://gitee.com/zjywchenhui/filecamera/releases) · [Source archive v20261105-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261105-01.zip)
 
 ## Features
 
@@ -100,6 +100,7 @@ Hybrid WebView + Java architecture: H5 handles file lists, settings, route manag
 
 ## Version notes
 
+- **v20261105-01**: folder cover loading now uses a single JOIN instead of one query per subfolder (measured 98 ms → 5 ms on a folder with 520 subfolders); a missing thumbnail no longer produces a broken cover image; records whose main file is gone are now deleted in batches; database bumped to v5 with index backfill for `parent_dir_id` / `seqnumber`.
 - **v20261104-01**: rewrote file/folder import — streaming writes (no whole-file buffers, so bulk import no longer OOMs), 4 parallel workers, the whole folder tree created in one transaction (no per-file SAF parent lookups), and at most 200 records returned to the WebView; added a native import progress overlay (scan / import / finish phases, styled like the H5 one); hardened startup repair (rebuild corrupt thumbnails, clean leftover import temp files).
 - **v20261031-01**: fixed single video or non-image files being treated as a WeChat multi-file share and rejected with "photos only"; single files now use the system single-file share intent, while multiple files use their actual MIME types.
 - **v20261026-01**: fixed rear-camera video orientation; added the missing video watermark logo and unified scaling for the logo, corner radius, text, padding, and line spacing; the release APK excludes custom configuration.

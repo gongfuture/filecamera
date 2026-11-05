@@ -48,6 +48,7 @@ import android.media.MediaScannerConnection;
 import android.webkit.MimeTypeMap;
 import android.app.Activity;
 import java.util.List;
+import java.util.HashMap;
 import androidx.exifinterface.media.ExifInterface;
 
 public class BackServer {
@@ -352,26 +353,9 @@ public class BackServer {
 				// 5.1 检查请求中是否需要查询封面
 				boolean shouldQueryCover = data.optBoolean("cover");
 
-				// 如果请求中 cover 属性为 true, 则为每个子目录查找封面
+				// 如果请求中 cover 属性为 true，则用一条 SQL 给所有子目录补封面
 				if (shouldQueryCover) {
-					for (int i = 0; i < dir_index_arr.length(); i++) {
-						JSONObject sub_dir = dir_index_arr.getJSONObject(i);
-						String sub_dir_id = sub_dir.getString("id");
-
-						// 查询条件: seqnumber=1 并且是图片格式
-						String cover_query = "SELECT real_icon_name FROM file " +
-											 "WHERE parent_dir_id = ? AND seqnumber = 1 " +
-											 "AND extension IN ('jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg') " +
-											 "LIMIT 1";
-
-						JSONArray cover_params = new JSONArray().put(sub_dir_id);
-						JSONObject cover_file = db_helper.db_get(cover_query, cover_params);
-
-						// 如果找到了符合条件的封面文件，则将其 real_icon_name 添加到 sub_dir 对象中
-						if (cover_file != null && cover_file.has("real_icon_name")) {
-							sub_dir.put("cover", cover_file.getString("real_icon_name"));
-						}
-					}
+					fillDirCovers(dir_index_arr, id);
 				}
 				// --- 代码修改结束 ---
 
@@ -387,6 +371,56 @@ public class BackServer {
 				call_js_callback(task_id, false, null, e.getMessage());
 			}
 		}).start();
+	}
+
+	/**
+	 * 一次性给子目录列表补封面：一条 SQL 查出当前目录下所有子目录的封面。
+	 *
+	 * <p>原来是 for 循环里"每个子目录查一次"，N 个子目录就是 N 条 SQL、N 次语句编译和 N 个游标。
+	 * 子目录集合本身就能用 {@code dir.parent_dir_id = 当前目录} 表达，所以直接 JOIN dir 表即可，
+	 * 不需要把 id 拼成 IN (?,?,...)：既避开了 SQLite 的 SQLITE_MAX_VARIABLE_NUMBER 上限
+	 * （Android 10/11 只有 999），也省掉了分批拼参数。
+	 *
+	 * <p>两个刻意的细节：
+	 * <ul>
+	 *   <li>CROSS JOIN + INDEXED BY 把执行计划钉死成 dir 驱动、file 走 (parent_dir_id) 索引。
+	 *       没有 ANALYZE 统计信息时，SQLite 也可能反过来扫 idx_file_seqnumber 上所有
+	 *       seqnumber=1 的行，结果正确但耗时随全库这类行的数量线性增长。</li>
+	 *   <li>过滤 real_icon_name 为 NULL/空的行。旧实现在这种情况下会通过
+	 *       {@code JSONObject.NULL.toString()} 取出字符串 "null" 塞给前端，
+	 *       封面变成 {@code <img src=".../icons/null">} 的碎图。</li>
+	 * </ul>
+	 */
+	private void fillDirCovers(JSONArray dir_index_arr, String parent_dir_id) throws JSONException {
+		if (dir_index_arr == null || dir_index_arr.length() == 0) return;
+
+		String cover_query =
+				"SELECT f.parent_dir_id AS dir_id, f.real_icon_name AS cover_name " +
+				"FROM dir d CROSS JOIN file f INDEXED BY idx_file_parent_dir_id " +
+				"WHERE d.parent_dir_id = ? AND f.parent_dir_id = d.id " +
+				"AND f.seqnumber = 1 " +
+				"AND f.real_icon_name IS NOT NULL AND f.real_icon_name <> '' " +
+				"AND f.extension IN ('jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg') " +
+				"GROUP BY f.parent_dir_id";
+
+		JSONArray cover_rows = db_helper.db_all(cover_query, new JSONArray().put(parent_dir_id));
+		if (cover_rows == null || cover_rows.length() == 0) return;
+
+		HashMap<String, String> cover_by_dir = new HashMap<>();
+		for (int i = 0; i < cover_rows.length(); i++) {
+			JSONObject row = cover_rows.optJSONObject(i);
+			if (row == null || row.isNull("dir_id") || row.isNull("cover_name")) continue;
+			cover_by_dir.put(row.optString("dir_id", ""), row.optString("cover_name", ""));
+		}
+
+		for (int i = 0; i < dir_index_arr.length(); i++) {
+			JSONObject sub_dir = dir_index_arr.optJSONObject(i);
+			if (sub_dir == null) continue;
+			String cover = cover_by_dir.get(sub_dir.optString("id", ""));
+			if (cover != null && !cover.isEmpty()) {
+				sub_dir.put("cover", cover);
+			}
+		}
 	}
 
 	private String getOrderByClause(String type, int mode) {
@@ -438,6 +472,7 @@ public class BackServer {
 		File appDataDir = new File(context.getFilesDir(), "app_data");
 		File iconDir = new File(context.getFilesDir(), "icons");
 		JSONArray cleaned = new JSONArray();
+		List<String> dead_ids = new ArrayList<>();
 		for (int i = 0; i < rows.length(); i++) {
 			JSONObject row = rows.optJSONObject(i);
 			if (row == null) continue;
@@ -448,10 +483,8 @@ public class BackServer {
 			}
 			String fileId = row.optString("id", "");
 			String realIconName = row.isNull("real_icon_name") ? null : row.optString("real_icon_name", null);
+			if (!fileId.isEmpty()) dead_ids.add(fileId);
 			try {
-				if (!fileId.isEmpty()) {
-					db_helper.db_run("DELETE FROM file WHERE id = ?", new JSONArray().put(fileId));
-				}
 				if (realIconName != null && !realIconName.isEmpty()) {
 					File icon = new File(iconDir, realIconName);
 					if (icon.isFile()) {
@@ -464,7 +497,33 @@ public class BackServer {
 				android.util.Log.e("BackServer", "清理缺失文件的库记录失败: " + fileId, e);
 			}
 		}
+		// 坏记录通常只是一两条；真出现成百上千条时，逐条 DELETE 会把打开文件夹拖慢，统一分批删。
+		deleteFileRowsByIds(dead_ids);
 		return cleaned;
+	}
+
+	/** 按 id 批量删除 file 行：每批 100 个占位符，远低于 SQLite 的参数上限。 */
+	private void deleteFileRowsByIds(List<String> fileIds) {
+		if (fileIds == null || fileIds.isEmpty()) return;
+		int batch_size = 100;
+		for (int i = 0; i < fileIds.size(); i += batch_size) {
+			int end_index = Math.min(i + batch_size, fileIds.size());
+			List<String> batch = fileIds.subList(i, end_index);
+
+			StringBuilder placeholders = new StringBuilder();
+			JSONArray params = new JSONArray();
+			for (int j = 0; j < batch.size(); j++) {
+				if (j > 0) placeholders.append(",");
+				placeholders.append("?");
+				params.put(batch.get(j));
+			}
+
+			try {
+				db_helper.db_run("DELETE FROM file WHERE id IN (" + placeholders + ")", params);
+			} catch (Exception e) {
+				android.util.Log.e("BackServer", "批量清理缺失文件的库记录失败", e);
+			}
+		}
 	}
 
 	@JavascriptInterface
