@@ -446,7 +446,7 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
 
 ```
 分支：master（推送到 Gitee：https://gitee.com/zjywchenhui/filecamera.git）
-最新发布：v20261105-01（封面加载改为单条 JOIN + 数据库 v5 补索引）
+最新发布：v20261106-01（文件操作可靠性：流式大文件 + pending_file 统一任务表 v8）
 ```
 
 发布流程（沿用之前的做法）：
