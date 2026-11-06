@@ -59,22 +59,24 @@ WebView(assets/index.html + js)  ── bridge ──┐
   WatermarkBitmapRenderer 把水印画到 Bitmap（拍照缩略图 + 录像边录边烧）
   WatermarkFileCodec 旧 .wmp4 尾部水印数据只读兼容（不再写入）
   CameraSessionStore 拍照会话临时目录
-  DatabaseHelper     SQLite（v5）
+  DatabaseHelper     SQLite（v8）
   IdGenerator        get_id_by_time() → "<毫秒时间戳>-<同毫秒序号>"
 ```
 
-### 数据库（v5，4 张表）
+### 数据库（v8，4 张表）
 
 | 表 | 用途 |
 |---|---|
 | `dir` | 目录（id/name/parent_dir_id/type/createtime/filesortmode/dirsortmode/seqnumber） |
 | `file` | 文件记录（id/name/parent_dir_id/real_file_name/real_icon_name/createtime/seqnumber/size/extension） |
-| `pending_file` | 两阶段入库的预备表（外部不可见），含 tmp_photo_path / tmp_icon_path |
+| `pending_file` | **待执行任务表**：`op = import/copy/delete`；copy 覆盖时用 `old_file_id` 记录待删旧行；启动时按 op 修复中断的操作，正常收尾立刻删行 |
 | `android_metadata` | SQLite 内置 |
 
 **重要：`file_watermark` 表已在 v4 删除**，视频水印数据只存在 `.wmp4` 文件尾部，数据库不保存任何水印信息（这是用户明确要求）。
 
 v5 只补索引（`idx_dir_parent_dir_id` / `idx_file_parent_dir_id` / `idx_file_seqnumber`），不改表结构；
+v7 给 `pending_file` 加 `op`（旧行默认 `import`），并删掉未发布的过渡表 `pending_file_op`；
+v8 再加 `old_file_id`（copy 覆盖时记录旧目标行，崩溃恢复先补删旧目标再提交新行）。
 `get_index_by_id` 的封面查询用 `CROSS JOIN ... INDEXED BY idx_file_parent_dir_id` 固定计划，索引必须先存在。
 
 ---
@@ -169,16 +171,20 @@ stop → signalEndOfInputStream / 音频 EOS
      a. id 已在 file 表 → 删目录（入库成功但没删干净）
      b. 视频可播        → 补做收尾并入库 → 删目录
      c. 视频不可播/没有 → 丢弃目录 + 删 pending 行
-② repairPendingImports()  照片等遗留 pending 行（跳过 .part/录像行）：
-     a. 目录没了       → 丢弃
-     b. 主文件在       → 继续；不在 → 用 tmp_photo_path 补，补不回 → 丢弃
-     c. 缩略图不可用   → 用 app_data 里的主图重建
-        （判定 = 存在 + length>0 + inJustDecodeBounds 能读出宽高；
-          只判 isFile() 会漏掉"被杀在 saveFile 中间"留下的 0 字节/半截 PNG）
-     d. 齐了           → 补提交（pending → file）
+② repairPendingTasks()   统一处理 pending_file 里剩下的任务，按 op 分派：
+     import：照片等遗留 pending 行（跳过 .part/录像行）：
+       a. 目录没了       → 丢弃
+       b. 主文件在       → 继续；不在 → 用 tmp_photo_path 补，补不回 → 丢弃
+       c. 缩略图不可用   → 用 app_data 里的主图重建
+          （判定 = 存在 + length>0 + inJustDecodeBounds 能读出宽高；
+            只判 isFile() 会漏掉"被杀在 saveFile 中间"留下的 0 字节/半截 PNG）
+       d. 齐了           → 补提交（pending → file）
+     copy：主文件完整（或 tmp 完整可搬）→ 补提交；否则删孤儿文件/坏记录
+     delete：file 行还在就删行，再补删物理文件；删不掉保留任务下次重试
 ③ cleanImportTempDir()    清 import_tmp 里的孤儿 .tmp（被杀在"URI→临时文件"拷贝阶段，
                           那时还没有 pending 行，没人引用）
                           ★ 必须在 ② 之后：修复要靠 pending 行里的 tmp_photo_path 补主图
+④ cleanCopyTempDir()      清 copy_tmp 里的复制临时文件（同样必须在 ② 之后）
 ```
 
 ### 5.4 文件 / 文件夹导入（原生统一入口）
@@ -392,8 +398,8 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
 
 ### 10.3 行为类
 - CameraX 取消录制会**删掉自己的临时 MP4**：`video_pending/<id>/` 里只会留下我们写的 `meta.jsonl`。
-- 修复程序（`repairPendingImports`）对"视频不可播"的行会 `discard`（删 pending + 文件），这是设计行为，不是 bug。
-- `pending_file` 的两阶段事务：`INSERT pending` → 搬文件 → 缩略图 → 一个事务里 `INSERT file ... ; DELETE pending`，保证"可见即完整"。
+- 修复程序（`repairPendingTasks`）对"视频不可播"的行会 `discard`（删 pending + 文件），这是设计行为，不是 bug。
+- `pending_file` 现在是**待执行任务表**（`op = import/copy/delete`）：导入/复制都是"先写任务 → 搬文件 → 一个事务里 `INSERT file ... ; DELETE pending`"；删除是"同事务写 delete 任务 + 删 file 行 → 提交 → 删物理文件 → 销任务"。启动时按 op 幂等重放。
 
 ### 10.4 Camera2 / GL 录像踩坑
 - **相机 PTS 与 `System.nanoTime` 可能不在同一时钟域**：相机时间戳更接近 BOOTTIME（含深度睡眠），
@@ -402,7 +408,7 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
   `cameraClockOffsetUs`，音频再用同一个相机时钟打时间戳。
 - **`MediaMetadataRetriever` 读 fMP4**：`mvhd duration` 可能为 0，不能只看 duration 判断可播；
   改成 `MediaExtractor` 选视频轨 + 读一个样本。
-- **启动修复顺序**：必须先 `scanPendingVideoDirs()` 再 `repairPendingImports()`，
+- **启动修复顺序**：必须先 `scanPendingVideoDirs()` 再 `repairPendingTasks()`，
   否则照片修复器会把 `video_pending/<id>/<id>.mp4.part` 当图片搬进 app_data。
 - **旋转**：不要用 GL 猜相机方向；始终横屏编码 + `Mp4OrientationData(jpegRotation)`，
   水印位图按同一角度预旋转。这样竖拍/横拍/倒置都走同一条路。
@@ -424,7 +430,8 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
   遮罩会停在「导入完成，正在刷新列表…」，等前端 `updateTable` 完成调 `endImportOverlay()` 再收；
   **没有超时兜底**（按用户要求去掉），前端不回调就一直挡着。**不要再给 H5 加 loading**，两层会叠在一起。
 - **多 worker 并行**：拷贝吃 IO、缩略图吃 CPU，SQLite 写由连接池串行化。真正要互斥的是
-  「查重命名 + 写 pending」（`FileImporter.NAME_LOCK`），且 `dedupeName` 要同时查 `pending_file`。
+  「查重命名 + 写 pending」（`FileImporter.NAME_LOCK`），且 `dedupeName` 要同时查 `pending_file`
+  里 `op <> 'delete'` 的行（import/copy 都算占用）。
   id 走 `IdGenerator.get_id_by_time()`，它本身 `synchronized`，并且防了时钟回拨。
 - **目录一次性预建**：扫描阶段 `buildDirTree()` 后序遍历、一个事务写完所有 dir 行，
   导入阶段直接用清单里的 `parentDirId`，不再逐文件走 SAF 父链。代价：中断会留下空壳目录（允许存在）。

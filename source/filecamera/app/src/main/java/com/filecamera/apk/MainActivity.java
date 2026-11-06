@@ -779,9 +779,9 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             android.util.Log.e(TAG, "扫描待入库录像失败", e);
         }
-        // 启动修复未完成的入库：主线程同步执行，且必须在加载页面前完成，
-        // 这样首屏列表就已经包含"上次被打断、这次被补提交"的那张照片（全程无任何提示，用户只会看到多了一张图）
-        repairPendingImports();
+        // 启动修复待执行任务（导入/复制/删除）：主线程同步执行，且必须在加载页面前完成，
+        // 这样首屏列表就已经是"修复后"的状态（全程无任何提示）
+        repairPendingTasks();
         // 修复之后再清导入中转目录（顺序不能反：修复要靠 pending 行里的 tmp_photo_path 补主图）
         cleanImportTempDir();
         // 复制大文件先写 copy_tmp，进程被杀会留下临时文件；正常情况下目录本来就是空的
@@ -791,17 +791,17 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 启动修复未完成的入库（拍照/导入时进程被杀留下的 pending_file 记录）。
-     * 全程主线程同步完成、不弹任何 Toast/对话框；正常情况下没有待修复记录，开销只是一条空查询。
+     * 启动修复待执行任务（导入/复制/删除），全程主线程同步、不弹提示。
+     * 正常情况下表是空的，开销只是一条空查询。
      */
-    private void repairPendingImports() {
+    private void repairPendingTasks() {
         try {
-            int repaired = new FileImporter(this).repairPendingImports();
+            int repaired = new FileImporter(this).repairPendingTasks();
             if (repaired > 0) {
-                Log.i(TAG, "启动修复完成，处理了 " + repaired + " 条未完成的入库记录");
+                Log.i(TAG, "启动修复完成，处理了 " + repaired + " 条未完成的任务");
             }
         } catch (Throwable e) {
-            Log.e(TAG, "启动修复未完成的入库记录失败", e);
+            Log.e(TAG, "启动修复待执行任务失败", e);
         }
     }
 

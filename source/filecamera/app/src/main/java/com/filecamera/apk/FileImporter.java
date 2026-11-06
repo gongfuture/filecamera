@@ -25,6 +25,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 
 /**
  * 文件入库器：全应用唯一的「把文件变成库记录」实现（相机拍摄、「导入文件/文件夹」共用）。
@@ -41,8 +42,12 @@ import java.io.InputStream;
  * </pre>
  * 任何一步崩掉，用户都不会看到"半张照片"：要么查不到，要么完整。
  *
- * <p><b>启动修复</b>（{@link #repairPendingImports()}）：扫 pending_file，
- * 主图缺失就丢弃这条（连同缩略图/临时文件），缩略图缺失就重新生成，都齐了就直接补提交。
+ * <p><b>待执行任务表</b>：v7 起 pending_file 同时承载 `op = import/copy/delete` 三种任务。
+ * 导入/复制是"先写任务 → 搬文件 → 事务里 INSERT file + DELETE 任务"；
+ * 删除是"事务里写 delete 任务 + DELETE file 行 → 提交 → 删物理文件 → 销任务"。
+ *
+ * <p><b>启动修复</b>（{@link #repairPendingTasks()}）：扫 pending_file，按 op 分派：
+ * import 补主图/缩略图后提交，copy 校验文件完整性后提交，delete 补删物理文件。
  */
 public class FileImporter {
 
@@ -105,11 +110,13 @@ public class FileImporter {
     }
 
     /**
-     * 启动时修复未完成的入库（在后台线程调用）。
+     * 启动时修复待执行任务（op = import / copy / delete，在后台线程调用）。
      *
-     * @return 修复（补提交或清理）的记录条数
+     * <p>所有动作幂等：能补完的补完，补不完的清理；物理文件删不掉的保留任务，下次启动再试。
+     *
+     * @return 修复（补提交或清理）的任务条数
      */
-    public int repairPendingImports() {
+    public int repairPendingTasks() {
         JSONArray rows;
         try {
             rows = dbHelper.db_all("SELECT * FROM pending_file", new JSONArray());
@@ -121,15 +128,149 @@ public class FileImporter {
         for (int i = 0; i < rows.length(); i++) {
             JSONObject row = rows.optJSONObject(i);
             if (row == null) continue;
-            // 录像的 pending 行由 scanPendingVideoDirs() 专门处理（要探测可播、生成首帧），
-            // 不能当成照片直接搬进 app_data。
-            if (isVideoPendingRow(row)) continue;
-            if (repairOne(row)) repaired++;
+            String op = row.optString("op", "import");
+            boolean handled;
+            if ("delete".equals(op)) {
+                handled = repairDelete(row);
+            } else if ("copy".equals(op)) {
+                handled = repairCopy(row);
+            } else {
+                // 录像的 pending 行由 scanPendingVideoDirs() 专门处理（要探测可播、生成首帧），
+                // 不能当成照片直接搬进 app_data。
+                if (isVideoPendingRow(row)) continue;
+                handled = repairOne(row);
+            }
+            if (handled) repaired++;
         }
         if (repaired > 0) {
-            Log.i(TAG, "已修复 " + repaired + " 条未完成的入库记录");
+            Log.i(TAG, "已修复 " + repaired + " 条未完成的任务");
         }
         return repaired;
+    }
+
+    /** 恢复 delete 任务：行还在就删行，再删物理文件；文件删不掉则保留任务下次重试。 */
+    private boolean repairDelete(JSONObject row) {
+        String id = row.optString("id");
+        if (id.isEmpty()) return false;
+        String realFileName = row.isNull("real_file_name") ? null : row.optString("real_file_name", null);
+        String realIconName = row.isNull("real_icon_name") ? null : row.optString("real_icon_name", null);
+
+        try {
+            JSONObject dbRow = dbHelper.db_get("SELECT real_file_name, real_icon_name FROM file WHERE id = ?",
+                    new JSONArray().put(id));
+            if (dbRow != null) {
+                // 事务没提交成功才会走到这里：以任务为准继续把删除做完
+                if (realFileName == null) {
+                    realFileName = dbRow.isNull("real_file_name") ? null : dbRow.optString("real_file_name", null);
+                }
+                if (realIconName == null) {
+                    realIconName = dbRow.isNull("real_icon_name") ? null : dbRow.optString("real_icon_name", null);
+                }
+                dbHelper.db_run("DELETE FROM file WHERE id = ?", new JSONArray().put(id));
+            }
+            boolean ok = deletePhysical(dataDirectory(), realFileName)
+                    & deletePhysical(iconDirectory(), realIconName);
+            if (ok) {
+                dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(id));
+            }
+            return ok;
+        } catch (Exception e) {
+            Log.e(TAG, "恢复删除任务失败: " + id, e);
+            return false;
+        }
+    }
+
+    /** 恢复 copy 任务：主文件/临时文件完整就补提交，否则清掉孤儿文件。 */
+    private boolean repairCopy(JSONObject row) {
+        String id = row.optString("id");
+        String realFileName = row.isNull("real_file_name") ? null : row.optString("real_file_name", null);
+        if (id.isEmpty() || realFileName == null || realFileName.isEmpty()) return false;
+
+        long expectedSize = row.optLong("size", 0);
+        String parentDirId = row.optString("parent_dir_id", "root");
+        File targetFile = new File(dataDirectory(), realFileName);
+        String tmpPath = row.optString("tmp_photo_path", "");
+        File tmpFile = tmpPath.isEmpty() ? null : new File(tmpPath);
+
+        try {
+            // 目标目录已经被删掉 → 这条复制永远不可见，连同文件一起清掉
+            if (dbHelper.db_get("SELECT id FROM dir WHERE id = ?", new JSONArray().put(parentDirId)) == null) {
+                discardCopy(row, targetFile, tmpFile);
+                return true;
+            }
+
+            boolean mainOk = targetFile.isFile() && (expectedSize <= 0 || targetFile.length() == expectedSize);
+            if (!mainOk) {
+                // 主文件缺失/不完整：临时文件完整就补位，否则丢弃
+                if (tmpFile != null && tmpFile.isFile()
+                        && (expectedSize <= 0 || tmpFile.length() == expectedSize)
+                        && moveFile(tmpFile, targetFile) && targetFile.isFile()) {
+                    Log.i(TAG, "已从临时文件补齐复制文件: " + id);
+                } else {
+                    Log.w(TAG, "复制文件缺失，丢弃任务: " + id);
+                    discardCopy(row, targetFile, tmpFile);
+                    return true;
+                }
+            }
+
+            // 图标不可用就置空，不能带着指向不存在文件的图标名提交
+            String iconName = row.isNull("real_icon_name") ? null : row.optString("real_icon_name", null);
+            if (iconName != null && !isIconUsable(new File(iconDirectory(), iconName))) {
+                dbHelper.db_run("UPDATE pending_file SET real_icon_name = ? WHERE id = ?",
+                        new JSONArray().put(JSONObject.NULL).put(id));
+            }
+
+            // 覆盖复制：旧目标行可能还没删（崩溃在删旧目标之前），按 old_file_id 精确补删
+            String oldId = row.isNull("old_file_id") ? null : row.optString("old_file_id", null);
+            if (oldId != null && !oldId.isEmpty() && !oldId.equals(id)) {
+                JSONObject oldRow = dbHelper.db_get(
+                        "SELECT real_file_name, real_icon_name FROM file WHERE id = ?",
+                        new JSONArray().put(oldId));
+                if (oldRow != null) {
+                    boolean oldOk = deletePhysical(dataDirectory(), readName(oldRow, "real_file_name"))
+                            & deletePhysical(iconDirectory(), readName(oldRow, "real_icon_name"));
+                    if (!oldOk) Log.w(TAG, "覆盖复制的旧文件删除失败: " + oldId);
+                    dbHelper.db_run("DELETE FROM file WHERE id = ?", new JSONArray().put(oldId));
+                }
+            }
+
+            promote(id);
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "恢复复制任务失败: " + id, e);
+            return false;
+        }
+    }
+
+    /** 丢弃一条复制任务及其目标文件 / 临时文件 / 缩略图；DB 行若在也一并删掉（不能留坏记录）。 */
+    private void discardCopy(JSONObject row, File targetFile, File tmpFile) {
+        deleteQuietly(targetFile);
+        deleteQuietly(tmpFile);
+        String iconName = row.isNull("real_icon_name") ? null : row.optString("real_icon_name", null);
+        if (iconName != null && !iconName.isEmpty()) {
+            deleteQuietly(new File(iconDirectory(), iconName));
+        }
+        String id = row.optString("id");
+        try {
+            if (!id.isEmpty()) {
+                dbHelper.db_run("DELETE FROM file WHERE id = ?", new JSONArray().put(id));
+            }
+            dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(id));
+        } catch (Exception e) {
+            Log.e(TAG, "删除复制任务失败", e);
+        }
+    }
+
+    /** 读可空列：缺失/JSON null 都返回 null。 */
+    private static String readName(JSONObject row, String column) {
+        return row.isNull(column) ? null : row.optString(column, null);
+    }
+
+    /** @return true 表示文件不存在或删除成功；失败返回 false，任务保留下次重试。 */
+    private static boolean deletePhysical(File dir, String name) {
+        if (dir == null || name == null || name.isEmpty()) return true;
+        File file = new File(dir, name);
+        return !file.exists() || file.delete();
     }
 
     // endregion
@@ -169,7 +310,7 @@ public class FileImporter {
             createTime = System.currentTimeMillis();
             seqNumber = getSeqNumberFromString(namePart);
 
-            // ① 未就绪记录：对外不可见，崩溃后由 repairPendingImports 处理
+            // ① 未就绪记录：对外不可见，崩溃后由 repairPendingTasks 处理
             dbHelper.db_run("INSERT INTO pending_file (" + COLUMNS + ",tmp_photo_path,tmp_icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     new JSONArray()
                             .put(fileId).put(finalName).put(targetDirId).put("file")
@@ -231,6 +372,10 @@ public class FileImporter {
 
     /** 事务提交：把 pending_file 里的一行搬进 file 表（INSERT 与 DELETE 同一事务）。 */
     private void promote(String fileId) {
+        promote(dbHelper, fileId);
+    }
+
+    static void promote(DatabaseHelper dbHelper, String fileId) {
         SQLiteDatabase db = dbHelper.getWritableDatabase();
         db.beginTransaction();
         try {
@@ -241,6 +386,47 @@ public class FileImporter {
         } finally {
             db.endTransaction();
         }
+    }
+
+    /** 注册一条 delete 任务（不含事务；调用方与删行同事务）。 */
+    static void recordPendingDelete(DatabaseHelper db, String fileId, String name, String parentDirId,
+                                    String realFileName, String realIconName) throws JSONException {
+        db.db_run("INSERT OR REPLACE INTO pending_file (" + COLUMNS + ",op) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                new JSONArray()
+                        .put(fileId).put(name).put(parentDirId).put("file")
+                        .put(realFileName == null ? JSONObject.NULL : realFileName)
+                        .put(realIconName == null ? JSONObject.NULL : realIconName)
+                        .put(System.currentTimeMillis()).put(0).put(0).put("")
+                        .put("delete"));
+    }
+
+    /** 注册一条 copy 任务（不含事务；调用方先提交它，再动磁盘）。 */
+    static void recordPendingCopy(DatabaseHelper db, String fileId, String name, String parentDirId,
+                                  String realFileName, String realIconName, long size,
+                                  String extension, long seqNumber, String tmpPath,
+                                  String oldFileId) throws JSONException {
+        db.db_run("INSERT OR REPLACE INTO pending_file (" + COLUMNS
+                        + ",tmp_photo_path,old_file_id,op) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                new JSONArray()
+                        .put(fileId).put(name).put(parentDirId).put("file")
+                        .put(realFileName).put(realIconName == null ? JSONObject.NULL : realIconName)
+                        .put(System.currentTimeMillis()).put(seqNumber).put(size).put(extension)
+                        .put(tmpPath == null ? "" : tmpPath)
+                        .put(oldFileId == null ? JSONObject.NULL : oldFileId)
+                        .put("copy"));
+    }
+
+    /** 批量清除待执行任务。 */
+    static void clearPending(DatabaseHelper db, List<String> ids) throws JSONException {
+        if (ids == null || ids.isEmpty()) return;
+        StringBuilder placeholders = new StringBuilder();
+        JSONArray params = new JSONArray();
+        for (int i = 0; i < ids.size(); i++) {
+            if (i > 0) placeholders.append(",");
+            placeholders.append("?");
+            params.put(ids.get(i));
+        }
+        db.db_run("DELETE FROM pending_file WHERE id IN (" + placeholders + ")", params);
     }
 
     /** 失败回滚：删掉未就绪记录，把已经移动的主图退回源位置（保留给重试/清理），清掉缩略图。 */
@@ -703,7 +889,7 @@ public class FileImporter {
                 }
                 // 可播：补做收尾入库
                 JSONObject pendingRow = dbHelper.db_get(
-                        "SELECT parent_dir_id, name, extension FROM pending_file WHERE id = ?",
+                        "SELECT parent_dir_id, name, extension FROM pending_file WHERE id = ? AND op = 'import'",
                         new JSONArray().put(fileId));
                 if (pendingRow == null) {
                     deleteVideoPendingDir(fileId);
@@ -778,7 +964,7 @@ public class FileImporter {
      * <p>进程被杀在「content URI → 临时文件」这段拷贝里时，还没有 pending_file 行，
      * 这些 .tmp 不会被任何流程引用或复用，只会白占空间（大图能占几十 MB，反复强杀会累积）。
      *
-     * <p><b>必须在 {@link #repairPendingImports()} 之后调用</b>：修复时要靠 pending 行里的
+     * <p><b>必须在 {@link #repairPendingTasks()} 之后调用</b>：修复时要靠 pending 行里的
      * tmp_photo_path 把主图补回来，先删了就等于把唯一的副本删掉。
      *
      * @return 删除的临时文件数
@@ -898,14 +1084,14 @@ public class FileImporter {
 
     /**
      * 名字是否已被占用。并行导入时 file 表里看不到那些"还在导"的文件，
-     * 所以 pending_file 也要一起查，否则两个 worker 会给两份文件挑到同一个新名字。
+     * 所以 pending_file 也要一起查（import/copy 都算占用；delete 不算）。
      */
     private boolean nameTaken(String dirId, String candidate) throws JSONException {
         JSONArray args = new JSONArray().put(dirId).put(candidate);
         if (dbHelper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", args) != null) {
             return true;
         }
-        return dbHelper.db_get("SELECT id FROM pending_file WHERE parent_dir_id = ? AND name = ?", args) != null;
+        return dbHelper.db_get("SELECT id FROM pending_file WHERE parent_dir_id = ? AND name = ? AND op <> 'delete'", args) != null;
     }
 
     static String extensionOf(String name) {

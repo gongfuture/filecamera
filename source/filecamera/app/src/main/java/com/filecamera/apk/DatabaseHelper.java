@@ -14,7 +14,10 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     // v2：新增 pending_file（入库预备表，对现有表零侵入）
     // v5：补齐 parent_dir_id / seqnumber 索引（老版本升级上来的库可能没有；
     //     封面查询用 INDEXED BY 固定执行计划，要求索引确实存在）
-    private static final int DATABASE_VERSION = 5;
+    // v6：过渡版本（未发布）：新增过独立的 pending_file_op，已废弃
+    // v7：pending_file 升级为统一待执行任务表（op = import/copy/delete），启动时自愈
+    // v8：copy 任务记录被覆盖的旧行 id（old_file_id），崩溃恢复时先补删旧目标
+    private static final int DATABASE_VERSION = 8;
 
     private static volatile DatabaseHelper instance;
 
@@ -34,7 +37,14 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         return instance;
     }
 
-    /** 入库预备表：先写这里（对外不可见），文件落位后再用事务搬进 file 表 */
+    /**
+     * 待执行任务表：应用启动时靠它修复/自愈中断的操作。
+     *
+     * <p>op = import：新文件即将入库（id 是新文件 id，tmp_photo_path 是临时文件）；
+     * op = copy：新文件即将复制出来（id 是新文件 id，real_file_name 是目标物理名）；
+     * op = delete：旧文件即将删除（id 是旧文件 id，real_file_name/real_icon_name 是要删的文件）。
+     * 正常收尾立刻删行；进程被杀留下的行由启动修复统一处理。
+     */
     private static final String CREATE_PENDING_FILE =
             "CREATE TABLE IF NOT EXISTS pending_file (" +
                     "id TEXT PRIMARY KEY," +
@@ -48,7 +58,9 @@ public class DatabaseHelper extends SQLiteOpenHelper {
                     "size INTEGER," +
                     "extension TEXT," +
                     "tmp_photo_path TEXT," +
-                    "tmp_icon_path TEXT)";
+                    "tmp_icon_path TEXT," +
+                    "old_file_id TEXT," +
+                    "op TEXT NOT NULL DEFAULT 'import')";
 
     @Override
     public void onCreate(SQLiteDatabase db) {
@@ -97,6 +109,30 @@ public class DatabaseHelper extends SQLiteOpenHelper {
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_file_parent_dir_id ON file (parent_dir_id)");
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_file_seqnumber ON file (seqnumber)");
         }
+        if (oldVersion < 7) {
+            // v5 的 pending_file 没有 op；v6 是未发布的过渡版本（独立 pending_file_op），一并兼容
+            if (!hasColumn(db, "pending_file", "op")) {
+                db.execSQL("ALTER TABLE pending_file ADD COLUMN op TEXT NOT NULL DEFAULT 'import'");
+            }
+            db.execSQL("DROP TABLE IF EXISTS pending_file_op");
+        }
+        if (oldVersion < 8) {
+            if (!hasColumn(db, "pending_file", "old_file_id")) {
+                db.execSQL("ALTER TABLE pending_file ADD COLUMN old_file_id TEXT");
+            }
+        }
+    }
+
+    /** 表里是否已有某列（增量迁移用）。 */
+    private static boolean hasColumn(SQLiteDatabase db, String table, String column) {
+        try (Cursor cursor = db.rawQuery("PRAGMA table_info(" + table + ")", null)) {
+            while (cursor.moveToNext()) {
+                if (column.equals(cursor.getString(cursor.getColumnIndex("name")))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
     // 通用数据库操作函数 - 类似Node.js的db_get
     public JSONObject db_get(String sql, JSONArray arr) throws JSONException {

@@ -28,7 +28,7 @@ import java.nio.charset.StandardCharsets;
  * </ol>
  *
  * <p>注意：照片的"是否已入库"不再由这里判断——入库在拍照当时就已经完成（SQLite 是唯一事实来源），
- * 所以不存在"交付/确认/补交"这层状态；崩溃后由 {@link FileImporter#repairPendingImports()} 修复即可。
+ * 所以不存在"交付/确认/补交"这层状态；崩溃后由 {@link FileImporter#repairPendingTasks()} 修复即可。
  */
 public final class CameraSessionStore {
 
