@@ -1,6 +1,6 @@
 # 巡查相机 · 交接文档（新会话从这里开始）
 
-> 最后更新：2026-11-05（本地 `master` @ `v20261105-01`）
+> 最后更新：2026-11-06（本地 `master`）
 > 当前状态：**Camera2 迁移 + 边录边烧已完成**；录像直接输出标准 `.mp4`（带水印 + 音频），
 > 分片封装保证录制中被杀也能恢复。旧的 `.wmp4` 只保留只读播放兼容。
 > 下一步：真机回归竖拍/横拍/前后摄/闪光/变焦，以及第 13 节的收尾项。
@@ -214,9 +214,13 @@ JS: await callAndroidMethod(FilePicker, 'importPath', {dirId, mode:'file'|'dir'}
 | 操作 | 谁刷进度 | 入口 |
 |---|---|---|
 | 导入文件/文件夹 | Java | `MainActivity.reportImportProgress()` |
-| 导出 | Java | `BackServer.export_items()` 逐项 `updateProgress` |
-| 删除 | Java | `BackServer.delete_items()` 统计/删除两阶段 |
+| 导出 | Java | `BackServer.export_items()` 按"实际写出的文件数"逐文件推进（文件夹 zip 内部也算） |
+| 删除 | Java | `BackServer.delete_items()` 统计/删除两阶段；删除阶段按"文件数 + 目录数"逐项推进 |
 | 移动 / 复制 | Java | `move_items` / `copy_items` 整批循环（见下） |
+
+**计数基准（踩过的坑）**：删除 = 文件数 + 目录数；导出 = 实际写出的文件数（文件夹按 zip 内文件计）；
+复制 = 文件/目录节点数；移动 = 选中项。凡是"按选中项计数"的操作，只选一个文件夹时会瞬间 1/1，
+遮罩随后就退回不确定进度（转圈）——看起来就是"没有进度"。新增/修改批量操作时按内部条目计数。
 
 移动/复制协议：整批只调一次原生；进度按「选中项」（移动）或「文件/目录节点数」（复制）计。
 遇到同名冲突时 Java 先收遮罩、返回 `needConfirm + remaining + done + total`，JS 弹 H5 确认框；

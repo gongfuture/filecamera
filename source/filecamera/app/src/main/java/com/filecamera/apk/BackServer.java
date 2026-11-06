@@ -46,7 +46,6 @@ import java.util.LinkedList;
 import java.util.Iterator;
 import android.media.MediaScannerConnection;
 import android.webkit.MimeTypeMap;
-import android.app.Activity;
 import java.util.List;
 import java.util.HashMap;
 import androidx.exifinterface.media.ExifInterface;
@@ -661,22 +660,27 @@ public class BackServer {
                             all_file_ids.add(fileInfo.getString("id"));
                         }
                     }
-                    if (overlay != null) overlay.updateProgress("正在删除", i + 1, totalItems, name);
+                    if (overlay != null) overlay.updateProgress("正在统计", i + 1, totalItems, name);
                 }
 
+                // 统计阶段按"选中项"计数，删除阶段才是真正的耗时部分：
+                // 文件要逐个删物理文件+图标，只选一个文件夹时旧的按"选中项"计数会瞬间 1/1，
+                // 之后遮罩一直是转圈的不确定态。这里改成按"文件数 + 目录数"计，逐项 tick。
+                final int totalUnits = all_file_ids.size() + all_dir_ids.size();
                 if (overlay != null) {
                     overlay.showProgress("正在删除…",
                             "共 " + all_file_ids.size() + " 个文件、" + all_dir_ids.size() + " 个文件夹");
                 }
+                BatchProgress progress = new BatchProgress(overlay, "正在删除", totalUnits, 0);
 
                 db_helper.db_run("BEGIN TRANSACTION", new JSONArray());
                 try {
                     if (!all_file_ids.isEmpty()) {
-                        batchDeleteFiles(all_file_ids);
+                        batchDeleteFiles(all_file_ids, progress);
                     }
 
                     if (!all_dir_ids.isEmpty()) {
-                        batchDeleteDirectories(all_dir_ids);
+                        batchDeleteDirectories(all_dir_ids, progress);
                     }
                     db_helper.db_run("COMMIT", new JSONArray());
                     if (overlay != null) overlay.finishProgress("删除完成", "正在刷新列表…");
@@ -731,11 +735,23 @@ public class BackServer {
 	}
 
 	private void batchDeleteFiles(List<String> file_ids) {
+		batchDeleteFiles(file_ids, null);
+	}
+
+	/**
+	 * 删除文件并在每个文件删完后上报进度。
+	 *
+	 * <p>物理文件和缩略图的删除是整条删除链路里最慢的一段（几千张照片时尤其明显），
+	 * 旧实现只报"统计完成"，用户看到的就是遮罩一直转圈不动。这里逐文件 tick，
+	 * 节流由 {@link BatchProgress} 后面的 250ms 统一处理。
+	 */
+	private void batchDeleteFiles(List<String> file_ids, BatchProgress progress) {
 		if (file_ids == null || file_ids.isEmpty()) {
 			return;
 		}
 		for (String fileId : file_ids) {
-			deleteRealFileAndIcon(fileId);
+			String name = deleteRealFileAndIcon(fileId);
+			if (progress != null) progress.tick(name);
 		}
 
 		try {
@@ -758,13 +774,17 @@ public class BackServer {
 			android.util.Log.e("DeleteDBError", "批量删除数据库记录时出错", e);
 		}
 	}
-	private void deleteRealFileAndIcon(String file_id) {
+	/** @return 文件的显示名（用于遮罩上的"当前文件"一行）；记录不存在时返回 null。 */
+	private String deleteRealFileAndIcon(String file_id) {
 		JSONArray params = new JSONArray().put(file_id);
+		String displayName = null;
 
 		try {
-			// 从file表中同时获取主文件名和图标文件名
-			JSONObject file_record = db_helper.db_get("SELECT real_file_name, real_icon_name FROM file WHERE id = ?", params);
+			// 从file表中同时取显示名、主文件名和图标文件名
+			JSONObject file_record = db_helper.db_get("SELECT name, real_file_name, real_icon_name FROM file WHERE id = ?", params);
 			if (file_record != null) {
+				if (!file_record.isNull("name")) displayName = file_record.getString("name");
+
 				// 删除主文件
 				if (file_record.has("real_file_name") && !file_record.isNull("real_file_name")) {
 					String real_file_name = file_record.getString("real_file_name");
@@ -795,8 +815,13 @@ public class BackServer {
 		} catch (Exception e) {
 			android.util.Log.e("DeleteError", "删除物理文件或图标时发生异常, ID: " + file_id, e);
 		}
+		return displayName;
 	}
 	private void batchDeleteDirectories(List<String> dir_ids) throws JSONException {
+		batchDeleteDirectories(dir_ids, null);
+	}
+
+	private void batchDeleteDirectories(List<String> dir_ids, BatchProgress progress) throws JSONException {
 		if (dir_ids.isEmpty()) return;
 
 		int batch_size = 100;
@@ -815,6 +840,11 @@ public class BackServer {
 			}
 
 			db_helper.db_run("DELETE FROM dir WHERE id IN (" + placeholders + ")", params);
+
+			// 目录只是删行，通常瞬间完成；但总数里算了它们，这里同步补齐，避免收尾停在 99%
+			if (progress != null) {
+				for (int j = 0; j < batch.size(); j++) progress.tick(null);
+			}
 		}
 	}
 
@@ -1551,7 +1581,6 @@ public class BackServer {
 			try {
 				JSONObject data = new JSONObject(json_data);
 				JSONArray ids = data.getJSONArray("ids");
-				int totalItems = ids.length();
 
 				String targetDirPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) + "/filecamera/";
 				File exportDir = new File(targetDirPath);
@@ -1561,33 +1590,44 @@ public class BackServer {
 					throw new IOException("无法创建导出目录: " + targetDirPath);
 				}
 				checkAndCreateDirectoryStructure(exportDir);
-                for (int i = 0; i < totalItems; i++) {
+
+				// 导出文件夹实际是一条 zip：按"选中项"计数时只选一个文件夹就是 1/1，
+				// 之后压缩几百上千个文件的过程没有任何进度（旧实现还把明细发给了已废弃的 H5 遮罩）。
+				// 先数一遍要写出的文件，再在压缩/拷贝每个文件后 tick，遮罩上才有真正的进度。
+				int totalUnits = 0;
+				if (overlay != null) overlay.showProgress("正在导出…", "正在统计要导出的文件");
+				for (int i = 0; i < ids.length(); i++) {
+					JSONObject dirData = getDataById(ids.getString(i), "dir");
+					totalUnits += dirData != null ? countFilesInDirectory(dirData.getString("id")) : 1;
+				}
+				if (overlay != null) overlay.showProgress("正在导出…", "共 " + totalUnits + " 个文件");
+				BatchProgress progress = new BatchProgress(overlay, "正在导出", totalUnits, 0);
+
+                for (int i = 0; i < ids.length(); i++) {
                     String id = ids.getString(i);
-                    final int currentProgress = i + 1;
-                    String currentName = "";
 
                     JSONObject dirData = getDataById(id, "dir");
                     if (dirData != null) {
                         String dirName = dirData.getString("name");
-                        currentName = dirName;
                         String zipFileName = dirName + ".zip";
                         String finalZipFileName = getFinalZipFileName(exportDir, zipFileName);
 
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            createZipWithMediaStore(dirData, finalZipFileName, dirName);
+                            createZipWithMediaStore(dirData, finalZipFileName, dirName, progress);
                         } else {
-                            createZipWithFile(dirData, targetDirPath, finalZipFileName, dirName);
+                            createZipWithFile(dirData, targetDirPath, finalZipFileName, dirName, progress);
                         }
                     } else {
                         JSONObject fileData = getDataById(id, "file");
                         if (fileData != null) {
                             moveFileToTarget(fileData, exportDir);
-                            currentName = fileData.optString("name", "");
+                            progress.tick(fileData.isNull("name") ? null : fileData.getString("name"));
                         } else {
                             android.util.Log.w("Export", "ID为 " + id + " 的项目未找到，已跳过。");
+                            // 统计时按 1 算过，这里也要补一次，否则收尾永远差 1 项
+                            progress.tick(null);
                         }
                     }
-                    if (overlay != null) overlay.updateProgress("正在导出", currentProgress, totalItems, currentName);
                 }
 				if (overlay != null) {
 					overlay.finishProgress("导出完成", "已保存到 Download/filecamera/");
@@ -1760,7 +1800,7 @@ public class BackServer {
 		}
 	}
 
-	private void createZipWithMediaStore(JSONObject dirData, String zipFileName, String dirName) throws Exception {
+	private void createZipWithMediaStore(JSONObject dirData, String zipFileName, String dirName, BatchProgress progress) throws Exception {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
 			ContentValues values = new ContentValues();
 			values.put(MediaStore.Downloads.DISPLAY_NAME, zipFileName);
@@ -1776,7 +1816,7 @@ public class BackServer {
 			if (zipUri != null) {
 				try (OutputStream outputStream = resolver.openOutputStream(zipUri);
 					 ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(outputStream))) {
-					writeDirectoryToZip(zos, dirData, SecurityUtils.safePathComponent(dirData.getString("name")) + "/");
+					writeDirectoryToZip(zos, dirData, SecurityUtils.safePathComponent(dirData.getString("name")) + "/", progress);
 				}
 				try{
 					values.clear();
@@ -1790,24 +1830,22 @@ public class BackServer {
 			}
 		}
 	}
-	private void createZipWithFile(JSONObject dirData, String targetDirPath, String zipFileName, String dirName) throws Exception {
+	private void createZipWithFile(JSONObject dirData, String targetDirPath, String zipFileName, String dirName, BatchProgress progress) throws Exception {
 		File targetDir = new File(targetDirPath);
 		if (!ensureDirectoryExists(targetDir)) throw new IOException("无法创建目标目录: " + targetDirPath);
 
 		File zipFile = new File(targetDir, zipFileName);
 
 		try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile)))) {
-			writeDirectoryToZip(zos, dirData, SecurityUtils.safePathComponent(dirData.getString("name")) + "/");
+			writeDirectoryToZip(zos, dirData, SecurityUtils.safePathComponent(dirData.getString("name")) + "/", progress);
 		}
 
 		MediaScannerConnection.scanFile(context, new String[]{zipFile.getAbsolutePath()}, null, null);
 	}
 
 	// [重构] 将目录写入ZIP流，使用SQL查询
-	private void writeDirectoryToZip(ZipOutputStream zos, JSONObject dirData, String pathInZip) throws Exception {
+	private void writeDirectoryToZip(ZipOutputStream zos, JSONObject dirData, String pathInZip, BatchProgress progress) throws Exception {
 		String rootDirId = dirData.getString("id");
-		final int totalFiles = countFilesInDirectory(rootDirId);
-		int filesZipped = 0;
 
 		Queue<Pair<String, String>> queue = new LinkedList<>();
 		queue.add(new Pair<>(rootDirId, pathInZip));
@@ -1835,10 +1873,10 @@ public class BackServer {
                         zos.putNextEntry(fileEntry);
                         zos.write(fileBytes);
                         zos.closeEntry();
-                        filesZipped++;
-                        updateLoadingMessage("正在压缩: " + filesZipped + "/" + totalFiles);
                     }
                 }
+                // 即使物理文件缺失也补一次，保证 done 与统计时的 total 一致
+                if (progress != null) progress.tick(fileName);
             }
 
 			// 处理子目录
@@ -1850,17 +1888,6 @@ public class BackServer {
                 queue.add(new Pair<>(subDirId, currentPathInZip + subDirName + "/"));
             }
 		}
-	}
-	private void updateLoadingMessage(final String message) {
-		Activity activity = (Activity) context;
-		activity.runOnUiThread(new Runnable() {
-			@Override
-			public void run() {
-				String escapedMessage = message.replace("\\", "\\\\").replace("'", "\\'");
-				String jsCall = "javascript:window.updata_load_info('" + escapedMessage + "');";
-				webView.evaluateJavascript(jsCall, null);
-			}
-		});
 	}
 	private File handleNameConflict(File directory, String originalName, String extension) {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
