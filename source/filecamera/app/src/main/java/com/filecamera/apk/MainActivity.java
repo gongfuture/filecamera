@@ -181,7 +181,7 @@ public class MainActivity extends AppCompatActivity {
         renderOverlayState(title, detail, null, true, 0, 0);
     }
 
-    /** 确定进度：标题 + "n/N · 百分比" + 当前条目名；250ms 节流。 */
+    /** 确定进度：标题 + "n/N" + 当前条目名；250ms 节流。 */
     public synchronized void updateProgress(String title, int done, int total, String name) {
         lastDone = done;
         lastTotal = total;
@@ -213,8 +213,8 @@ public class MainActivity extends AppCompatActivity {
 
     private static String progressDetail(int done, int total) {
         if (total <= 0) return null;
-        int percent = Math.round(done * 100f / total);
-        return formatCount(done) + " / " + formatCount(total) + " · " + percent + "%";
+        // 百分比不再上屏：进度条本身已经表达了比例，数字只保留 "n / N"
+        return formatCount(done) + " / " + formatCount(total);
     }
 
     /** 起手态：弹系统选择器 / 刚开始读取时用（不确定进度条）。 */

@@ -196,8 +196,8 @@ JS: await callAndroidMethod(FilePicker, 'importPath', {dirId, mode:'file'|'dir'}
  → 进度只显示原生遮罩（250ms 节流；H5 不再叠 loading）：
      prepare 准备导入…            （不确定进度条 + "正在读取选中的文件…"）
      scan    正在扫描文件夹        （不确定进度条 + "已发现 N 个文件"）
-     import  正在导入 n/N          大数字 + 百分比 + 确定进度条 + 当前文件名
-     done    导入完成 100%         "正在刷新列表…"，遮罩继续留着
+     import  正在导入 n/N          大数字 + 确定进度条 + 当前文件名（不显示百分比）
+     done    导入完成             进度条满，"正在刷新列表…"，遮罩继续留着
  → 回调 {records(最多 200 条), count, total, failed[, storageFull]} 或 {canceled:true}
  → JS updateTable(open_dir.id) → 完成后调 window.Android.endImportOverlay() 收起遮罩
    （**没有超时兜底**：遮罩完全由调用方负责收起，导入/导出视频再久也不会被定时器打断）
@@ -223,7 +223,7 @@ JS: await callAndroidMethod(FilePicker, 'importPath', {dirId, mode:'file'|'dir'}
 移动/复制 = 文件/目录节点数（移动合并时也逐项推进）。凡是"按选中项计数"的操作，只选一个文件夹时
 会瞬间 1/1，遮罩随后就退回不确定进度（转圈）——看起来就是"没有进度"。
 冲突协议里的进度记账：原生返回 `itemUnits` / `itemDone`，JS 跳过该项时补上
-`itemUnits - itemDone`，否则收尾会停在 90% 之类的数；成功项由原生在完成后推进，别在判断结果前 tick。
+`itemUnits - itemDone`，否则收尾时进度条会差一截；成功项由原生在完成后推进，别在判断结果前 tick。
 
 移动/复制协议：整批只调一次原生；进度按「文件/目录节点数」计（移动合并、复制文件夹内部都逐项推进）。
 遇到同名冲突时 Java 先收遮罩、返回 `needConfirm + remaining + done + total`，JS 弹 H5 确认框；
