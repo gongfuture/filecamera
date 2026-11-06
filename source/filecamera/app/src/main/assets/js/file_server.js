@@ -327,6 +327,16 @@ async function deleteByPaths(map) {
     } catch (error) {
         native_progress_hide();
         console.error('删除失败:', error);
+        // 删除是按批提交的：失败前可能已经删掉了一部分，必须刷新列表，
+        // 否则界面还显示已经删掉的项，用户再点就会报“不存在”。
+        try {
+            let table1tbody = document.getElementById('table1tbody');
+            let scrollTop = table1tbody.scrollTop || 0;
+            await updateTable(open_dir.id);
+            table1tbody.scrollTop = scrollTop;
+        } catch (refreshError) {
+            console.error('删除失败后刷新列表失败:', refreshError);
+        }
         await alert_fix("删除失败：" + error);
     }
     return success;

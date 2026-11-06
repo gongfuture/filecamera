@@ -134,11 +134,14 @@ public class FileImporter {
                 handled = repairDelete(row);
             } else if ("copy".equals(op)) {
                 handled = repairCopy(row);
-            } else {
+            } else if ("import".equals(op)) {
                 // 录像的 pending 行由 scanPendingVideoDirs() 专门处理（要探测可播、生成首帧），
                 // 不能当成照片直接搬进 app_data。
                 if (isVideoPendingRow(row)) continue;
                 handled = repairOne(row);
+            } else {
+                Log.w(TAG, "未知任务类型，跳过: " + op);
+                continue;
             }
             if (handled) repaired++;
         }
@@ -195,8 +198,7 @@ public class FileImporter {
         try {
             // 目标目录已经被删掉 → 这条复制永远不可见，连同文件一起清掉
             if (dbHelper.db_get("SELECT id FROM dir WHERE id = ?", new JSONArray().put(parentDirId)) == null) {
-                discardCopy(row, targetFile, tmpFile);
-                return true;
+                return discardCopy(row, targetFile, tmpFile);
             }
 
             boolean mainOk = targetFile.isFile() && (expectedSize <= 0 || targetFile.length() == expectedSize);
@@ -208,8 +210,7 @@ public class FileImporter {
                     Log.i(TAG, "已从临时文件补齐复制文件: " + id);
                 } else {
                     Log.w(TAG, "复制文件缺失，丢弃任务: " + id);
-                    discardCopy(row, targetFile, tmpFile);
-                    return true;
+                    return discardCopy(row, targetFile, tmpFile);
                 }
             }
 
@@ -224,12 +225,20 @@ public class FileImporter {
             String oldId = row.isNull("old_file_id") ? null : row.optString("old_file_id", null);
             if (oldId != null && !oldId.isEmpty() && !oldId.equals(id)) {
                 JSONObject oldRow = dbHelper.db_get(
-                        "SELECT real_file_name, real_icon_name FROM file WHERE id = ?",
+                        "SELECT name, parent_dir_id, real_file_name, real_icon_name FROM file WHERE id = ?",
                         new JSONArray().put(oldId));
                 if (oldRow != null) {
-                    boolean oldOk = deletePhysical(dataDirectory(), readName(oldRow, "real_file_name"))
-                            & deletePhysical(iconDirectory(), readName(oldRow, "real_icon_name"));
-                    if (!oldOk) Log.w(TAG, "覆盖复制的旧文件删除失败: " + oldId);
+                    String oldFile = readName(oldRow, "real_file_name");
+                    String oldIcon = readName(oldRow, "real_icon_name");
+                    boolean oldOk = deletePhysical(dataDirectory(), oldFile)
+                            & deletePhysical(iconDirectory(), oldIcon);
+                    if (!oldOk) {
+                        // 旧文件删不掉：补一条 delete 任务，启动时继续删，不能留无任务孤儿
+                        String oldParent = readName(oldRow, "parent_dir_id");
+                        FileImporter.recordPendingDelete(dbHelper, oldId,
+                                readName(oldRow, "name"), oldParent == null ? parentDirId : oldParent,
+                                oldFile, oldIcon);
+                    }
                     dbHelper.db_run("DELETE FROM file WHERE id = ?", new JSONArray().put(oldId));
                 }
             }
@@ -242,23 +251,34 @@ public class FileImporter {
         }
     }
 
-    /** 丢弃一条复制任务及其目标文件 / 临时文件 / 缩略图；DB 行若在也一并删掉（不能留坏记录）。 */
-    private void discardCopy(JSONObject row, File targetFile, File tmpFile) {
-        deleteQuietly(targetFile);
-        deleteQuietly(tmpFile);
+    /**
+     * 丢弃一条复制任务及其目标文件 / 临时文件 / 缩略图；DB 行若在也一并删掉（不能留坏记录）。
+     *
+     * @return true 表示文件都已删掉（或本来就不存在）；false 表示还有文件删不掉，任务保留到下次启动重试。
+     */
+    private boolean discardCopy(JSONObject row, File targetFile, File tmpFile) {
         String iconName = row.isNull("real_icon_name") ? null : row.optString("real_icon_name", null);
-        if (iconName != null && !iconName.isEmpty()) {
-            deleteQuietly(new File(iconDirectory(), iconName));
-        }
+        File iconFile = (iconName == null || iconName.isEmpty()) ? null : new File(iconDirectory(), iconName);
+        boolean filesOk = deleteIfExists(targetFile) & deleteIfExists(tmpFile) & deleteIfExists(iconFile);
+
         String id = row.optString("id");
         try {
             if (!id.isEmpty()) {
                 dbHelper.db_run("DELETE FROM file WHERE id = ?", new JSONArray().put(id));
             }
-            dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(id));
+            if (filesOk) {
+                dbHelper.db_run("DELETE FROM pending_file WHERE id = ?", new JSONArray().put(id));
+            }
         } catch (Exception e) {
             Log.e(TAG, "删除复制任务失败", e);
+            return false;
         }
+        return filesOk;
+    }
+
+    /** @return true 表示文件不存在或删除成功。 */
+    private static boolean deleteIfExists(File file) {
+        return file == null || !file.exists() || file.delete();
     }
 
     /** 读可空列：缺失/JSON null 都返回 null。 */
