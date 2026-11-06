@@ -1,0 +1,156 @@
+name: Sync from Gitee Mirror
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch from Gitee remote
+        env:
+          GITEE_PAT: ${{ secrets.GITEE_PAT }}
+        run: |
+          git remote add gitee "https://x-access-token:${GITEE_PAT}@gitee.com/zjywchenhui/filecamera.git"
+          git fetch gitee master
+
+      - name: Detect changes and decide sync
+        id: detect
+        run: |
+          GITEE_HEAD="gitee/master"
+          BASE_REF="origin/mirror-base"
+
+          if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
+            echo "sync=true" >> $GITHUB_OUTPUT
+            echo "reason=首次运行 - mirror-base 分支不存在" >> $GITHUB_OUTPUT
+            echo "::notice::首次运行 - mirror-base 分支不存在，执行同步"
+            exit 0
+          fi
+
+          GITEE_COUNT=$(git rev-list --count "$GITEE_HEAD")
+          BASE_COUNT=$(git rev-list --count "$BASE_REF")
+
+          GITEE_LAST5=$(git log "$GITEE_HEAD" --format="%H" -n 5 | sort)
+          BASE_LAST5=$(git log "$BASE_REF" --format="%H" -n 5 | sort)
+
+          echo "Gitee commit count: $GITEE_COUNT"
+          echo "Mirror-base commit count: $BASE_COUNT"
+
+          # Safety guard: if gitee has significantly fewer commits, possible repo deletion & recreation
+          if [ "$GITEE_COUNT" -lt "$((BASE_COUNT / 2))" ]; then
+            echo "sync=false" >> $GITHUB_OUTPUT
+            echo "reason=安全防护: Gitee 提交数显著减少 ($GITEE_COUNT vs $BASE_COUNT)，可能是仓库被删除后重建" >> $GITHUB_OUTPUT
+            echo "::warning::安全防护触发: Gitee 提交数显著减少 ($GITEE_COUNT vs $BASE_COUNT)，拒绝同步。如需同步请手动删除 mirror-base 分支后重试。"
+            exit 0
+          fi
+
+          if [ "$GITEE_COUNT" -gt "$BASE_COUNT" ]; then
+            echo "sync=true" >> $GITHUB_OUTPUT
+            echo "reason=Gitee 有新提交 ($GITEE_COUNT > $BASE_COUNT)" >> $GITHUB_OUTPUT
+            echo "::notice::检测到新提交: Gitee ($GITEE_COUNT) > Mirror ($BASE_COUNT)"
+            exit 0
+          fi
+
+          if [ "$GITEE_LAST5" != "$BASE_LAST5" ]; then
+            echo "sync=true" >> $GITHUB_OUTPUT
+            echo "reason=最近 5 个提交不一致" >> $GITHUB_OUTPUT
+            echo "::notice::最近 5 个提交不一致，执行同步"
+            exit 0
+          fi
+
+          echo "sync=false" >> $GITHUB_OUTPUT
+          echo "reason=无变化" >> $GITHUB_OUTPUT
+          echo "::notice::无变化，跳过同步"
+
+      - name: Push mirror-base branch
+        if: steps.detect.outputs.sync == 'true'
+        run: |
+          echo "同步原因: ${{ steps.detect.outputs.reason }}"
+          git push origin gitee/master:refs/heads/mirror-base --force
+
+      - name: Backup .github directory
+        if: steps.detect.outputs.sync == 'true'
+        run: |
+          rm -rf /tmp/github-backup
+          if [ -d .github ]; then
+            cp -r .github /tmp/github-backup
+            echo "::notice::已从当前工作树备份 .github/ 目录"
+          elif git rev-parse --verify origin/master >/dev/null 2>&1; then
+            # First sync after initial push: .github exists in origin/master
+            # Temporarily check out .github from origin/master
+            git checkout origin/master -- .github/
+            cp -r .github /tmp/github-backup
+            echo "::notice::从 origin/master 恢复并备份 .github/ 目录"
+          else
+            echo "::notice::未找到 .github/ 目录（首次推送？）"
+          fi
+
+      - name: Rebuild master from mirror-base
+        if: steps.detect.outputs.sync == 'true'
+        run: |
+          git checkout -B master origin/mirror-base
+
+      - name: Restore .github directory
+        if: steps.detect.outputs.sync == 'true'
+        run: |
+          if [ -d /tmp/github-backup ]; then
+            mkdir -p .github
+            cp -r /tmp/github-backup/. .github/
+            git add .github/
+            echo "::notice::已恢复 .github/ 目录到工作树（将随下一条 commit 一起提交）"
+          fi
+
+      - name: Inject README prefix from readme-config branch
+        if: steps.detect.outputs.sync == 'true'
+        run: |
+          git fetch origin readme-config:refs/remotes/origin/readme-config 2>/dev/null || true
+
+          if git show origin/readme-config:prefix.md > /tmp/prefix.md 2>/dev/null; then
+            PREFIX=$(cat /tmp/prefix.md)
+            ORIGINAL=$(cat README.md 2>/dev/null || echo "")
+
+            printf '%s\n\n%s\n' "$PREFIX" "$ORIGINAL" > README.md
+
+            git add README.md
+            git commit -m "chore: 注入README前缀, 恢复Workflow"
+
+            echo "::notice::README 前缀注入成功"
+          else
+            echo "::notice::readme-config 分支或 prefix.md 不存在，跳过 README 注入"
+
+            # If there's nothing to commit (no .github restore, no README),
+            # create an empty commit so push works
+            if git diff --cached --quiet && ! git rev-parse HEAD >/dev/null 2>&1; then
+              git commit --allow-empty -m "chore: 初始化镜像仓库"
+            elif ! git diff --cached --quiet; then
+              git commit -m "chore: 同步镜像（仅 .github 恢复）"
+            fi
+          fi
+
+      - name: Push master
+        if: steps.detect.outputs.sync == 'true'
+        run: |
+          git push origin master --force
+
+      - name: Trigger APK release workflow
+        if: steps.detect.outputs.sync == 'true'
+        run: |
+          gh workflow run extract-apk-release.yml --ref master
+        env:
+          GH_TOKEN: ${{ github.token }}
