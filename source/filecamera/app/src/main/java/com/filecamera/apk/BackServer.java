@@ -37,6 +37,7 @@ import java.util.Deque;
 import java.util.ArrayDeque;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Stack;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -78,6 +79,13 @@ public class BackServer {
         this.gpsLng = lng;
         this.gpsTime = System.currentTimeMillis();
     }
+	/** 复制视频/大文件的临时目录：和 app_data 同分区，写完 rename 进目标目录；启动时清空。 */
+	private File createCopyTempDirectory() {
+		File dir = new File(context.getFilesDir(), "copy_tmp");
+		if (dir.isDirectory() || dir.mkdirs()) return dir;
+		return null;
+	}
+
 	private File createDataDirectory() {
 		try {
 			File data_dir = new File(context.getFilesDir(), "app_data");
@@ -606,7 +614,7 @@ public class BackServer {
 				// 直接批量删除文件即可
                 List<String> file_id_to_delete = new ArrayList<>();
                 file_id_to_delete.add(file_id);
-                batchDeleteFiles(file_id_to_delete);
+                deleteFilesNow(file_id_to_delete);
 
                 call_js_callback(task_id, true, null, null);
 
@@ -673,22 +681,21 @@ public class BackServer {
                 }
                 BatchProgress progress = new BatchProgress(overlay, "正在删除", totalUnits, 0);
 
+                // 物理文件等 DB 提交后再删：事务失败回滚时文件还在，不会出现"行回滚了、文件已经没了"
+                List<File> physicalFiles = new ArrayList<>();
                 db_helper.db_run("BEGIN TRANSACTION", new JSONArray());
                 try {
-                    if (!all_file_ids.isEmpty()) {
-                        batchDeleteFiles(all_file_ids, progress);
-                    }
-
-                    if (!all_dir_ids.isEmpty()) {
-                        batchDeleteDirectories(all_dir_ids, progress);
-                    }
+                    deleteFileRows(all_file_ids, progress, physicalFiles);
+                    deleteDirectoryRows(all_dir_ids, progress);
                     db_helper.db_run("COMMIT", new JSONArray());
-                    if (overlay != null) overlay.finishProgress("删除完成", "正在刷新列表…");
-                    call_js_callback(task_id, true, null, null);
                 } catch (Exception e) {
                     db_helper.db_run("ROLLBACK", new JSONArray());
                     throw e;
                 }
+                deletePhysicalFiles(physicalFiles);
+
+                if (overlay != null) overlay.finishProgress("删除完成", "正在刷新列表…");
+                call_js_callback(task_id, true, null, null);
 
 			} catch (Exception e) {
 				if (overlay != null) overlay.hideProgress();
@@ -734,95 +741,69 @@ public class BackServer {
 		return result;
 	}
 
-	private void batchDeleteFiles(List<String> file_ids) {
-		batchDeleteFiles(file_ids, null);
-	}
-
 	/**
-	 * 删除文件并在每个文件删完后上报进度。
+	 * 删除 file 行（不含物理文件），把待删的物理文件收集到 outPhysical。
 	 *
-	 * <p>物理文件和缩略图的删除是整条删除链路里最慢的一段（几千张照片时尤其明显），
-	 * 旧实现只报"统计完成"，用户看到的就是遮罩一直转圈不动。这里逐文件 tick，
-	 * 节流由 {@link BatchProgress} 后面的 250ms 统一处理。
+	 * <p>物理文件删除不可回滚，所以统一放到事务提交之后做：这里只删行，提交成功后才由
+	 * {@link #deletePhysicalFiles(List)} 删文件。DB 失败时整个事务回滚、文件仍然在，
+	 * 不会留下"记录已回滚、文件却已经删了"的不可恢复状态。
 	 */
-	private void batchDeleteFiles(List<String> file_ids, BatchProgress progress) {
-		if (file_ids == null || file_ids.isEmpty()) {
-			return;
-		}
-		for (String fileId : file_ids) {
-			String name = deleteRealFileAndIcon(fileId);
-			if (progress != null) progress.tick(name);
-		}
+	private void deleteFileRows(List<String> file_ids, BatchProgress progress, List<File> outPhysical) throws JSONException {
+		if (file_ids == null || file_ids.isEmpty()) return;
 
-		try {
-			int batch_size = 100;
-			for (int i = 0; i < file_ids.size(); i += batch_size) {
-				int end_index = Math.min(i + batch_size, file_ids.size());
-				List<String> batch = file_ids.subList(i, end_index);
+		File dataDir = createDataDirectory();
+		File iconDir = createIconDirectory();
+		int batch_size = 100;
 
-				StringBuilder placeholders = new StringBuilder();
-				JSONArray params = new JSONArray();
-				for (int j = 0; j < batch.size(); j++) {
-					if (j > 0) placeholders.append(",");
-					placeholders.append("?");
-					params.put(batch.get(j));
-				}
+		for (int i = 0; i < file_ids.size(); i += batch_size) {
+			List<String> batch = file_ids.subList(i, Math.min(i + batch_size, file_ids.size()));
 
-				db_helper.db_run("DELETE FROM file WHERE id IN (" + placeholders + ")", params);
+			StringBuilder placeholders = new StringBuilder();
+			JSONArray params = new JSONArray();
+			for (int j = 0; j < batch.size(); j++) {
+				if (j > 0) placeholders.append(",");
+				placeholders.append("?");
+				params.put(batch.get(j));
 			}
-		} catch (Exception e) {
-			android.util.Log.e("DeleteDBError", "批量删除数据库记录时出错", e);
-		}
-	}
-	/** @return 文件的显示名（用于遮罩上的"当前文件"一行）；记录不存在时返回 null。 */
-	private String deleteRealFileAndIcon(String file_id) {
-		JSONArray params = new JSONArray().put(file_id);
-		String displayName = null;
+			String where = placeholders.toString();
 
-		try {
-			// 从file表中同时取显示名、主文件名和图标文件名
-			JSONObject file_record = db_helper.db_get("SELECT name, real_file_name, real_icon_name FROM file WHERE id = ?", params);
-			if (file_record != null) {
-				if (!file_record.isNull("name")) displayName = file_record.getString("name");
-
-				// 删除主文件
-				if (file_record.has("real_file_name") && !file_record.isNull("real_file_name")) {
-					String real_file_name = file_record.getString("real_file_name");
-					File data_dir = createDataDirectory();
-					if (data_dir != null) {
-						File file_to_delete = new File(data_dir, real_file_name);
-						if (file_to_delete.exists()) {
-							if (!file_to_delete.delete()) {
-								android.util.Log.w("DeleteWarning", "删除物理文件失败: " + file_to_delete.getAbsolutePath());
-							}
-						}
-					}
+			// 行删掉之后就查不到物理文件名了，先取出来
+			JSONArray rows = db_helper.db_all(
+					"SELECT name, real_file_name, real_icon_name FROM file WHERE id IN (" + where + ")", params);
+			for (int j = 0; j < rows.length(); j++) {
+				JSONObject row = rows.getJSONObject(j);
+				if (!row.isNull("real_file_name") && dataDir != null) {
+					String realFile = row.optString("real_file_name", "");
+					if (!realFile.isEmpty()) outPhysical.add(new File(dataDir, realFile));
 				}
-				// 删除图标文件
-				if (file_record.has("real_icon_name") && !file_record.isNull("real_icon_name")) {
-					String real_icon_name = file_record.getString("real_icon_name");
-					File icon_dir = createIconDirectory();
-					if (icon_dir != null) {
-						File icon_to_delete = new File(icon_dir, real_icon_name);
-						if (icon_to_delete.exists()) {
-							if (!icon_to_delete.delete()) {
-								android.util.Log.w("DeleteWarning", "删除物理图标失败: " + icon_to_delete.getAbsolutePath());
-							}
-						}
-					}
+				if (!row.isNull("real_icon_name") && iconDir != null) {
+					String realIcon = row.optString("real_icon_name", "");
+					if (!realIcon.isEmpty()) outPhysical.add(new File(iconDir, realIcon));
 				}
+				if (progress != null) progress.tick(row.isNull("name") ? null : row.getString("name"));
 			}
-		} catch (Exception e) {
-			android.util.Log.e("DeleteError", "删除物理文件或图标时发生异常, ID: " + file_id, e);
+			db_helper.db_run("DELETE FROM file WHERE id IN (" + where + ")", params);
 		}
-		return displayName;
-	}
-	private void batchDeleteDirectories(List<String> dir_ids) throws JSONException {
-		batchDeleteDirectories(dir_ids, null);
 	}
 
-	private void batchDeleteDirectories(List<String> dir_ids, BatchProgress progress) throws JSONException {
-		if (dir_ids.isEmpty()) return;
+	/** 删除物理文件（提交后调用）：失败只记日志，不能让一条删不掉的文件把整个操作判失败。 */
+	private void deletePhysicalFiles(List<File> files) {
+		for (File file : files) {
+			if (!file.delete() && file.exists()) {
+				android.util.Log.w("DeleteWarning", "删除物理文件失败: " + file.getAbsolutePath());
+			}
+		}
+	}
+
+	/** 覆盖同名文件等非事务场景：删行 + 删物理文件。 */
+	private void deleteFilesNow(List<String> file_ids) throws JSONException {
+		List<File> physical = new ArrayList<>();
+		deleteFileRows(file_ids, null, physical);
+		deletePhysicalFiles(physical);
+	}
+
+	private void deleteDirectoryRows(List<String> dir_ids, BatchProgress progress) throws JSONException {
+		if (dir_ids == null || dir_ids.isEmpty()) return;
 
 		int batch_size = 100;
 
@@ -1162,7 +1143,7 @@ public class BackServer {
             } else {
                 // 强制覆盖，删除目标位置的旧文件
                 String oldFileId = targetFile.getString("id");
-                batchDeleteFiles(new ArrayList<String>() {{ add(oldFileId); }});
+                deleteFilesNow(Collections.singletonList(oldFileId));
             }
         }
 
@@ -1223,7 +1204,7 @@ public class BackServer {
 
             JSONObject targetFile = db_helper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", new JSONArray().put(target_dir_id).put(fileName));
             if (targetFile != null) {
-                batchDeleteFiles(new ArrayList<String>() {{ add(targetFile.getString("id")); }});
+                deleteFilesNow(Collections.singletonList(targetFile.getString("id")));
             }
             db_helper.db_run("UPDATE file SET parent_dir_id = ? WHERE id = ?", new JSONArray().put(target_dir_id).put(fileId));
             if (progress != null) progress.tick(fileName);
@@ -1256,13 +1237,8 @@ public class BackServer {
 
         // 检查目标位置是否存在同名文件
         JSONObject target_file_exist = db_helper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", new JSONArray().put(target_dir_id).put(file_name));
-        if (target_file_exist != null) {
-            if (!force_overwrite) {
-                return ItemResult.needConfirm("目标位置已存在同名文件，是否覆盖？");
-            } else {
-                // 覆盖：删除旧文件
-                batchDeleteFiles(new ArrayList<String>() {{ add(target_file_exist.getString("id")); }});
-            }
+        if (target_file_exist != null && !force_overwrite) {
+            return ItemResult.needConfirm("目标位置已存在同名文件，是否覆盖？");
         }
 
         // 开始复制
@@ -1284,6 +1260,11 @@ public class BackServer {
                 new_real_icon_name = new_file_id + "_icon.png";
                 copyPhysicalFile(source_real_icon_name, new_real_icon_name, true);
             }
+        }
+
+        // 新文件完整落盘后再删旧目标：复制失败（如磁盘满）时旧文件还在
+        if (target_file_exist != null) {
+            deleteFilesNow(Collections.singletonList(target_file_exist.getString("id")));
         }
 
         // 插入新的文件数据库记录
@@ -1400,28 +1381,43 @@ public class BackServer {
         return ItemResult.OK;
     }
 
+	/**
+	 * 物理文件复制：64KB 缓冲流式写，内存占用与文件大小无关（复制几 GB 视频也不会 OOM）。
+	 * 先写 .part 临时文件、fsync 后再 rename，避免目标位置留下半截文件。
+	 */
 	private boolean copyPhysicalFile(String source_name, String target_name, boolean is_icon) {
-		try {
-            File source_dir = is_icon ? createIconDirectory() : createDataDirectory();
-            File target_dir = is_icon ? createIconDirectory() : createDataDirectory();
-			if (source_dir == null || target_dir == null) return false;
+		File source_dir = is_icon ? createIconDirectory() : createDataDirectory();
+		File target_dir = is_icon ? createIconDirectory() : createDataDirectory();
+		if (source_dir == null || target_dir == null) return false;
 
-			File source_file = new File(source_dir, source_name);
-			if (!source_file.exists()) return false;
+		File source_file = new File(source_dir, source_name);
+		if (!source_file.isFile()) return false;
 
-			byte[] file_data = readFileToBytes(source_file);
-			if (file_data == null) {
-				android.util.Log.e("CopyPhysicalFile", "读取源文件失败: " + source_name);
-				return false;
+		File target_file = new File(target_dir, target_name);
+		File temp_dir = createCopyTempDirectory();
+		if (temp_dir == null) return false;
+		File temp_file = new File(temp_dir, target_name);
+		try (InputStream in = new FileInputStream(source_file);
+			 FileOutputStream out = new FileOutputStream(temp_file)) {
+			byte[] buffer = new byte[64 * 1024];
+			int read;
+			while ((read = in.read(buffer)) != -1) {
+				out.write(buffer, 0, read);
 			}
-
-            File target_file = new File(target_dir, target_name);
-			return FileImporter.saveFile(file_data, target_file);
-
-		} catch (Exception e) {
-			android.util.Log.e("CopyPhysicalFile", "物理文件复制时发生异常", e);
+			out.flush();
+			out.getFD().sync();
+		} catch (IOException e) {
+			android.util.Log.e("CopyPhysicalFile", "复制失败: " + source_name, e);
+			//noinspection ResultOfMethodCallIgnored
+			temp_file.delete();
 			return false;
 		}
+
+		if (temp_file.renameTo(target_file)) return true;
+		//noinspection ResultOfMethodCallIgnored
+		temp_file.delete();
+		android.util.Log.e("CopyPhysicalFile", "重命名失败: " + target_name);
+		return false;
 	}
 
 	// [重构] 辅助函数 findDirIdByPath，用于替换 getIdByArr
@@ -1859,6 +1855,7 @@ public class BackServer {
 	// [重构] 将目录写入ZIP流，使用SQL查询
 	private void writeDirectoryToZip(ZipOutputStream zos, JSONObject dirData, String pathInZip, BatchProgress progress) throws Exception {
 		String rootDirId = dirData.getString("id");
+		File dataDir = createDataDirectory();
 
 		Queue<Pair<String, String>> queue = new LinkedList<>();
 		queue.add(new Pair<>(rootDirId, pathInZip));
@@ -1877,16 +1874,19 @@ public class BackServer {
                 JSONObject fileInfo = files.getJSONObject(i);
                 String fileName = SecurityUtils.safePathComponent(fileInfo.getString("name"));
                 String storedFilename = fileInfo.getString("real_file_name");
-                File sourceFile = new File(createDataDirectory(), storedFilename);
+                File sourceFile = dataDir == null ? null : new File(dataDir, storedFilename);
 
-                if (sourceFile.exists()) {
-                    byte[] fileBytes = readFileToBytes(sourceFile);
-                    if (fileBytes != null) {
-                        ZipEntry fileEntry = new ZipEntry(currentPathInZip + fileName);
-                        zos.putNextEntry(fileEntry);
-                        zos.write(fileBytes);
-                        zos.closeEntry();
+                if (sourceFile != null && sourceFile.isFile()) {
+                    zos.putNextEntry(new ZipEntry(currentPathInZip + fileName));
+                    // 流式写：导出文件夹里的视频时，内存占用与单个文件大小无关
+                    try (InputStream in = new FileInputStream(sourceFile)) {
+                        byte[] buffer = new byte[64 * 1024];
+                        int read;
+                        while ((read = in.read(buffer)) != -1) {
+                            zos.write(buffer, 0, read);
+                        }
                     }
+                    zos.closeEntry();
                 }
                 // 即使物理文件缺失也补一次，保证 done 与统计时的 total 一致
                 if (progress != null) progress.tick(fileName);

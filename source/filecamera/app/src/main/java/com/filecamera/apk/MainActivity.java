@@ -784,6 +784,8 @@ public class MainActivity extends AppCompatActivity {
         repairPendingImports();
         // 修复之后再清导入中转目录（顺序不能反：修复要靠 pending 行里的 tmp_photo_path 补主图）
         cleanImportTempDir();
+        // 复制大文件先写 copy_tmp，进程被杀会留下临时文件；正常情况下目录本来就是空的
+        cleanCopyTempDir();
 
         webView.loadUrl(indexurl);
     }
@@ -812,6 +814,20 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Throwable e) {
             Log.e(TAG, "清理导入临时文件失败", e);
+        }
+    }
+
+    /** 清掉复制大文件时进程被杀留下的 copy_tmp 临时文件（正常情况下目录为空）。 */
+    private void cleanCopyTempDir() {
+        try {
+            File[] files = new File(getFilesDir(), "copy_tmp").listFiles();
+            if (files == null) return;
+            for (File file : files) {
+                //noinspection ResultOfMethodCallIgnored
+                file.delete();
+            }
+        } catch (Throwable e) {
+            Log.e(TAG, "清理复制临时文件失败", e);
         }
     }
 

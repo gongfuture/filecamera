@@ -85,6 +85,7 @@ v5 只补索引（`idx_dir_parent_dir_id` / `idx_file_parent_dir_id` / `idx_file
 files/
   app_data/<id>.<ext>              已入库的正式文件（只有完整已提交才会出现在这里）
   icons/<id>_icon.png              缩略图（图片是缩放图；视频是"带水印的首帧"）
+  copy_tmp/<id>.<ext>              复制大文件的临时文件（写完 rename 到 app_data/icons，启动清空）
   photo_tmp/session_<id>/          拍照会话临时目录（CameraSessionStore，启动 gc）
   video_pending/<id>/              录像待入库目录（★ 关键）
       <id>.mp4.part                录像数据（Camera2 + GL 边录边烧，分片 MP4）
@@ -241,6 +242,12 @@ JS: await callAndroidMethod(FilePicker, 'importPath', {dirId, mode:'file'|'dir'}
   低于余量就停下并回 `storageFull:true`。导入是复制进 `files/app_data`，16G 素材会实打实占内部存储。
 - **不要恢复 H5 的导入 loading**：两层遮罩会叠在一起（原生在上、H5 在下），
   导入进度只保留原生这一层；H5 侧只留 `endImportOverlay()` 和失败数提示。
+- **复制/导出大文件必须流式**：`copyPhysicalFile` 和 `writeDirectoryToZip` 都是 64KB 缓冲，
+  内存占用与文件大小无关；**不要再退回 `readFileToBytes`**，几 GB 录像在 512MB heap 上必 OOM。
+  复制先写 `files/copy_tmp/` 再 rename，`copy_tmp` 启动时清空（中断只会留下临时文件，不会留半截正式文件）。
+- **删除顺序**：`delete_items` 先在事务里删 DB 行（异常直接抛、ROLLBACK），**COMMIT 之后**才删物理文件；
+  物理文件删不掉只记日志。不要反过来先删文件——回滚时文件已经没了，DB 行会指向不存在的文件。
+  覆盖同名文件的 `deleteFilesNow` 也是先删行、再删物理文件。
 
 ### 5.5 播放器（VideoPlayerActivity）
 - 自定义控制层（不用 Media3 默认控制条）：顶部返回+文件名、中央播放键、底部音量行 + 进度行
