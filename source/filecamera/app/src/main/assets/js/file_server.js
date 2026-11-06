@@ -428,9 +428,11 @@ async function runBatchWithConfirm(method, ctx, items) {
 		} catch (err) {
 			const resp = (err && typeof err === 'object') ? err : {};
 			done = resp.done || 0;
-			// 复制时总量是原生按"文件/目录节点数"算出来的，续跑时要沿用同一个值
+			// 总量是原生按"文件/目录节点数"算出来的，续跑时要沿用同一个值
 			if (resp.total) ctx.total = resp.total;
 			const rest = Array.isArray(resp.remaining) ? resp.remaining : [];
+			// 这一项已经推进了多少单元：跳过它时补上剩余部分，进度才能收在 100%
+			const leftUnits = Math.max(0, (resp.itemUnits || 0) - (resp.itemDone || 0));
 			if (resp.needConfirm) {
 				// 原生遮罩在返回前已经收起，这里可以直接弹确认框
 				const overwrite = await confirm_fix(resp.message || '目标位置已存在同名项，是否覆盖？');
@@ -439,6 +441,7 @@ async function runBatchWithConfirm(method, ctx, items) {
 					forceFirst = true;
 				} else {
 					remaining = rest.slice(1); // 拒绝覆盖：跳过这一项
+					done += leftUnits;
 					forceFirst = false;
 				}
 				continue;
@@ -446,6 +449,7 @@ async function runBatchWithConfirm(method, ctx, items) {
 			// 单项失败：提示后跳过，继续处理剩下的条目
 			await alert_fix(resp.message || String(err || '操作失败'));
 			remaining = rest.slice(1);
+			done += leftUnits;
 			forceFirst = false;
 		}
 	}
@@ -483,7 +487,7 @@ async function moveall(source_arr, map, target_arr) {
 		ok = await runBatchWithConfirm('move_items', {
 			sourcePath: nowsource_arr,
 			targetPath: nowtarget_arr,
-			total: items.length
+			total: 0 // 让 Java 按"文件/目录节点数"算总进度（合并时内部也推进度）
 		}, items);
 	} catch (error) {
 		console.error('移动过程中发生错误:', error);

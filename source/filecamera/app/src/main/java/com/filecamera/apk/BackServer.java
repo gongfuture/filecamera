@@ -996,25 +996,27 @@ public class BackServer {
 			this.done = done;
 		}
 
-		void tick(String name) {
-			done++;
+		/** 推进若干单元（目录整棵移动时一次补齐，和复制/合并的逐项推进保持同一套计数）。 */
+		void advance(int units, String name) {
+			if (units <= 0) return;
+			done += units;
 			if (overlay != null) overlay.updateProgress(title, done, total, name);
+		}
+
+		void tick(String name) {
+			advance(1, name);
 		}
 
 		int done() {
 			return done;
 		}
-
-		int total() {
-			return total;
-		}
 	}
 
-	/** 统计一个目录在"复制"时的工作量：目录自身 + 所有子孙目录 + 所有子孙文件。 */
-	private int countCopyUnits(String parentDirId, String dirName) throws JSONException {
+	/** 统计一个目录的工作量：目录自身 + 所有子孙目录 + 所有子孙文件（移动合并与复制共用同一套计数）。 */
+	private int countTreeUnits(String parentDirId, String dirName) throws JSONException {
 		JSONObject dir = db_helper.db_get("SELECT id FROM dir WHERE parent_dir_id = ? AND name = ?",
 				new JSONArray().put(parentDirId).put(dirName));
-		if (dir == null) return 1; // 源目录不存在时按 1 个单元算，交给 copyDirectory 报错
+		if (dir == null) return 1; // 源目录不存在时按 1 个单元算，交给 copyDirectory/moveDirectory 报错
 
 		int units = 1;
 		Queue<String> queue = new LinkedList<>();
@@ -1078,18 +1080,17 @@ public class BackServer {
 
 			if (overlay != null) overlay.showProgress(title + "…", "");
 
-			// 首次调用时算总工作量：移动按"选中项"计，复制按"文件/目录节点数"计（文件夹内部也推进度）
+			// 首次调用按"文件/目录节点数"算总工作量（移动合并、复制文件夹内部都能逐项推进）。
+			// 每项的 units 会随 items 一起回传给 JS，续跑/跳过时不必重新遍历目录树。
 			if (total <= 0) {
-				if (is_move) {
-					total = items.length();
-				} else {
-					if (overlay != null) overlay.showProgress(title + "…", "正在统计要复制的文件");
-					for (int i = 0; i < items.length(); i++) {
-						JSONObject item = items.getJSONObject(i);
-						total += "file".equals(item.getString("type"))
-								? 1
-								: countCopyUnits(sourceDirId, item.getString("name"));
-					}
+				if (overlay != null) overlay.showProgress(title + "…", "正在统计要" + action + "的内容");
+				for (int i = 0; i < items.length(); i++) {
+					JSONObject item = items.getJSONObject(i);
+					int units = "file".equals(item.getString("type"))
+							? 1
+							: countTreeUnits(sourceDirId, item.getString("name"));
+					item.put("units", units);
+					total += units;
 				}
 			}
 			BatchProgress progress = new BatchProgress(overlay, title, total, done);
@@ -1099,28 +1100,31 @@ public class BackServer {
 				String name = item.getString("name");
 				String type = item.getString("type");
 				boolean force = forceFirst && i == 0;
+				int itemUnits = item.optInt("units", 0);
+				if (itemUnits <= 0) itemUnits = "file".equals(type) ? 1 : countTreeUnits(sourceDirId, name);
+				int before = progress.done();
 
 				ItemResult result;
 				if (is_move) {
 					result = "file".equals(type)
-							? moveFile(name, sourceDirId, targetDirId, force)
-							: moveDirectory(name, sourceDirId, targetDirId, force);
-					progress.tick(name);
+							? moveFile(name, sourceDirId, targetDirId, force, progress)
+							: moveDirectory(name, sourceDirId, targetDirId, force, itemUnits, progress);
+				} else if ("file".equals(type)) {
+					result = copyFile(name, sourceDirId, targetDirId, force);
+					if (result.code == ItemResult.CODE_OK) progress.advance(1, name);
 				} else {
-					if ("file".equals(type)) {
-						result = copyFile(name, sourceDirId, targetDirId, force);
-						progress.tick(name);
-					} else {
-						result = copyDirectory(name, sourceDirId, targetDirId, force, progress);
-					}
+					result = copyDirectory(name, sourceDirId, targetDirId, force, progress);
 				}
 
 				if (result.code != ItemResult.CODE_OK) {
 					if (overlay != null) overlay.hideProgress();
+					// itemDone 是这一项已经推进的单元数；JS 跳过它时补上剩下的部分，进度才能收在 100%。
 					JSONObject response = new JSONObject()
 							.put("remaining", sliceFrom(items, i))
 							.put("done", progress.done())
 							.put("total", total)
+							.put("itemUnits", itemUnits)
+							.put("itemDone", progress.done() - before)
 							.put("message", result.message);
 					if (result.code == ItemResult.CODE_NEED_CONFIRM) {
 						response.put("needConfirm", true);
@@ -1139,7 +1143,7 @@ public class BackServer {
 		}
 	}
 
-    private ItemResult moveFile(String file_name, String source_dir_id, String target_dir_id, boolean force_overwrite) throws JSONException {
+    private ItemResult moveFile(String file_name, String source_dir_id, String target_dir_id, boolean force_overwrite, BatchProgress progress) throws JSONException {
         // 查找源文件
         JSONArray findSourceParams = new JSONArray().put(source_dir_id).put(file_name);
         JSONObject sourceFile = db_helper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", findSourceParams);
@@ -1165,10 +1169,11 @@ public class BackServer {
         // 移动文件：只需更新其 parent_dir_id
         JSONArray updateParams = new JSONArray().put(target_dir_id).put(fileId);
         db_helper.db_run("UPDATE file SET parent_dir_id = ? WHERE id = ?", updateParams);
+        if (progress != null) progress.advance(1, file_name);
         return ItemResult.OK;
     }
 
-    private ItemResult moveDirectory(String dir_name, String source_dir_id, String target_dir_id, boolean force_overwrite) throws JSONException {
+    private ItemResult moveDirectory(String dir_name, String source_dir_id, String target_dir_id, boolean force_overwrite, int units, BatchProgress progress) throws JSONException {
         // 查找源目录
         JSONArray findSourceParams = new JSONArray().put(source_dir_id).put(dir_name);
         JSONObject sourceDir = db_helper.db_get("SELECT id FROM dir WHERE parent_dir_id = ? AND name = ?", findSourceParams);
@@ -1186,24 +1191,30 @@ public class BackServer {
         JSONArray findTargetParams = new JSONArray().put(target_dir_id).put(dir_name);
         JSONObject targetDir = db_helper.db_get("SELECT id FROM dir WHERE parent_dir_id = ? AND name = ?", findTargetParams);
 
-        if (targetDir != null) { // 存在同名目录，需要合并
-            if(!force_overwrite){
-                return ItemResult.needConfirm("目标位置已存在同名目录，是否合并？");
-            }
-            String targetSubDirId = targetDir.getString("id");
-            mergeDirectories(dirId, targetSubDirId, force_overwrite); // 递归合并
-            // 合并后，源目录本身被删除
-            db_helper.db_run("DELETE FROM dir WHERE id = ?", new JSONArray().put(dirId));
-
-        } else { // 目标位置无同名目录，直接移动
-            JSONArray updateParams = new JSONArray().put(target_dir_id).put(dirId);
-            db_helper.db_run("UPDATE dir SET parent_dir_id = ? WHERE id = ?", updateParams);
+        if (targetDir == null) { // 目标位置无同名目录，直接移动
+            db_helper.db_run("UPDATE dir SET parent_dir_id = ? WHERE id = ?", new JSONArray().put(target_dir_id).put(dirId));
+            if (progress != null) progress.advance(units, dir_name);
+            return ItemResult.OK;
         }
+
+        if (!force_overwrite) {
+            return ItemResult.needConfirm("目标位置已存在同名目录，是否合并（同名文件将被覆盖）？");
+        }
+
+        // 合并：整棵树的文件逐个搬，进度按节点推进
+        int start = progress != null ? progress.done() : 0;
+        mergeDirectories(dirId, targetDir.getString("id"), dir_name, progress);
+        db_helper.db_run("DELETE FROM dir WHERE id = ?", new JSONArray().put(dirId));
+        // 整棵移动的子目录只推进了自身 1 个单元，末尾补齐剩余额度，保证 done 与 total 对齐
+        if (progress != null) progress.advance(units - (progress.done() - start), dir_name);
         return ItemResult.OK;
     }
 
-    private void mergeDirectories(String source_dir_id, String target_dir_id, boolean force_overwrite) throws JSONException {
-        // 1. 移动源目录下的所有文件到目标目录
+    /** 合并目录：source 的文件/子孙目录搬进 target（同名文件覆盖、同名子目录递归合并），逐项推进进度。 */
+    private void mergeDirectories(String source_dir_id, String target_dir_id, String display_name, BatchProgress progress) throws JSONException {
+        if (progress != null) progress.tick(display_name);
+
+        // 1. 文件：同名覆盖，其余直接改父目录
         JSONArray sourceFiles = db_helper.db_all("SELECT id, name FROM file WHERE parent_dir_id = ?", new JSONArray().put(source_dir_id));
         for (int i = 0; i < sourceFiles.length(); i++) {
             JSONObject sourceFile = sourceFiles.getJSONObject(i);
@@ -1211,33 +1222,27 @@ public class BackServer {
             String fileId = sourceFile.getString("id");
 
             JSONObject targetFile = db_helper.db_get("SELECT id FROM file WHERE parent_dir_id = ? AND name = ?", new JSONArray().put(target_dir_id).put(fileName));
-            if(targetFile != null) { // 文件冲突
-                if(force_overwrite) {
-                    batchDeleteFiles(new ArrayList<String>() {{ add(targetFile.getString("id")); }});
-                    // 删除后，移动源文件
-                    db_helper.db_run("UPDATE file SET parent_dir_id = ? WHERE id = ?", new JSONArray().put(target_dir_id).put(fileId));
-                }
-                // 如果不覆盖，则忽略此文件
-            } else {
-                // 没有冲突，直接移动
-                db_helper.db_run("UPDATE file SET parent_dir_id = ? WHERE id = ?", new JSONArray().put(target_dir_id).put(fileId));
+            if (targetFile != null) {
+                batchDeleteFiles(new ArrayList<String>() {{ add(targetFile.getString("id")); }});
             }
+            db_helper.db_run("UPDATE file SET parent_dir_id = ? WHERE id = ?", new JSONArray().put(target_dir_id).put(fileId));
+            if (progress != null) progress.tick(fileName);
         }
 
-        // 2. 递归处理源目录下的所有子目录
+        // 2. 子目录：同名递归合并后删源目录，其余整棵移动
         JSONArray sourceSubDirs = db_helper.db_all("SELECT id, name FROM dir WHERE parent_dir_id = ?", new JSONArray().put(source_dir_id));
-        for(int i = 0; i < sourceSubDirs.length(); i++) {
+        for (int i = 0; i < sourceSubDirs.length(); i++) {
             JSONObject sourceSubDir = sourceSubDirs.getJSONObject(i);
             String subDirName = sourceSubDir.getString("name");
             String sourceSubDirId = sourceSubDir.getString("id");
 
             JSONObject targetSubDir = db_helper.db_get("SELECT id FROM dir WHERE parent_dir_id = ? AND name = ?", new JSONArray().put(target_dir_id).put(subDirName));
-            if(targetSubDir != null) { // 子目录也冲突，递归合并
-                mergeDirectories(sourceSubDirId, targetSubDir.getString("id"), force_overwrite);
-                // 合并后删除源子目录
+            if (targetSubDir != null) {
+                mergeDirectories(sourceSubDirId, targetSubDir.getString("id"), subDirName, progress);
                 db_helper.db_run("DELETE FROM dir WHERE id = ?", new JSONArray().put(sourceSubDirId));
-            } else { // 子目录不冲突，直接移动
+            } else {
                 db_helper.db_run("UPDATE dir SET parent_dir_id = ? WHERE id = ?", new JSONArray().put(target_dir_id).put(sourceSubDirId));
+                if (progress != null) progress.tick(subDirName);
             }
         }
     }
@@ -1309,7 +1314,7 @@ public class BackServer {
         // 检查目标位置是否存在同名目录
         JSONObject target_dir_exist = db_helper.db_get("SELECT id FROM dir WHERE parent_dir_id = ? AND name = ?", new JSONArray().put(target_dir_id).put(dir_name));
         if (target_dir_exist != null && !force_overwrite) {
-            return ItemResult.needConfirm("目标位置已存在同名目录，是否合并？");
+            return ItemResult.needConfirm("目标位置已存在同名目录，是否合并（同名文件将被覆盖）？");
         }
 
         // 防止将父目录复制到子目录中
@@ -1341,6 +1346,8 @@ public class BackServer {
         copy_queue.offer(new Pair<>(source_root_id, target_root_id));
         if (progress != null) progress.tick(dir_name); // 根目录本身算一个单元
 
+        int failed = 0;
+        String firstFailed = null;
         while (!copy_queue.isEmpty()) {
             Pair<String, String> current = copy_queue.poll();
             String current_source_id = current.first;
@@ -1350,8 +1357,11 @@ public class BackServer {
             JSONArray files_to_copy = db_helper.db_all("SELECT name FROM file WHERE parent_dir_id = ?", new JSONArray().put(current_source_id));
             for(int i=0; i < files_to_copy.length(); i++) {
                 String file_name_to_copy = files_to_copy.getJSONObject(i).getString("name");
-                // 递归复制单个文件；冲突在合并模式下按 force_overwrite 处理，结果忽略
-                copyFile(file_name_to_copy, current_source_id, current_target_parent_id, force_overwrite);
+                // 单个文件失败不能让整棵目录"看起来复制成功"：记下来，结束时整体报错
+                if (copyFile(file_name_to_copy, current_source_id, current_target_parent_id, force_overwrite).code != ItemResult.CODE_OK) {
+                    failed++;
+                    if (firstFailed == null) firstFailed = file_name_to_copy;
+                }
                 if (progress != null) progress.tick(file_name_to_copy);
             }
 
@@ -1383,6 +1393,9 @@ public class BackServer {
                 copy_queue.offer(new Pair<>(old_sub_dir_id, new_sub_dir_id));
                 if (progress != null) progress.tick(sub_dir_name);
             }
+        }
+        if (failed > 0) {
+            return ItemResult.error(failed + " 个文件复制失败（如 " + firstFailed + "）");
         }
         return ItemResult.OK;
     }
