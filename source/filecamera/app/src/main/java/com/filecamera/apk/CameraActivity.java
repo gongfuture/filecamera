@@ -97,6 +97,9 @@ public class CameraActivity extends AppCompatActivity {
     
     private static final int REQUEST_PERMISSIONS = 101;
     private static final long LOCATION_TIMEOUT_MS = 5000L;
+    // 闪光灯模式持久化（与录音权限提示共用一个轻量偏好文件）
+    private static final String CAMERA_PREFS = "camera";
+    private static final String PREF_FLASH_MODE = "flash_mode";
     // GPS 优先策略：GPS 定位在此时间窗口内仍有效时，忽略网络定位结果
     private static final long GPS_PRIORITY_TIMEOUT_MS = 15000L;
     private static final int MAX_WATERMARK_LINE_WIDTH_DP = 260;
@@ -309,8 +312,11 @@ public class CameraActivity extends AppCompatActivity {
         
         roadDatabaseHelper = new RoadDatabaseHelper(this);
 
+        // 闪光灯模式持久化：上次退出时是 关/开/自动，这次进来保持原样
+        currentFlashMode = loadFlashMode();
         initViews();
         camera2Controller = new Camera2Controller(this, previewView, cameraListener);
+        updateFlashMode();
         initGestureDetectors();
         initLocationServices(); // 仅初始化服务，不请求更新
         initOrientationListener();
@@ -575,7 +581,6 @@ public class CameraActivity extends AppCompatActivity {
         hideZoomPanel();
         setCaptureButtonAlphaForRecording(false);   // 切模式时同步快门外观（录像=红色内圆）
         updateModeTabHighlight();
-        flashButton.setVisibility(videoMode ? View.GONE : View.VISIBLE);
         bindCameraUseCases();
     }
 
@@ -855,6 +860,12 @@ public class CameraActivity extends AppCompatActivity {
         }
 
         @Override
+        public void onPhotoWriteStarted() {
+            // 相机 JPEG 真正开始写盘：此时才播放快门声（预闪测光/等 AE 的耗时不算“快门已按下”）
+            playShutterSound();
+        }
+
+        @Override
         public void onPhotoError(String message) {
             pendingCapturedState = null;
             handlePhotoError(message, new Exception(message));
@@ -879,13 +890,29 @@ public class CameraActivity extends AppCompatActivity {
                 break;
         }
         updateFlashMode();
+        persistFlashMode();
+    }
+
+    /** 闪光灯模式持久化：下次进入相机（或冷启动 App）沿用上次的选择。 */
+    private int loadFlashMode() {
+        int saved = getSharedPreferences(CAMERA_PREFS, MODE_PRIVATE)
+                .getInt(PREF_FLASH_MODE, Camera2Controller.FLASH_OFF);
+        if (saved < Camera2Controller.FLASH_OFF || saved > Camera2Controller.FLASH_AUTO) {
+            return Camera2Controller.FLASH_OFF;
+        }
+        return saved;
+    }
+
+    private void persistFlashMode() {
+        getSharedPreferences(CAMERA_PREFS, MODE_PRIVATE).edit()
+                .putInt(PREF_FLASH_MODE, currentFlashMode).apply();
     }
 
     private void switchCamera(int targetLensFacing) {
         if (camera2Controller == null) return;
         currentLensFacing = targetLensFacing;
-        currentFlashMode = Camera2Controller.FLASH_OFF; // 重置闪光灯
-        updateFlashMode();
+        // 闪光灯模式不随镜头切换重置：前置没有闪光灯只是隐藏按钮，
+        // 切回后置时沿用用户之前选的 关/开/自动。
         camera2Controller.switchCamera(targetLensFacing);
     }
 
@@ -942,7 +969,9 @@ public class CameraActivity extends AppCompatActivity {
         if (camera2Controller != null) {
             camera2Controller.setVideoMode(isVideoMode);
         }
-        flashButton.setVisibility(isVideoMode ? View.GONE : flashButton.getVisibility());
+        flashButton.setVisibility(!isVideoMode
+                && camera2Controller != null && camera2Controller.hasFlash()
+                ? View.VISIBLE : View.GONE);
     }
 
     private void takePhoto() {
@@ -962,11 +991,6 @@ public class CameraActivity extends AppCompatActivity {
         isCaptureProcessing = true;
         setCaptureButtonEnabled(false);
 
-        // 根据设置播放拍照提示音，便于用户确认拍摄已触发
-        if (cameraConfig != null && cameraConfig.shutter_sound && mediaActionSound != null) {
-            mediaActionSound.play(MediaActionSound.SHUTTER_CLICK);
-        }
-
         try {
             File photoFile = createImageFile();
             // 快门瞬间抓拍水印位图与 GPS，保证「所见即所得」
@@ -975,6 +999,17 @@ public class CameraActivity extends AppCompatActivity {
         } catch (IOException e) {
             pendingCapturedState = null;
             handlePhotoError("创建文件失败", e);
+        }
+    }
+
+    /** 快门声只在相机 JPEG 真正开始写盘时播放，见 {@link Camera2Controller.Listener#onPhotoWriteStarted()}。 */
+    private void playShutterSound() {
+        if (cameraConfig != null && cameraConfig.shutter_sound && mediaActionSound != null) {
+            try {
+                mediaActionSound.play(MediaActionSound.SHUTTER_CLICK);
+            } catch (Exception e) {
+                Log.w(TAG, "播放快门声失败", e);
+            }
         }
     }
 

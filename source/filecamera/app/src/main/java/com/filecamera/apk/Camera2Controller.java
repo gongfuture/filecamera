@@ -17,6 +17,8 @@ import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
+import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.AudioFormat;
@@ -89,6 +91,11 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     private static final int VIDEO_FRAME_RATE = 30;
     private static final long MAX_PHOTO_PIXELS = 12_000_000L;
 
+    /** AE 预闪测光的最长等待：超时后按当前 AE 状态继续拍照，避免快门一直卡住。 */
+    private static final long PRE_CAPTURE_TIMEOUT_MS = 2500L;
+    /** 触发预闪后至少等待这么久再接受“测光完成”结果，避免把触发前的旧结果当成结论。 */
+    private static final long PRE_CAPTURE_SETTLE_MS = 300L;
+
     private static final int AUDIO_SAMPLE_RATE = 44100;
     private static final int AUDIO_CHANNEL_COUNT = 1;
     private static final int AUDIO_BIT_RATE = 96_000;
@@ -99,6 +106,9 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         void onCameraError(String message);
 
         void onPhotoReady(File photoFile);
+
+        /** 相机返回的 JPEG 数据开始写盘（真正“拍下”的瞬间，用于播放快门声）。 */
+        void onPhotoWriteStarted();
 
         void onPhotoError(String message);
 
@@ -135,12 +145,28 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     private Size videoCameraSize;
     private int sensorOrientation = 90;
     private Rect activeArray;
-    private boolean hasFlash = false;
+    private volatile boolean hasFlash = false;
     private boolean supportsZoomRatio = false;
     private float minZoom = 1f;
     private float maxZoom = 1f;
     private volatile float currentZoom = 1f;
-    private int flashMode = FLASH_OFF;
+    private volatile int flashMode = FLASH_OFF;
+
+    // ---- 闪光拍照：AE 预闪测光状态（全部在 cameraHandler 线程读写）----
+    /** 预闪测光进行中，期间不再接受新的拍照请求。 */
+    private boolean precaptureRunning = false;
+    private boolean precaptureSawRunningState = false;
+    private long precaptureStartMs = 0;
+    private File pendingCaptureFile;
+    private int pendingCaptureRotation;
+    private boolean pendingCaptureForceFlash;
+    /** JPEG 拍照请求已提交、还在等相机回图；期间关会话要明确告诉界面“这张没拍成”。 */
+    private boolean stillCapturePending = false;
+    private int lastAeState = -1;
+    private long lastExposureTimeNs = 0;
+    private int lastIso = 0;
+    /** 预览请求当前使用的 AE 模式：平时 ON；预闪测光窗口内临时切到 AUTO/ALWAYS_FLASH。 */
+    private int previewAeMode = CaptureRequest.CONTROL_AE_MODE_ON;
     /** Activity 设置里的拍照比例（16:9 / 4:3）。 */
     private volatile float targetAspectRatio = 16f / 9f;
     /** 由 Activity 的方向监听器提供（Surface.ROTATION_*），用于照片/视频方向。 */
@@ -195,7 +221,7 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             meteringRegion = null;
             if (session != null) {
                 try {
-                    CaptureRequest.Builder b = buildPreviewRequest();
+                    CaptureRequest.Builder b = buildRepeatingPreviewRequest();
                     b.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL);
                     session.capture(b.build(), null, cameraHandler);
                 } catch (Exception e) {
@@ -299,6 +325,11 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
 
     public float getZoomRatio() {
         return currentZoom;
+    }
+
+    /** 当前镜头是否有闪光灯（前置通常没有）；界面据此决定闪光灯按钮显隐。 */
+    public boolean hasFlash() {
+        return hasFlash;
     }
 
     public boolean isVideoSupported() {
@@ -493,6 +524,16 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     }
 
     private void closeSessionAndReader() {
+        if (precaptureRunning || stillCapturePending) {
+            // 预闪测光/等相机回图期间关会话（切镜头/切模式/退出）时，
+            // 明确告诉界面“这张没拍成”，否则快门会一直停在“处理中”。
+            cancelPrecaptureState();
+            stillCapturePending = false;
+            pendingPhotoFile = null;
+            postPhotoError("拍照已取消");
+        }
+        // 会话都要关了，预览 AE 模式无需恢复；新会话会重新建普通预览请求
+        previewAeMode = CaptureRequest.CONTROL_AE_MODE_ON;
         if (session != null) {
             try {
                 session.stopRepeating();
@@ -595,10 +636,23 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         return builder;
     }
 
+    /**
+     * 预闪测光/等 JPEG 期间，任何预览请求（缩放、对焦、预览循环）都必须保持闪光 AE 模式，
+     * 否则中间插进来的普通预览请求会把 AE 状态机从 AUTO_FLASH/ALWAYS_FLASH 拉回去，
+     * 预闪测光就白做了。
+     */
+    private CaptureRequest.Builder buildRepeatingPreviewRequest() throws CameraAccessException {
+        CaptureRequest.Builder builder = buildPreviewRequest();
+        builder.set(CaptureRequest.CONTROL_AE_MODE, previewAeMode);
+        return builder;
+    }
+
     private void updateRepeatingRequest() {
         if (session == null || cameraDevice == null) return;
         try {
-            session.setRepeatingRequest(buildPreviewRequest().build(), null, cameraHandler);
+            // 预览结果里带回 AE 状态：自动闪光要靠它判断“预闪测光是否完成、是否需要闪光”
+            session.setRepeatingRequest(buildRepeatingPreviewRequest().build(),
+                    previewResultCallback, cameraHandler);
         } catch (Exception e) {
             Log.w(TAG, "设置预览请求失败", e);
         }
@@ -674,7 +728,7 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         meteringRegion = focusRegion;
 
         try {
-            CaptureRequest.Builder b = buildPreviewRequest();
+            CaptureRequest.Builder b = buildRepeatingPreviewRequest();
             b.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
             session.capture(b.build(), null, cameraHandler);
             updateRepeatingRequest();
@@ -763,66 +817,291 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         return (sensorOrientation - degrees + 360) % 360;
     }
 
+    /**
+     * 发起一次拍照。
+     *
+     * <p>闪光灯不是“按下快门就直接闪”，而是先判断场景是否需要闪光，再决定走哪条流程：
+     * <ul>
+     *     <li>闪光灯关闭 / 无闪光灯：无闪光流程，直接拍；</li>
+     *     <li>闪光灯常开：闪光流程（AE 预闪测光 → 按测光结果补光后拍）；</li>
+     *     <li>自动闪光：先用 AUTO_FLASH 跑一次 AE 预闪测光，由 AE 判断“是否需要闪光”，
+     *         再分别进入闪光流程或无闪光流程。</li>
+     * </ul>
+     * 预闪测光是避免极暗场景“闪光灯全功率输出 + 曝光仍按无闪光场景计算”导致整张
+     * 照片过曝（白屏）的关键；这也是 Camera2 对有闪光灯的高质量拍照的明确要求。
+     */
     private void captureStill(File file, int rotation) {
         if (session == null || photoReader == null || cameraDevice == null) {
             pendingPhotoFile = null;
             postPhotoError("相机尚未就绪");
             return;
         }
+        if (precaptureRunning) {
+            // 正常流程不会走到这里（Activity 在上一张处理完成前会禁用快门）
+            pendingPhotoFile = null;
+            postPhotoError("上一张照片还在处理");
+            return;
+        }
+        if (!hasFlash || flashMode == FLASH_OFF) {
+            Log.i(TAG, "拍照流程：无闪光（flashMode=" + flashModeName(flashMode)
+                    + ", hasFlash=" + hasFlash + "）");
+            submitStillCapture(file, rotation, CaptureRequest.CONTROL_AE_MODE_ON);
+            return;
+        }
+        startPrecapture(file, rotation, flashMode == FLASH_ON);
+    }
+
+    /**
+     * 触发 AE 预闪测光。
+     *
+     * <p>相机文档要求：带闪光灯的高质量拍照必须先触发一次 precapture metering，让 AE 通过
+     * 预闪光测出场景亮度和最终闪光功率。跳过这一步直接 {@code AE_MODE_ON + FLASH_MODE_SINGLE}
+     * 会让闪光灯按全功率闪，而曝光仍按无闪光场景计算，极暗场景就会得到一张全白照片。
+     *
+     * @param forceFlash true=闪光灯常开（一定走闪光流程）；false=自动闪光（由测光结果决定）
+     */
+    private void startPrecapture(File file, int rotation, boolean forceFlash) {
+        pendingCaptureFile = file;
+        pendingCaptureRotation = rotation;
+        pendingCaptureForceFlash = forceFlash;
+        precaptureRunning = true;
+        precaptureSawRunningState = false;
+        precaptureStartMs = SystemClock.elapsedRealtime();
+        lastAeState = -1;
+        lastExposureTimeNs = 0;
+        lastIso = 0;
+
+        final int aeMode = forceFlash
+                ? CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH
+                : CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH;
         try {
-            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            // 预闪测光期间让预览请求也用同一个闪光 AE 模式：AE 状态机必须持续处于
+            // AUTO_FLASH / ALWAYS_FLASH，才能在后续预览帧里把测光跑完。
+            previewAeMode = aeMode;
+            updateRepeatingRequest();
+
+            CaptureRequest.Builder builder = buildPreviewRequest();
+            builder.set(CaptureRequest.CONTROL_AE_MODE, aeMode);
+            builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                    CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START);
+            // 预闪测光期间不触发对焦，避免对焦触发把 AE 触发往后拖
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
+            session.capture(builder.build(), precaptureResultCallback, cameraHandler);
+            cameraHandler.postDelayed(precaptureTimeoutRunnable, PRE_CAPTURE_TIMEOUT_MS);
+            Log.i(TAG, "闪光流程：开始 AE 预闪测光（" + (forceFlash ? "常开" : "自动") + "）");
+        } catch (Exception e) {
+            Log.e(TAG, "触发 AE 预闪测光失败，直接按当前模式拍照", e);
+            cancelPrecaptureState();
+            restorePreviewAeMode();
+            submitStillCapture(file, rotation, forceFlash
+                    ? CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH
+                    : CaptureRequest.CONTROL_AE_MODE_ON);
+        }
+    }
+
+    /**
+     * 处理预闪测光结果：等 AE 从 PRECAPTURE 走到 CONVERGED / FLASH_REQUIRED。
+     *
+     * @param fromTrigger true=这是带 START 触发的那一帧结果，它的最终状态可以直接作为结论；
+     *                    false=后续预览帧结果，刚触发时可能还是触发前的旧状态，需要稳定窗口
+     */
+    private void handlePrecaptureResult(CaptureResult result, boolean fromTrigger) {
+        if (!precaptureRunning || result == null) return;
+        Integer state = result.get(CaptureResult.CONTROL_AE_STATE);
+        if (state == null) return;
+        lastAeState = state;
+        Long exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+        if (exposure != null) lastExposureTimeNs = exposure;
+        Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
+        if (iso != null) lastIso = iso;
+
+        long elapsed = SystemClock.elapsedRealtime() - precaptureStartMs;
+        if (state == CaptureResult.CONTROL_AE_STATE_PRECAPTURE) {
+            precaptureSawRunningState = true;
+            return;
+        }
+        boolean settled = state == CaptureResult.CONTROL_AE_STATE_CONVERGED
+                || state == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED
+                || state == CaptureResult.CONTROL_AE_STATE_LOCKED;
+        if (!settled) return;
+        // 刚触发时可能先收到触发前就在管线里的旧结果（CONVERGED）；
+        // 触发帧自己的结果可信，后续预览帧则至少等一个稳定窗口再下结论。
+        if (!fromTrigger && !precaptureSawRunningState && elapsed < PRE_CAPTURE_SETTLE_MS) return;
+        finishPrecapture();
+    }
+
+    /** 结束预闪测光，按测光结果决定“闪光流程 / 无闪光流程”，然后真正提交拍照请求。 */
+    private void finishPrecapture() {
+        if (!precaptureRunning) return;
+        precaptureRunning = false;
+        cameraHandler.removeCallbacks(precaptureTimeoutRunnable);
+
+        final boolean forceFlash = pendingCaptureForceFlash;
+        final File file = pendingCaptureFile;
+        final int rotation = pendingCaptureRotation;
+        final boolean useFlash = forceFlash || shouldAutoFlash();
+
+        pendingCaptureFile = null;
+
+        final int aeMode;
+        if (!useFlash) {
+            aeMode = CaptureRequest.CONTROL_AE_MODE_ON;
+        } else if (forceFlash) {
+            aeMode = CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH;
+        } else {
+            aeMode = CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH;
+        }
+
+        Log.i(TAG, "闪光决策：mode=" + flashModeName(forceFlash ? FLASH_ON : FLASH_AUTO)
+                + " aeState=" + aeStateName(lastAeState)
+                + " exposureNs=" + lastExposureTimeNs
+                + " iso=" + lastIso
+                + " → " + (useFlash ? "闪光流程" : "无闪光流程"));
+        submitStillCapture(file, rotation, aeMode);
+    }
+
+    /**
+     * 自动闪光的判断：AE 明确要求闪光 → 闪光；否则用曝光参数兜底判断“极暗”。
+     * 兜底只用于个别 HAL 不给 FLASH_REQUIRED 的情况，阈值刻意定得很暗，避免正常室内光也乱闪。
+     */
+    private boolean shouldAutoFlash() {
+        return lastAeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED || isSceneVeryDark();
+    }
+
+    private boolean isSceneVeryDark() {
+        if (lastExposureTimeNs <= 0 && lastIso <= 0) return false;
+        // 曝光 ≥ 1/10s，或 ≥ 1/20s 且 ISO ≥ 1600，或 ISO 已经拉到 3200：
+        // 都是肉眼/相机都认为很暗的场景，用作 AE 没给 FLASH_REQUIRED 时的兜底。
+        return lastExposureTimeNs >= 100_000_000L
+                || (lastExposureTimeNs >= 50_000_000L && lastIso >= 1600)
+                || lastIso >= 3200;
+    }
+
+    private void cancelPrecaptureState() {
+        precaptureRunning = false;
+        pendingCaptureFile = null;
+        cameraHandler.removeCallbacks(precaptureTimeoutRunnable);
+    }
+
+    /** 拍照结束（成功/失败）后把预览的 AE 模式恢复成普通的 ON，避免预览长期带着闪光 AE 模式。 */
+    private void restorePreviewAeMode() {
+        if (previewAeMode == CaptureRequest.CONTROL_AE_MODE_ON) return;
+        previewAeMode = CaptureRequest.CONTROL_AE_MODE_ON;
+        updateRepeatingRequest();
+    }
+
+    private final Runnable precaptureTimeoutRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!precaptureRunning) return;
+            Log.w(TAG, "AE 预闪测光超时（" + PRE_CAPTURE_TIMEOUT_MS + "ms），按当前 AE 状态继续拍照");
+            finishPrecapture();
+        }
+    };
+
+    private final CameraCaptureSession.CaptureCallback precaptureResultCallback =
+            new CameraCaptureSession.CaptureCallback() {
+                @Override
+                public void onCaptureCompleted(@NonNull CameraCaptureSession s,
+                                               @NonNull CaptureRequest request,
+                                               @NonNull TotalCaptureResult result) {
+                    handlePrecaptureResult(result, true);
+                }
+
+                @Override
+                public void onCaptureFailed(@NonNull CameraCaptureSession s,
+                                            @NonNull CaptureRequest request,
+                                            @NonNull CaptureFailure failure) {
+                    if (!precaptureRunning) return;
+                    Log.e(TAG, "AE 预闪测光请求失败: " + failure.getReason());
+                    finishPrecapture();
+                }
+            };
+
+    /**
+     * 预览帧也会携带 AE 状态：预闪测光常常跨越好几帧，最终状态要看这些后续结果。
+     * 非预闪期间这个回调几乎是空转。
+     */
+    private final CameraCaptureSession.CaptureCallback previewResultCallback =
+            new CameraCaptureSession.CaptureCallback() {
+                @Override
+                public void onCaptureCompleted(@NonNull CameraCaptureSession s,
+                                               @NonNull CaptureRequest request,
+                                               @NonNull TotalCaptureResult result) {
+                    handlePrecaptureResult(result, false);
+                }
+            };
+
+    /** 真正提交 JPEG 拍照请求；aeMode 决定无闪光 / 自动闪光 / 常开闪光流程。 */
+    private void submitStillCapture(File file, int rotation, int aeMode) {
+        if (file == null) {
+            pendingPhotoFile = null;
+            restorePreviewAeMode();
+            postPhotoError("拍照失败");
+            return;
+        }
+        if (session == null || photoReader == null || cameraDevice == null) {
+            pendingPhotoFile = null;
+            restorePreviewAeMode();
+            postPhotoError("相机尚未就绪");
+            return;
+        }
+        try {
+            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(
+                    CameraDevice.TEMPLATE_STILL_CAPTURE);
             builder.addTarget(photoReader.getSurface());
             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO);
+            builder.set(CaptureRequest.CONTROL_AF_MODE,
+                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO);
             builder.set(CaptureRequest.JPEG_ORIENTATION, rotation);
             builder.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
             builder.set(CaptureRequest.CONTROL_CAPTURE_INTENT,
                     CameraMetadata.CONTROL_CAPTURE_INTENT_STILL_CAPTURE);
-            applyFlashForStill(builder);
+            applyFlashForStill(builder, aeMode);
             applyZoom(builder);
-            session.capture(builder.build(), new CameraCaptureSession.CaptureCallback() {
-                @Override
-                public void onCaptureFailed(@NonNull CameraCaptureSession s, @NonNull CaptureRequest request,
-                                            @NonNull CaptureFailure failure) {
-                    Log.e(TAG, "拍照请求失败: " + failure.getReason());
-                    pendingPhotoFile = null;
-                    postPhotoError("拍照失败");
-                }
-            }, cameraHandler);
+            stillCapturePending = true;
+            session.capture(builder.build(), stillCaptureCallback, cameraHandler);
         } catch (Exception e) {
             Log.e(TAG, "发起拍照失败", e);
+            stillCapturePending = false;
             pendingPhotoFile = null;
+            restorePreviewAeMode();
             postPhotoError("拍照失败");
         }
     }
 
-    private void applyFlashForStill(CaptureRequest.Builder builder) {
-        if (!hasFlash) {
+    private final CameraCaptureSession.CaptureCallback stillCaptureCallback =
+            new CameraCaptureSession.CaptureCallback() {
+                @Override
+                public void onCaptureFailed(@NonNull CameraCaptureSession s,
+                                            @NonNull CaptureRequest request,
+                                            @NonNull CaptureFailure failure) {
+                    Log.e(TAG, "拍照请求失败: " + failure.getReason());
+                    stillCapturePending = false;
+                    pendingPhotoFile = null;
+                    restorePreviewAeMode();
+                    postPhotoError("拍照失败");
+                }
+            };
+
+    private void applyFlashForStill(CaptureRequest.Builder builder, int aeMode) {
+        if (!hasFlash || aeMode == CaptureRequest.CONTROL_AE_MODE_ON) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
             builder.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF);
             return;
         }
-        switch (flashMode) {
-            case FLASH_ON:
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-                builder.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_SINGLE);
-                break;
-            case FLASH_AUTO:
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
-                builder.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_SINGLE);
-                break;
-            default:
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-                builder.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF);
-                break;
-        }
+        // 闪光灯交给 AE 控制：预闪测光结束后，同样的 AUTO_FLASH / ALWAYS_FLASH 模式
+        // 会按测得的闪光功率输出。注意不要再同时设置 FLASH_MODE_SINGLE——
+        // 那会绕过 AE 强制全功率闪光，在极暗场景下正是“白屏过曝”的根因。
+        builder.set(CaptureRequest.CONTROL_AE_MODE, aeMode);
     }
 
     private void onPhotoAvailable(ImageReader reader) {
         Image image = null;
         File target = pendingPhotoFile;
         pendingPhotoFile = null;
+        stillCapturePending = false;
         try {
             image = reader.acquireNextImage();
             if (image == null) {
@@ -837,6 +1116,10 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
                 throw new IOException("无法创建照片目录");
             }
+            // JPEG 数据真正开始写盘的瞬间才提示“拍下了”：与按下快门解耦，
+            // 预闪测光/等 AE 的这段时间不会提前响快门声。
+            Log.d(TAG, "JPEG 开始落盘，播放快门声: " + target.getName());
+            mainHandler.post(listener::onPhotoWriteStarted);
             try (FileOutputStream out = new FileOutputStream(target)) {
                 out.write(data);
                 out.flush();
@@ -857,6 +1140,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
                 } catch (Exception ignored) {
                 }
             }
+            // 照片已经拿到，恢复普通预览 AE（闪光 AE 模式只在测光/拍照窗口内使用）
+            restorePreviewAeMode();
         }
     }
 
@@ -1400,10 +1685,6 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         return null;
     }
 
-    private boolean encoderSupports(Size size) {
-        return selectVideoEncoder(size) != null;
-    }
-
     private static int bitrateFor(Size size) {
         long pixels = (long) size.getWidth() * size.getHeight();
         return (int) Math.max(4_000_000L, Math.min(12_000_000L, pixels * 5));
@@ -1479,6 +1760,26 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     // endregion
 
     // region --- 工具 ---
+
+    private static String flashModeName(int mode) {
+        switch (mode) {
+            case FLASH_ON: return "ON";
+            case FLASH_AUTO: return "AUTO";
+            default: return "OFF";
+        }
+    }
+
+    private static String aeStateName(int state) {
+        switch (state) {
+            case CaptureResult.CONTROL_AE_STATE_INACTIVE: return "INACTIVE";
+            case CaptureResult.CONTROL_AE_STATE_SEARCHING: return "SEARCHING";
+            case CaptureResult.CONTROL_AE_STATE_CONVERGED: return "CONVERGED";
+            case CaptureResult.CONTROL_AE_STATE_LOCKED: return "LOCKED";
+            case CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED: return "FLASH_REQUIRED";
+            case CaptureResult.CONTROL_AE_STATE_PRECAPTURE: return "PRECAPTURE";
+            default: return "UNKNOWN(" + state + ")";
+        }
+    }
 
     private void postCameraReady() {
         final int lens = lensFacing;
