@@ -96,6 +96,11 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     /** 触发预闪后至少等待这么久再接受“测光完成”结果，避免把触发前的旧结果当成结论。 */
     private static final long PRE_CAPTURE_SETTLE_MS = 300L;
 
+    /** 自动闪光第一遍：AUTO_FLASH 测光，只用来判断“需不需要闪光”。 */
+    private static final int PRECAPTURE_PHASE_DECIDE = 0;
+    /** 闪光流程第二遍：ALWAYS_FLASH 测光，测出闪光功率后强制闪光拍照。 */
+    private static final int PRECAPTURE_PHASE_METER = 1;
+
     private static final int AUDIO_SAMPLE_RATE = 44100;
     private static final int AUDIO_CHANNEL_COUNT = 1;
     private static final int AUDIO_BIT_RATE = 96_000;
@@ -159,7 +164,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     private long precaptureStartMs = 0;
     private File pendingCaptureFile;
     private int pendingCaptureRotation;
-    private boolean pendingCaptureForceFlash;
+    /** 本遍预闪测光的目的：PRECAPTURE_PHASE_DECIDE / PRECAPTURE_PHASE_METER。 */
+    private int precapturePhase = PRECAPTURE_PHASE_METER;
     /** JPEG 拍照请求已提交、还在等相机回图；期间关会话要明确告诉界面“这张没拍成”。 */
     private boolean stillCapturePending = false;
     private int lastAeState = -1;
@@ -848,7 +854,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             submitStillCapture(file, rotation, CaptureRequest.CONTROL_AE_MODE_ON);
             return;
         }
-        startPrecapture(file, rotation, flashMode == FLASH_ON);
+        startPrecapture(file, rotation, flashMode == FLASH_ON
+                ? PRECAPTURE_PHASE_METER : PRECAPTURE_PHASE_DECIDE);
     }
 
     /**
@@ -858,12 +865,12 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
      * 预闪光测出场景亮度和最终闪光功率。跳过这一步直接 {@code AE_MODE_ON + FLASH_MODE_SINGLE}
      * 会让闪光灯按全功率闪，而曝光仍按无闪光场景计算，极暗场景就会得到一张全白照片。
      *
-     * @param forceFlash true=闪光灯常开（一定走闪光流程）；false=自动闪光（由测光结果决定）
+     * @param phase PRECAPTURE_PHASE_DECIDE=自动闪光先判断；PRECAPTURE_PHASE_METER=测闪光功率后强制闪
      */
-    private void startPrecapture(File file, int rotation, boolean forceFlash) {
+    private void startPrecapture(File file, int rotation, int phase) {
         pendingCaptureFile = file;
         pendingCaptureRotation = rotation;
-        pendingCaptureForceFlash = forceFlash;
+        precapturePhase = phase;
         precaptureRunning = true;
         precaptureSawRunningState = false;
         precaptureStartMs = SystemClock.elapsedRealtime();
@@ -871,7 +878,7 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         lastExposureTimeNs = 0;
         lastIso = 0;
 
-        final int aeMode = forceFlash
+        final int aeMode = phase == PRECAPTURE_PHASE_METER
                 ? CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH
                 : CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH;
         try {
@@ -888,12 +895,13 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
             session.capture(builder.build(), precaptureResultCallback, cameraHandler);
             cameraHandler.postDelayed(precaptureTimeoutRunnable, PRE_CAPTURE_TIMEOUT_MS);
-            Log.i(TAG, "闪光流程：开始 AE 预闪测光（" + (forceFlash ? "常开" : "自动") + "）");
+            Log.i(TAG, "闪光流程：开始 AE 预闪测光（"
+                    + (phase == PRECAPTURE_PHASE_METER ? "闪光测光" : "自动判断") + "）");
         } catch (Exception e) {
             Log.e(TAG, "触发 AE 预闪测光失败，直接按当前模式拍照", e);
             cancelPrecaptureState();
             restorePreviewAeMode();
-            submitStillCapture(file, rotation, forceFlash
+            submitStillCapture(file, rotation, phase == PRECAPTURE_PHASE_METER
                     ? CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH
                     : CaptureRequest.CONTROL_AE_MODE_ON);
         }
@@ -930,34 +938,38 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         finishPrecapture();
     }
 
-    /** 结束预闪测光，按测光结果决定“闪光流程 / 无闪光流程”，然后真正提交拍照请求。 */
+    /** 结束一遍预闪测光：自动判断 → 决定是否进入闪光流程；闪光测光 → 提交强制闪光拍照。 */
     private void finishPrecapture() {
         if (!precaptureRunning) return;
         precaptureRunning = false;
         cameraHandler.removeCallbacks(precaptureTimeoutRunnable);
 
-        final boolean forceFlash = pendingCaptureForceFlash;
+        final int phase = precapturePhase;
         final File file = pendingCaptureFile;
         final int rotation = pendingCaptureRotation;
-        final boolean useFlash = forceFlash || shouldAutoFlash();
-
         pendingCaptureFile = null;
 
-        final int aeMode;
-        if (!useFlash) {
-            aeMode = CaptureRequest.CONTROL_AE_MODE_ON;
-        } else if (forceFlash) {
-            aeMode = CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH;
-        } else {
-            aeMode = CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH;
+        if (phase == PRECAPTURE_PHASE_DECIDE) {
+            final boolean useFlash = shouldAutoFlash();
+            Log.i(TAG, "自动闪光判断：aeState=" + aeStateName(lastAeState)
+                    + " exposureNs=" + lastExposureTimeNs
+                    + " iso=" + lastIso
+                    + " → " + (useFlash ? "需要闪光，进入闪光流程" : "不需要闪光，无闪光流程"));
+            if (useFlash) {
+                // 关键：AUTO_FLASH 只负责判断；真正拍照前必须再用 ALWAYS_FLASH 测一遍闪光功率。
+                // 否则相机可能既不闪，又沿用 40ms/ISO 5万 这类无闪光曝光，得到一张黑照片。
+                startPrecapture(file, rotation, PRECAPTURE_PHASE_METER);
+            } else {
+                restorePreviewAeMode();
+                submitStillCapture(file, rotation, CaptureRequest.CONTROL_AE_MODE_ON);
+            }
+            return;
         }
 
-        Log.i(TAG, "闪光决策：mode=" + flashModeName(forceFlash ? FLASH_ON : FLASH_AUTO)
-                + " aeState=" + aeStateName(lastAeState)
+        Log.i(TAG, "闪光流程：测光完成（aeState=" + aeStateName(lastAeState)
                 + " exposureNs=" + lastExposureTimeNs
-                + " iso=" + lastIso
-                + " → " + (useFlash ? "闪光流程" : "无闪光流程"));
-        submitStillCapture(file, rotation, aeMode);
+                + " iso=" + lastIso + "）→ ALWAYS_FLASH 拍照");
+        submitStillCapture(file, rotation, CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH);
     }
 
     /**
@@ -1091,8 +1103,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             builder.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF);
             return;
         }
-        // 闪光灯交给 AE 控制：预闪测光结束后，同样的 AUTO_FLASH / ALWAYS_FLASH 模式
-        // 会按测得的闪光功率输出。注意不要再同时设置 FLASH_MODE_SINGLE——
+        // 闪光灯交给 AE 控制：闪光流程固定用 ON_ALWAYS_FLASH，按上一遍闪光测光得到的
+        // 曝光/闪光功率输出。注意不要再同时设置 FLASH_MODE_SINGLE——
         // 那会绕过 AE 强制全功率闪光，在极暗场景下正是“白屏过曝”的根因。
         builder.set(CaptureRequest.CONTROL_AE_MODE, aeMode);
     }
