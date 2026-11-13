@@ -8,13 +8,13 @@ No ads, no fees, no hidden terms. Photos and videos stay in the app's private fo
 
 | Version | Best for | Download |
 | --- | --- | --- |
-| **v20261106-01 (current)** | File-operation reliability: per-item progress for deleting/copying/exporting folders, streaming multi-GB video copy/export, startup self-healing after interruptions | [FileCamera-v20261106-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261106-01/FileCamera-v20261106-01.apk) |
+| **v20261113-01 (current)** | Dark-scene flash fix: two-stage auto-flash decision/metering, shutter sound at write time, persisted flash mode | [FileCamera-v20261113-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261113-01/FileCamera-v20261113-01.apk) |
 | v20260825-02 (stable legacy) | Photo capture + photo watermarks only; field-proven | [FileCamera v20260825-02 APK](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk) |
 
 - `master` is the rewrite. Prefer the stable legacy build if you do not need video watermarks.
 - The rewrite changes a lot; validate on a small scale before broad rollout.
 - The APK reports version **1.0** (versionCode `1`). If a higher versionCode is already installed, use `adb install -r -d`.
-- [All releases](https://gitee.com/zjywchenhui/filecamera/releases) · [Source archive v20261106-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261106-01.zip)
+- [All releases](https://gitee.com/zjywchenhui/filecamera/releases) · [Source archive v20261113-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261113-01.zip)
 
 ## Features
 
@@ -100,16 +100,10 @@ Hybrid WebView + Java architecture: H5 handles file lists, settings, route manag
 
 ## Version notes
 
+- **v20261113-01**: fixed flash white-out/overexposure in very dark scenes — removed the forced full-power `AE_MODE_ON + FLASH_MODE_SINGLE` path and now meters with AE precapture so the flash power is AE-controlled; auto flash now runs in two stages: `AUTO_FLASH` decides whether light is needed, then `ALWAYS_FLASH` meters and fires the actual shot, so it really flashes in the dark without overexposing; the shutter sound now plays when the camera JPEG starts writing to disk; the flash mode (off/on/auto) is persisted and no longer resets when switching cameras.
 - **v20261106-01**: file-operation reliability — per-item progress for deleting/copying/exporting folders; 64 KB streaming for multi-GB video copy and zip export (no whole-file buffers); `pending_file` is now a unified pending-task table (database v8, `op = import/copy/delete`) with write-ahead registration and startup self-healing; the progress overlay shows only `n/N` and a bar, no percentage.
 - **v20261105-01**: folder cover loading now uses a single JOIN instead of one query per subfolder (measured 98 ms → 5 ms on a folder with 520 subfolders); a missing thumbnail no longer produces a broken cover image; records whose main file is gone are now deleted in batches; database bumped to v5 with index backfill for `parent_dir_id` / `seqnumber`.
 - **v20261104-01**: rewrote file/folder import — streaming writes (no whole-file buffers, so bulk import no longer OOMs), 4 parallel workers, the whole folder tree created in one transaction (no per-file SAF parent lookups), and at most 200 records returned to the WebView; added a native import progress overlay (scan / import / finish phases, styled like the H5 one); hardened startup repair (rebuild corrupt thumbnails, clean leftover import temp files).
-- **v20261031-01**: fixed single video or non-image files being treated as a WeChat multi-file share and rejected with "photos only"; single files now use the system single-file share intent, while multiple files use their actual MIME types.
-- **v20261026-01**: fixed rear-camera video orientation; added the missing video watermark logo and unified scaling for the logo, corner radius, text, padding, and line spacing; the release APK excludes custom configuration.
-- **v20261024-02**: fixed the settings-page default icon preview being hard-coded to `icon.png`; with a custom config it now follows `custom_icon.png`, matching the watermark icon.
-- **v20261024-01**: key management now uses "Route Data Service Address/Key", with an optional-fill hint and a visual divider from the Amap key; the route-page warning is updated; README streamlined and the release repackaged.
-- **v20261023-01**: default config is now an exclusive whole-file choice between default and custom; the open-source build no longer ships custom config; road-data network fetch moved to Java; auto-update checks at most once per hour; zoom responsiveness and image-swipe vibration fixed.
-- **v20261020-02**: Camera2 video-watermark rewrite with video watermarking, video browser, new camera UI, haptics, and 4:3 full-frame preview; validate on a small scale first.
-- **v20260825-02**: stable legacy version with photo watermarks only; recommended if video watermarking is not needed.
 
 ## License
 
