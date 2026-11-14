@@ -861,7 +861,7 @@ public class CameraActivity extends AppCompatActivity {
 
         @Override
         public void onPhotoWriteStarted() {
-            // 相机 JPEG 真正开始写盘：此时才播放快门声（预闪测光/等 AE 的耗时不算“快门已按下”）
+            // 传感器开始曝光（与闪光同一时刻）：此时播放快门声（预闪测光/等 AE 的耗时不算“快门已按下”）
             playShutterSound();
         }
 
@@ -1002,7 +1002,7 @@ public class CameraActivity extends AppCompatActivity {
         }
     }
 
-    /** 快门声只在相机 JPEG 真正开始写盘时播放，见 {@link Camera2Controller.Listener#onPhotoWriteStarted()}。 */
+    /** 快门声在传感器开始曝光（与闪光同一时刻）时播放，见 {@link Camera2Controller.Listener#onPhotoWriteStarted()}。 */
     private void playShutterSound() {
         if (cameraConfig != null && cameraConfig.shutter_sound && mediaActionSound != null) {
             try {

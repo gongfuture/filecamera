@@ -95,6 +95,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     private static final long PRE_CAPTURE_TIMEOUT_MS = 2500L;
     /** 触发预闪后至少等待这么久再接受“测光完成”结果，避免把触发前的旧结果当成结论。 */
     private static final long PRE_CAPTURE_SETTLE_MS = 300L;
+    /** 预览 AE 状态的有效期：超过这个时间没刷新就不敢据此跳过 DECIDE 预闪。 */
+    private static final long PREVIEW_AE_FRESH_MS = 500L;
 
     /** 自动闪光第一遍：AUTO_FLASH 测光，只用来判断“需不需要闪光”。 */
     private static final int PRECAPTURE_PHASE_DECIDE = 0;
@@ -112,7 +114,7 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
 
         void onPhotoReady(File photoFile);
 
-        /** 相机返回的 JPEG 数据开始写盘（真正“拍下”的瞬间，用于播放快门声）。 */
+        /** 传感器开始曝光（与闪光同一时刻，用于播放快门声）。方法名保留，时机已前移到曝光开始。 */
         void onPhotoWriteStarted();
 
         void onPhotoError(String message);
@@ -171,6 +173,11 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     private int lastAeState = -1;
     private long lastExposureTimeNs = 0;
     private int lastIso = 0;
+    /** 预览持续 AE 的最新状态缓存：自动闪光拍照时若已收敛且无需补光，可跳过 DECIDE 预闪直接拍。 */
+    private int previewAeState = -1;
+    private long previewExposureTimeNs = 0;
+    private int previewIso = 0;
+    private long previewAeStateMs = 0;
     /** 预览请求当前使用的 AE 模式：平时 ON；预闪测光窗口内临时切到 AUTO/ALWAYS_FLASH。 */
     private int previewAeMode = CaptureRequest.CONTROL_AE_MODE_ON;
     /** Activity 设置里的拍照比例（16:9 / 4:3）。 */
@@ -830,7 +837,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
      * <ul>
      *     <li>闪光灯关闭 / 无闪光灯：无闪光流程，直接拍；</li>
      *     <li>闪光灯常开：闪光流程（AE 预闪测光 → 按测光结果补光后拍）；</li>
-     *     <li>自动闪光：先用 AUTO_FLASH 跑一次 AE 预闪测光，由 AE 判断“是否需要闪光”，
+     *     <li>自动闪光：预览 AE 已收敛（含 LOCKED）且状态新鲜时，跳过预闪直接拍；
+     *         否则先用 AUTO_FLASH 跑一次 AE 预闪测光，由 AE 判断“是否需要闪光”，
      *         再分别进入闪光流程或无闪光流程。</li>
      * </ul>
      * 预闪测光是避免极暗场景“闪光灯全功率输出 + 曝光仍按无闪光场景计算”导致整张
@@ -854,8 +862,27 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             submitStillCapture(file, rotation, CaptureRequest.CONTROL_AE_MODE_ON);
             return;
         }
+        if (flashMode == FLASH_AUTO && canSkipAutoFlashDecide()) {
+            // 预览 AE 已收敛：直接沿用预览曝光拍，不再跑 DECIDE 预闪。
+            // 代价：偏暗但 AE 能收敛的场景不再给闪光补光的机会，按长曝光/高 ISO 出片。
+            Log.i(TAG, "自动闪光：预览 AE 已收敛，跳过 DECIDE 预闪直接拍"
+                    + "（exposureNs=" + previewExposureTimeNs + ", iso=" + previewIso + "）");
+            submitStillCapture(file, rotation, CaptureRequest.CONTROL_AE_MODE_ON);
+            return;
+        }
         startPrecapture(file, rotation, flashMode == FLASH_ON
                 ? PRECAPTURE_PHASE_METER : PRECAPTURE_PHASE_DECIDE);
+    }
+
+    /**
+     * 自动闪光的快速通道：预览 AE 状态足够新、已收敛（含点击对焦后的 LOCKED）就直接拍，
+     * 不再做极暗兜底——中间态也走这里，避免“不闪光但拍照慢半拍”。
+     * 只有 AE 还在 SEARCHING / INACTIVE 或状态过期时，才回退到完整 DECIDE 预闪流程。
+     */
+    private boolean canSkipAutoFlashDecide() {
+        if (previewAeState != CaptureResult.CONTROL_AE_STATE_CONVERGED
+                && previewAeState != CaptureResult.CONTROL_AE_STATE_LOCKED) return false;
+        return SystemClock.elapsedRealtime() - previewAeStateMs <= PREVIEW_AE_FRESH_MS;
     }
 
     /**
@@ -981,12 +1008,16 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     }
 
     private boolean isSceneVeryDark() {
-        if (lastExposureTimeNs <= 0 && lastIso <= 0) return false;
+        return isVeryDark(lastExposureTimeNs, lastIso);
+    }
+
+    private static boolean isVeryDark(long exposureTimeNs, int iso) {
+        if (exposureTimeNs <= 0 && iso <= 0) return false;
         // 曝光 ≥ 1/10s，或 ≥ 1/20s 且 ISO ≥ 1600，或 ISO 已经拉到 3200：
         // 都是肉眼/相机都认为很暗的场景，用作 AE 没给 FLASH_REQUIRED 时的兜底。
-        return lastExposureTimeNs >= 100_000_000L
-                || (lastExposureTimeNs >= 50_000_000L && lastIso >= 1600)
-                || lastIso >= 3200;
+        return exposureTimeNs >= 100_000_000L
+                || (exposureTimeNs >= 50_000_000L && iso >= 1600)
+                || iso >= 3200;
     }
 
     private void cancelPrecaptureState() {
@@ -1032,7 +1063,7 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
 
     /**
      * 预览帧也会携带 AE 状态：预闪测光常常跨越好几帧，最终状态要看这些后续结果。
-     * 非预闪期间这个回调几乎是空转。
+     * 非预闪期间把最新 AE 状态/曝光参数缓存下来，供自动闪光的快速通道判断。
      */
     private final CameraCaptureSession.CaptureCallback previewResultCallback =
             new CameraCaptureSession.CaptureCallback() {
@@ -1040,6 +1071,17 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
                 public void onCaptureCompleted(@NonNull CameraCaptureSession s,
                                                @NonNull CaptureRequest request,
                                                @NonNull TotalCaptureResult result) {
+                    if (!precaptureRunning) {
+                        Integer aeState = result.get(CaptureResult.CONTROL_AE_STATE);
+                        if (aeState != null) {
+                            previewAeState = aeState;
+                            Long exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+                            if (exposure != null) previewExposureTimeNs = exposure;
+                            Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
+                            if (iso != null) previewIso = iso;
+                            previewAeStateMs = SystemClock.elapsedRealtime();
+                        }
+                    }
                     handlePrecaptureResult(result, false);
                 }
             };
@@ -1086,6 +1128,15 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     private final CameraCaptureSession.CaptureCallback stillCaptureCallback =
             new CameraCaptureSession.CaptureCallback() {
                 @Override
+                public void onCaptureStarted(@NonNull CameraCaptureSession s,
+                                             @NonNull CaptureRequest request,
+                                             long timestamp, long frameNumber) {
+                    // 传感器开始曝光的瞬间（闪光也在这一刻打闪）：在这里播快门声，
+                    // 与闪光同步；既不会提前到预闪测光阶段，也不会滞后到 JPEG 写盘。
+                    mainHandler.post(listener::onPhotoWriteStarted);
+                }
+
+                @Override
                 public void onCaptureFailed(@NonNull CameraCaptureSession s,
                                             @NonNull CaptureRequest request,
                                             @NonNull CaptureFailure failure) {
@@ -1128,10 +1179,7 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
                 throw new IOException("无法创建照片目录");
             }
-            // JPEG 数据真正开始写盘的瞬间才提示“拍下了”：与按下快门解耦，
-            // 预闪测光/等 AE 的这段时间不会提前响快门声。
-            Log.d(TAG, "JPEG 开始落盘，播放快门声: " + target.getName());
-            mainHandler.post(listener::onPhotoWriteStarted);
+            Log.d(TAG, "JPEG 开始落盘: " + target.getName());
             try (FileOutputStream out = new FileOutputStream(target)) {
                 out.write(data);
                 out.flush();
