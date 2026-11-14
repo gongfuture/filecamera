@@ -173,12 +173,12 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
     private int lastAeState = -1;
     private long lastExposureTimeNs = 0;
     private int lastIso = 0;
-    /** 预览持续 AE 的最新状态缓存：自动闪光拍照时若已收敛且无需补光，可跳过 DECIDE 预闪直接拍。 */
+    /** 预览持续 AE 的最新状态缓存：自动闪光时预览常驻 AUTO_FLASH，拍照直接读 FLASH_REQUIRED 判断。 */
     private int previewAeState = -1;
     private long previewExposureTimeNs = 0;
     private int previewIso = 0;
     private long previewAeStateMs = 0;
-    /** 预览请求当前使用的 AE 模式：平时 ON；预闪测光窗口内临时切到 AUTO/ALWAYS_FLASH。 */
+    /** 预览请求当前使用的 AE 模式：平时由 defaultPreviewAeMode() 决定；预闪测光窗口内临时切到 AUTO/ALWAYS_FLASH。 */
     private int previewAeMode = CaptureRequest.CONTROL_AE_MODE_ON;
     /** Activity 设置里的拍照比例（16:9 / 4:3）。 */
     private volatile float targetAspectRatio = 16f / 9f;
@@ -384,6 +384,19 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
 
     public void setFlashMode(int mode) {
         flashMode = mode;
+        // 对齐 CameraX：自动闪光时预览常驻 AUTO_FLASH，AE 会在预览帧里直接报 FLASH_REQUIRED，
+        // 拍照时无需再为“要不要闪”单独跑一遍预闪。
+        cameraHandler.post(() -> {
+            previewAeMode = defaultPreviewAeMode();
+            updateRepeatingRequest();
+        });
+    }
+
+    /** 预览常态 AE 模式：自动闪光且有闪光灯时用 AUTO_FLASH，其余用普通 ON。 */
+    private int defaultPreviewAeMode() {
+        return hasFlash && flashMode == FLASH_AUTO
+                ? CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH
+                : CaptureRequest.CONTROL_AE_MODE_ON;
     }
 
     /** 设置拍照比例后重建会话（16:9 / 4:3）。 */
@@ -545,8 +558,8 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             pendingPhotoFile = null;
             postPhotoError("拍照已取消");
         }
-        // 会话都要关了，预览 AE 模式无需恢复；新会话会重新建普通预览请求
-        previewAeMode = CaptureRequest.CONTROL_AE_MODE_ON;
+        // 会话都要关了，预览 AE 模式无需恢复；新会话按当前闪光模式重建预览请求
+        previewAeMode = defaultPreviewAeMode();
         if (session != null) {
             try {
                 session.stopRepeating();
@@ -837,9 +850,9 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
      * <ul>
      *     <li>闪光灯关闭 / 无闪光灯：无闪光流程，直接拍；</li>
      *     <li>闪光灯常开：闪光流程（AE 预闪测光 → 按测光结果补光后拍）；</li>
-     *     <li>自动闪光：预览 AE 已收敛（含 LOCKED）且状态新鲜时，跳过预闪直接拍；
-     *         否则先用 AUTO_FLASH 跑一次 AE 预闪测光，由 AE 判断“是否需要闪光”，
-     *         再分别进入闪光流程或无闪光流程。</li>
+     *     <li>自动闪光（对齐 CameraX）：预览常驻 AUTO_FLASH，拍照时直接读预览帧 AE 状态——
+     *         FLASH_REQUIRED 则进入闪光流程（只跑一遍功率预闪），否则无闪光直接拍；
+     *         预览状态过期时才退回 DECIDE 预闪做正式判断。</li>
      * </ul>
      * 预闪测光是避免极暗场景“闪光灯全功率输出 + 曝光仍按无闪光场景计算”导致整张
      * 照片过曝（白屏）的关键；这也是 Camera2 对有闪光灯的高质量拍照的明确要求。
@@ -862,27 +875,29 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
             submitStillCapture(file, rotation, CaptureRequest.CONTROL_AE_MODE_ON);
             return;
         }
-        if (flashMode == FLASH_AUTO && canSkipAutoFlashDecide()) {
-            // 预览 AE 已收敛：直接沿用预览曝光拍，不再跑 DECIDE 预闪。
-            // 代价：偏暗但 AE 能收敛的场景不再给闪光补光的机会，按长曝光/高 ISO 出片。
-            Log.i(TAG, "自动闪光：预览 AE 已收敛，跳过 DECIDE 预闪直接拍"
-                    + "（exposureNs=" + previewExposureTimeNs + ", iso=" + previewIso + "）");
-            submitStillCapture(file, rotation, CaptureRequest.CONTROL_AE_MODE_ON);
+        if (flashMode == FLASH_AUTO && isPreviewAeFresh()) {
+            // 对齐 CameraX：预览常驻 AUTO_FLASH，要不要闪直接读预览帧的 AE 状态。
+            if (previewAeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED) {
+                Log.i(TAG, "自动闪光：预览 AE 报 FLASH_REQUIRED，进入闪光测光流程"
+                        + "（exposureNs=" + previewExposureTimeNs + ", iso=" + previewIso + "）");
+                startPrecapture(file, rotation, PRECAPTURE_PHASE_METER);
+            } else {
+                Log.i(TAG, "自动闪光：预览 AE 无需闪光，直接拍（aeState="
+                        + aeStateName(previewAeState) + " exposureNs=" + previewExposureTimeNs
+                        + ", iso=" + previewIso + "）");
+                submitStillCapture(file, rotation, CaptureRequest.CONTROL_AE_MODE_ON);
+            }
             return;
         }
+        // 预览 AE 状态过期（刚开相机/预览卡顿）：自动闪光退回 DECIDE 预闪做正式判断。
         startPrecapture(file, rotation, flashMode == FLASH_ON
                 ? PRECAPTURE_PHASE_METER : PRECAPTURE_PHASE_DECIDE);
     }
 
-    /**
-     * 自动闪光的快速通道：预览 AE 状态足够新、已收敛（含点击对焦后的 LOCKED）就直接拍，
-     * 不再做极暗兜底——中间态也走这里，避免“不闪光但拍照慢半拍”。
-     * 只有 AE 还在 SEARCHING / INACTIVE 或状态过期时，才回退到完整 DECIDE 预闪流程。
-     */
-    private boolean canSkipAutoFlashDecide() {
-        if (previewAeState != CaptureResult.CONTROL_AE_STATE_CONVERGED
-                && previewAeState != CaptureResult.CONTROL_AE_STATE_LOCKED) return false;
-        return SystemClock.elapsedRealtime() - previewAeStateMs <= PREVIEW_AE_FRESH_MS;
+    /** 预览 AE 状态是否在有效期内（过期则不敢据此直接决定闪不闪）。 */
+    private boolean isPreviewAeFresh() {
+        return previewAeState >= 0
+                && SystemClock.elapsedRealtime() - previewAeStateMs <= PREVIEW_AE_FRESH_MS;
     }
 
     /**
@@ -1026,10 +1041,11 @@ public class Camera2Controller implements TextureView.SurfaceTextureListener {
         cameraHandler.removeCallbacks(precaptureTimeoutRunnable);
     }
 
-    /** 拍照结束（成功/失败）后把预览的 AE 模式恢复成普通的 ON，避免预览长期带着闪光 AE 模式。 */
+    /** 拍照结束（成功/失败）后把预览 AE 恢复成常态模式（自动闪光时为 AUTO_FLASH，其余为 ON）。 */
     private void restorePreviewAeMode() {
-        if (previewAeMode == CaptureRequest.CONTROL_AE_MODE_ON) return;
-        previewAeMode = CaptureRequest.CONTROL_AE_MODE_ON;
+        final int mode = defaultPreviewAeMode();
+        if (previewAeMode == mode) return;
+        previewAeMode = mode;
         updateRepeatingRequest();
     }
 
