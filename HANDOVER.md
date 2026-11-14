@@ -446,7 +446,7 @@ new FragmentedMp4Muxer.Builder(fileOutputStream)
 
 ```
 分支：master（推送到 Gitee：https://gitee.com/zjywchenhui/filecamera.git）
-最新发布：v20261113-01（极暗场景闪光灯白屏/自动闪光修复）
+最新发布：v20261114-01（闪光灯策略对齐 CameraX，快门声与闪光同步）
 ```
 
 发布流程（沿用之前的做法）：

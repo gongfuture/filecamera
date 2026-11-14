@@ -8,13 +8,13 @@
 
 | 版本 | 适用场景 | 下载 |
 | --- | --- | --- |
-| **v20261113-01（当前版）** | 极暗场景闪光灯修复：自动闪光两段式判断/补光，快门声改为落盘时播放，闪光模式持久化 | [FileCamera-v20261113-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261113-01/FileCamera-v20261113-01.apk) |
+| **v20261114-01（当前版）** | 闪光灯策略对齐 CameraX：自动闪光按预览 AE 状态即时判断，快门声与闪光同步 | [FileCamera-v20261114-01.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20261114-01/FileCamera-v20261114-01.apk) |
 | v20260825-02（稳定旧版） | 仅需拍照和照片水印，长期现场验证稳定 | [巡查相机v20260825-02.apk](https://gitee.com/zjywchenhui/filecamera/releases/download/v20260825-02/%E5%B7%A1%E6%9F%A5%E7%9B%B8%E6%9C%BAv20260825-02.apk) |
 
 - 当前 `master` 为重构版；不需要视频水印时，优先使用稳定旧版。
 - 重构版改动较大，建议先小范围验证，再批量部署。
 - APK 显示版本为 **1.0**（versionCode `1`）；如果手机已安装更高 versionCode 的版本，请使用 `adb install -r -d` 强制安装。
-- [历史版本](https://gitee.com/zjywchenhui/filecamera/releases) · [当前源码 v20261113-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261113-01.zip)
+- [历史版本](https://gitee.com/zjywchenhui/filecamera/releases) · [当前源码 v20261114-01.zip](https://gitee.com/zjywchenhui/filecamera/archive/refs/tags/v20261114-01.zip)
 
 ## 核心功能
 
@@ -100,10 +100,9 @@ WebView + Java 混合架构：H5 负责文件列表、设置、路线管理和�
 
 ## 版本说明
 
+- **v20261114-01**：闪光灯策略全面对齐 CameraX——自动闪光时预览常驻 `AUTO_FLASH`，拍照直接读预览帧的 `FLASH_REQUIRED` 判断要不要闪，不再为判断单独跑预闪；需要闪光时只跑一遍功率预闪再拍，亮光和中间态均无额外等待；快门声改为传感器开始曝光时播放，与闪光同步，不再等 JPEG 落盘。
 - **v20261113-01**：修复极暗场景闪光灯白屏/过曝——去掉 `AE_MODE_ON + FLASH_MODE_SINGLE` 的强制全功率闪光，改为 AE 预闪测光后由 AE 控制闪光功率；自动闪光改为两段式：先用 `AUTO_FLASH` 判断，判定需要补光后再用 `ALWAYS_FLASH` 重新测光并拍照，暗处会真正闪光且不过曝；拍照提示音改为相机 JPEG 开始落盘时播放；闪光灯模式（关/开/自动）持久化，切换前后摄不再重置。
 - **v20261106-01**：文件操作可靠性——删除、复制、导出文件夹都有逐项进度；几 GB 视频的复制和 zip 导出改为 64KB 流式，不再整文件进内存；`pending_file` 升级为统一待执行任务表（数据库 v8，`op = import/copy/delete`），删除先删库后删文件、复制先落盘后入库，中断后启动自愈；遮罩只显示 `n/N` 和进度条，不再显示百分比。
-- **v20261105-01**：打开文件夹时的封面加载由「每个子文件夹一条 SQL」改为一条 JOIN 查询（520 个子目录的文件夹实测 98 ms → 5 ms），缩略图缺失时不再显示碎图；主图缺失记录的清理改为批量删除；数据库升级到 v5，补齐 `parent_dir_id` / `seqnumber` 索引。
-- **v20261104-01**：文件/文件夹导入重构——改为流式落盘（不再整文件读入内存，批量导入不再 OOM 闪退）、4 个 worker 并行导入、目录一次性预建（去掉逐文件的 SAF 父链查询）、导入结果只回传前 200 条记录；新增原生导入进度遮罩（与 H5 同款样式，含扫描/导入/收尾三阶段）；启动自愈补强：缩略图损坏自动重建、自动清理导入临时文件。
 
 ## 开源协议
 
