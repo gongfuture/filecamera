@@ -1,0 +1,78 @@
+name: Extract APK and Create Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find and publish APK releases
+        run: |
+          set -e
+
+          mapfile -t APK_FILES < <(find . -name "*.apk" -type f)
+
+          if [ ${#APK_FILES[@]} -eq 0 ]; then
+            echo "仓库中无 APK 文件，跳过 Release 创建"
+            exit 0
+          fi
+
+          echo "找到 ${#APK_FILES[@]} 个 APK 文件:"
+          printf '  %s\n' "${APK_FILES[@]}"
+
+          declare -A PROCESSED
+
+          for APK_PATH in "${APK_FILES[@]}"; do
+            APK_FILENAME=$(basename "$APK_PATH")
+            RELEASE_TITLE="${APK_FILENAME%.apk}"
+
+            # Find the commit that introduced this APK (first add), fall back to last modifying commit
+            INTRODUCE_SHA=$(git log --format="%H" --diff-filter=A -- "$APK_PATH" 2>/dev/null | tail -1)
+            LAST_SHA=$(git log --format="%H" -n 1 -- "$APK_PATH")
+            TARGET_SHA="${INTRODUCE_SHA:-$LAST_SHA}"
+
+            COMMIT_MSG=$(git log --format="%B" -n 1 -- "$APK_PATH")
+            COMMIT_DATE=$(git log --format="%ci" -n 1 -- "$APK_PATH")
+
+            # Build a unique, safe tag name from filename + commit SHA
+            SAFE_NAME=$(echo "$APK_FILENAME" | sed 's/[^a-zA-Z0-9._-]/-/g')
+            TAG_NAME="release-${SAFE_NAME}-${TARGET_SHA:0:7}"
+
+            DEDUP_KEY="${APK_FILENAME}@${TARGET_SHA}"
+
+            # Dedup 1: same run, same (filename, SHA) pair
+            if [ -n "${PROCESSED[$DEDUP_KEY]}" ]; then
+              echo "跳过 $APK_FILENAME (commit ${TARGET_SHA:0:7})，本次运行已处理过相同版本"
+              continue
+            fi
+
+            # Dedup 2: release already exists on GitHub
+            if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+              echo "跳过 $APK_FILENAME，Release 已存在: $TAG_NAME"
+              PROCESSED[$DEDUP_KEY]=1
+              continue
+            fi
+
+            # Create GitHub Release with the APK as an asset
+            NOTES=$(printf '**提交信息:** %s\n\n**提交日期:** %s\n\n**提交 SHA:** %s' \
+              "$COMMIT_MSG" "$COMMIT_DATE" "$TARGET_SHA")
+            gh release create "$TAG_NAME" \
+              --title "$RELEASE_TITLE" \
+              --notes "$NOTES" \
+              --target "$TARGET_SHA" \
+              "$APK_PATH"
+
+            echo "已创建 Release: $RELEASE_TITLE (tag: $TAG_NAME)"
+            PROCESSED[$DEDUP_KEY]=1
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
